@@ -1,12 +1,47 @@
-// apps/server/src/lib/site-configs.ts — full impl in B-4
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { listAdapters } from '../adapters';
+
+export interface ExtractRule {
+  selector?: string;
+  attr?: string;
+  text?: boolean;
+  regex?: string;
+}
+
+export interface Trigger {
+  name: string;
+  selector: string;
+  extract: Record<string, ExtractRule>;
+  inject: { button?: { template: string; position: string; label: string } };
+}
+
 export interface SiteConfig {
   siteId: string;
   interpreterVersion: number;
   matches: string[];
-  triggers: Array<{
-    name: string;
-    selector: string;
-    extract: Record<string, { selector?: string; attr?: string; text?: boolean; regex?: string }>;
-    inject: { button?: { template: string; position: string; label: string } };
-  }>;
+  triggers: Trigger[];
+}
+
+function getConfigDir(): string {
+  return process.env.SITE_CONFIGS_DIR ?? '/config/site-configs';
+}
+
+export async function loadSiteConfigs(): Promise<SiteConfig[]> {
+  const fromCode = listAdapters().map((a) => a.siteConfig());
+  const fromDisk: SiteConfig[] = [];
+  try {
+    const files = await fs.readdir(getConfigDir());
+    for (const f of files.filter((n) => n.endsWith('.json'))) {
+      const raw = await fs.readFile(path.join(getConfigDir(), f), 'utf8');
+      fromDisk.push(JSON.parse(raw) as SiteConfig);
+    }
+  } catch {
+    /* dir may not exist yet */
+  }
+  // Disk overrides code, keyed by siteId
+  const merged = new Map<string, SiteConfig>();
+  for (const c of fromCode) merged.set(c.siteId, c);
+  for (const c of fromDisk) merged.set(c.siteId, c);
+  return [...merged.values()];
 }

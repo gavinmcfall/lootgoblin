@@ -13,5 +13,8 @@ const nextConfig = {
     // surface clearly without being masked by parser-level lint failures.
     ignoreDuringBuilds: true,
   },
+  // instrumentationHook is stable in Next.js 15 (no longer experimental).
+  // Enables src/instrumentation.ts for boot-time OTEL initialisation.
+  instrumentationHook: true,
 };
 export default nextConfig;

@@ -10,3 +10,6 @@ build/
 
 # Environment files
 .env*.local
+
+# TypeScript
+tsconfig.tsbuildinfo

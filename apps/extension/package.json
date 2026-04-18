@@ -1,0 +1,37 @@
+{
+  "name": "extension",
+  "version": "0.0.0",
+  "private": true,
+  "description": "LootGoblin browser extension — tag items to scrape",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "build:edge": "wxt build -b edge",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "zip:edge": "wxt zip -b edge",
+    "zip:all": "npm run zip && npm run zip:firefox && npm run zip:edge && node scripts/rename-zips.mjs && node scripts/firefox-source.mjs",
+    "release:patch": "node scripts/release.mjs patch",
+    "release:minor": "node scripts/release.mjs minor",
+    "release:major": "node scripts/release.mjs major",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "wxt": "^0.20.18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/chrome": "^0.0.270",
+    "@types/webextension-polyfill": "^0.10.7",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0",
+    "happy-dom": "^15.0.0"
+  }
+}

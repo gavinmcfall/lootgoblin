@@ -11,7 +11,10 @@ export function startOtel(): void {
   const sdk = new NodeSDK({
     serviceName: env.OTEL_SERVICE_NAME,
     traceExporter: new OTLPTraceExporter({ url: `${env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces` }),
-    instrumentations: [getNodeAutoInstrumentations()],
+    instrumentations: [getNodeAutoInstrumentations({
+      '@opentelemetry/instrumentation-winston': { enabled: false },
+      '@opentelemetry/instrumentation-fs': { enabled: false },
+    })],
   });
   sdk.start();
   started = true;

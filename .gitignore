@@ -1,0 +1,4 @@
+.superpowers/
+.claude/.worklog.lock
+.claude/.sid-*
+.claude/.session-tracker

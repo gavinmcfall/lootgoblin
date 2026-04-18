@@ -6,6 +6,7 @@ const EnvSchema = z
   .object({
     PORT: z.coerce.number().int().positive().default(7393),
     LOOTGOBLIN_SECRET: z.string().min(32, 'LOOTGOBLIN_SECRET must be at least 32 bytes'),
+    AUTH_SECRET: z.string().min(32).optional(),
     DATABASE_URL: z.string().default('file:./lootgoblin.db'),
     AUTH_METHODS: z
       .string()

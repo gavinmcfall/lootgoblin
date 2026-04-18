@@ -10,6 +10,7 @@ if (oidc) providers.push(oidc as never);
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers,
+  secret: env.AUTH_SECRET ?? env.LOOTGOBLIN_SECRET,
   session: { strategy: 'jwt' },
   pages: { signIn: '/login' },
   callbacks: {

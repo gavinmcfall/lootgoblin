@@ -32,6 +32,14 @@ const EnvSchema = z
         path: ['AUTH_METHODS'],
       });
     }
+    if (val.AUTH_METHODS.includes('oidc')) {
+      const required = ['OIDC_ISSUER_URL', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET', 'OIDC_REDIRECT_URI'] as const;
+      for (const k of required) {
+        if (!val[k]) {
+          ctx.addIssue({ code: 'custom', message: `${k} required when oidc is enabled`, path: [k] });
+        }
+      }
+    }
   });
 
 export type Env = z.infer<typeof EnvSchema>;

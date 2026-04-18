@@ -21,6 +21,10 @@ describe('parseEnv', () => {
     const env = parseEnv({
       LOOTGOBLIN_SECRET: 'a'.repeat(32),
       AUTH_METHODS: 'forms,oidc',
+      OIDC_ISSUER_URL: 'https://auth.example.com',
+      OIDC_CLIENT_ID: 'lootgoblin',
+      OIDC_CLIENT_SECRET: 'shh',
+      OIDC_REDIRECT_URI: 'https://lootgoblin.example.com/api/auth/callback/oidc',
     });
     expect(env.AUTH_METHODS).toEqual(['forms', 'oidc']);
   });
@@ -29,5 +33,11 @@ describe('parseEnv', () => {
     expect(() =>
       parseEnv({ LOOTGOBLIN_SECRET: 'a'.repeat(32), AUTH_METHODS: 'forms,none' }),
     ).toThrow(/exclusive/);
+  });
+
+  it('rejects oidc without required OIDC env vars', () => {
+    expect(() =>
+      parseEnv({ LOOTGOBLIN_SECRET: 'a'.repeat(32), AUTH_METHODS: 'forms,oidc' }),
+    ).toThrow(/OIDC_ISSUER_URL/);
   });
 });

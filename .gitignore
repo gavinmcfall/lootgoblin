@@ -3,3 +3,9 @@
 .claude/.worklog.lock
 .claude/.sid-*
 .claude/.session-tracker
+.playwright-mcp/
+node_modules/
+**/lootgoblin.db
+**/lootgoblin.db-journal
+**/lootgoblin.db-wal
+**/lootgoblin.db-shm

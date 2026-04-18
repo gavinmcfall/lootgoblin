@@ -10,22 +10,51 @@ const { auth } = NextAuth(authConfig);
 // whether any users exist, which the Edge middleware cannot do.
 const PUBLIC = new Set(['/', '/login', '/setup']);
 
+// Extension-facing endpoints that (a) bypass session check and (b) need CORS so
+// content scripts on third-party origins (e.g. makerworld.com) can reach them.
+function isExtensionApi(pathname: string): boolean {
+  return (
+    pathname.startsWith('/api/v1/pair/challenge') ||
+    pathname.startsWith('/api/v1/pair/status') ||
+    pathname.startsWith('/api/v1/items/awaiting-upload') ||
+    (pathname.startsWith('/api/v1/items/') && pathname.endsWith('/upload')) ||
+    pathname.startsWith('/api/v1/site-configs') ||
+    pathname.startsWith('/api/v1/sources') ||
+    pathname.startsWith('/api/v1/source-credentials/') ||
+    pathname === '/api/v1/queue'
+  );
+}
+
+const CORS_HEADERS: Record<string, string> = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+  'access-control-allow-headers': 'content-type, x-api-key, authorization',
+  'access-control-max-age': '86400',
+};
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (pathname.startsWith('/api/auth')) return NextResponse.next();
-  if (pathname.startsWith('/api/setup')) return NextResponse.next();
-  if (pathname.startsWith('/api/health')) return NextResponse.next();
-  if (pathname.startsWith('/api/metrics')) return NextResponse.next(); // will be gated later
-  if (pathname.startsWith('/api/v1/pair/challenge')) return NextResponse.next();
-  if (pathname.startsWith('/api/v1/pair/status')) return NextResponse.next();
-  // Extension-facing endpoints — use x-api-key auth inside the handler, no session needed.
-  if (pathname.startsWith('/api/v1/items/awaiting-upload')) return NextResponse.next();
-  if (pathname.startsWith('/api/v1/items/') && pathname.endsWith('/upload')) return NextResponse.next();
-  if (pathname.startsWith('/api/v1/site-configs')) return NextResponse.next();
-  if (pathname.startsWith('/api/v1/sources')) return NextResponse.next();
-  if (pathname.startsWith('/api/v1/source-credentials/')) return NextResponse.next();
-  if (pathname === '/api/v1/queue') return NextResponse.next(); // POST tag from extension; GET list is session-only but check happens in handler
+  const extensionApi = isExtensionApi(pathname);
+
+  // CORS preflight for extension endpoints — respond directly, skip the handler.
+  if (extensionApi && req.method === 'OPTIONS') {
+    return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  const addCors = (res: NextResponse): NextResponse => {
+    if (extensionApi) {
+      for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v);
+    }
+    return res;
+  };
+
+  if (pathname.startsWith('/api/auth')) return addCors(NextResponse.next());
+  if (pathname.startsWith('/api/setup')) return addCors(NextResponse.next());
+  if (pathname.startsWith('/api/health')) return addCors(NextResponse.next());
+  if (pathname.startsWith('/api/metrics')) return addCors(NextResponse.next());
+  if (extensionApi) return addCors(NextResponse.next());
   if (PUBLIC.has(pathname)) return NextResponse.next();
+
   const session = await auth();
   if (!session) return NextResponse.redirect(new URL('/login', req.url));
   return NextResponse.next();

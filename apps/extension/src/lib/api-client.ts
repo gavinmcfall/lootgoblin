@@ -1,9 +1,13 @@
 import { Storage } from './storage';
 
+function joinUrl(base: string, path: string): string {
+  return base.replace(/\/+$/, '') + (path.startsWith('/') ? path : '/' + path);
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const p = await Storage.getPairing();
   if (!p) throw new Error('Not paired');
-  const res = await fetch(p.serverUrl + path, {
+  const res = await fetch(joinUrl(p.serverUrl, path), {
     ...init,
     headers: {
       'content-type': 'application/json',
@@ -16,7 +20,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export async function apiPublic<T>(serverUrl: string, path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(serverUrl + path, {
+  const res = await fetch(joinUrl(serverUrl, path), {
     ...init,
     headers: { 'content-type': 'application/json', ...init.headers },
   });
@@ -30,7 +34,7 @@ export async function apiUpload(path: string, fileBlob: Blob, name: string): Pro
   const form = new FormData();
   form.append('file', fileBlob, name);
   form.append('name', name);
-  const res = await fetch(p.serverUrl + path, {
+  const res = await fetch(joinUrl(p.serverUrl, path), {
     method: 'POST',
     headers: { 'x-api-key': p.apiKey }, // NO content-type — browser sets multipart boundary
     body: form,

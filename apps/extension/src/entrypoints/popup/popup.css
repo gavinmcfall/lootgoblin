@@ -43,7 +43,7 @@ html, body {
 .w-full { width: 100%; }
 .block { display: block; }
 input, button { font: inherit; }
-button { cursor: pointer; border: none; }
+button { cursor: pointer; border: none; background: transparent; color: inherit; }
 input { display: block; width: 100%; box-sizing: border-box; }
 label > span { display: block; margin-bottom: 4px; }
 .p-3 { padding: 12px; }

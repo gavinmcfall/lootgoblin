@@ -16,6 +16,8 @@ export async function middleware(req: NextRequest) {
   if (pathname.startsWith('/api/setup')) return NextResponse.next();
   if (pathname.startsWith('/api/health')) return NextResponse.next();
   if (pathname.startsWith('/api/metrics')) return NextResponse.next(); // will be gated later
+  if (pathname.startsWith('/api/v1/pair/challenge')) return NextResponse.next();
+  if (pathname.startsWith('/api/v1/pair/status')) return NextResponse.next();
   if (PUBLIC.has(pathname)) return NextResponse.next();
   const session = await auth();
   if (!session) return NextResponse.redirect(new URL('/login', req.url));

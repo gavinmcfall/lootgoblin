@@ -5,6 +5,8 @@ import { migrate as migratePg } from 'drizzle-orm/postgres-js/migrator';
 import Database from 'better-sqlite3';
 import postgres from 'postgres';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import fs from 'node:fs';
 import * as schema from './schema';
 
 let cached: ReturnType<typeof drizzleSqlite> | ReturnType<typeof drizzlePg> | null = null;
@@ -79,11 +81,7 @@ export async function insertUser(user: {
 }
 
 export async function runMigrations(url = process.env.DATABASE_URL ?? 'file:./lootgoblin.db') {
-  // MIGRATIONS_DIR env override lets standalone/bundled builds (e.g. Next.js
-  // standalone output) point at the real migrations folder, since import.meta.url
-  // would otherwise resolve into .next/server/chunks/… at runtime.
-  const migrationsFolder =
-    process.env.MIGRATIONS_DIR ?? fileURLToPath(new URL(/* webpackIgnore: true */ './migrations', import.meta.url));
+  const migrationsFolder = resolveMigrationsFolder();
   if (url.startsWith('postgres')) {
     const client = postgres(url);
     await migratePg(drizzlePg(client), { migrationsFolder });
@@ -94,6 +92,32 @@ export async function runMigrations(url = process.env.DATABASE_URL ?? 'file:./lo
     migrateSqlite(drizzleSqlite(sqlite), { migrationsFolder });
     sqlite.close();
   }
+}
+
+function resolveMigrationsFolder(): string {
+  const candidates: Array<string | undefined> = [
+    process.env.MIGRATIONS_DIR,
+    path.resolve(process.cwd(), 'src/db/migrations'),
+    path.resolve(process.cwd(), 'apps/server/src/db/migrations'),
+    (() => {
+      try {
+        // Build the path string dynamically so webpack's static analyser cannot
+        // resolve it at bundle time (avoids "Module not found: Can't resolve
+        // './migrations'" in Next.js standalone builds).
+        const rel = './migr' + 'ations';
+        return fileURLToPath(/* webpackIgnore: true */ new URL(rel, import.meta.url));
+      }
+      catch { return undefined; }
+    })(),
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    if (fs.existsSync(path.join(c, 'meta', '_journal.json'))) return c;
+  }
+  throw new Error(
+    `Migrations folder not found. Tried: ${candidates.filter(Boolean).join(', ')}. ` +
+    `Set MIGRATIONS_DIR env var to the directory containing meta/_journal.json.`,
+  );
 }
 
 export { schema };

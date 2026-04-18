@@ -1,5 +1,5 @@
 import type { SourceAdapter, FetchedItem } from '../types';
-import { mwFetch, CredentialInvalidError, PermissionDeniedError } from './api';
+import { mwFetch, BotChallengeError, CredentialInvalidError, PermissionDeniedError } from './api';
 import { mwSiteConfig } from './site-config';
 
 const MW_BASE = 'https://makerworld.com';
@@ -14,6 +14,19 @@ const capabilities: SourceAdapter['capabilities'] = {
   authKind: 'cookie-jar',
   defaultRateLimitPerSec: 0.5,
 };
+
+// ── fetchMetadata ─────────────────────────────────────────────────────────
+
+async function fetchMetadataOnly(
+  sourceItemId: string,
+  credentialBlob: string,
+): Promise<Record<string, unknown>> {
+  const designRes = await mwFetch(
+    `${MW_BASE}/api/v1/design-service/design/${sourceItemId}`,
+    credentialBlob,
+  );
+  return (await designRes.json()) as Record<string, unknown>;
+}
 
 // ── fetch ─────────────────────────────────────────────────────────────────
 
@@ -37,12 +50,25 @@ async function fetchItem(
     throw new Error(`Design ${sourceItemId} has no instances`);
   }
 
-  // 3. Resolve f3mf signed URL
-  const f3mfRes = await mwFetch(
-    `${MW_BASE}/api/v1/design-service/instance/${defaultInstance.id}/f3mf`,
-    credentialBlob,
-  );
-  const f3mf = (await f3mfRes.json()) as { name: string; url: string };
+  // 3. Resolve f3mf signed URL — may return 418 (bot challenge)
+  let f3mf: { name: string; url: string };
+  try {
+    const f3mfRes = await mwFetch(
+      `${MW_BASE}/api/v1/design-service/instance/${defaultInstance.id}/f3mf`,
+      credentialBlob,
+    );
+    f3mf = (await f3mfRes.json()) as { name: string; url: string };
+  } catch (err) {
+    if (err instanceof Error && (err as Error & { isBotChallenge?: boolean }).isBotChallenge) {
+      throw new BotChallengeError([
+        {
+          url: `${MW_BASE}/api/v1/design-service/instance/${defaultInstance.id}/f3mf`,
+          name: `${design.slug}.3mf`,
+        },
+      ]);
+    }
+    throw err;
+  }
 
   // 4. Stream-fetch the signed CDN URL (CDN is anonymous but passing cookies is harmless)
   const fileResponse = await mwFetch(f3mf.url, credentialBlob);
@@ -115,6 +141,7 @@ async function verifyCredential(
 export const makerworld: SourceAdapter = {
   capabilities,
   fetch: fetchItem,
+  fetchMetadata: fetchMetadataOnly,
   verifyCredential,
   siteConfig: mwSiteConfig,
 };

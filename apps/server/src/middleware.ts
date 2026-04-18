@@ -18,6 +18,9 @@ export async function middleware(req: NextRequest) {
   if (pathname.startsWith('/api/metrics')) return NextResponse.next(); // will be gated later
   if (pathname.startsWith('/api/v1/pair/challenge')) return NextResponse.next();
   if (pathname.startsWith('/api/v1/pair/status')) return NextResponse.next();
+  // Extension-facing endpoints — use x-api-key auth inside the handler, no session needed.
+  if (pathname.startsWith('/api/v1/items/awaiting-upload')) return NextResponse.next();
+  if (pathname.startsWith('/api/v1/items/') && pathname.endsWith('/upload')) return NextResponse.next();
   if (PUBLIC.has(pathname)) return NextResponse.next();
   const session = await auth();
   if (!session) return NextResponse.redirect(new URL('/login', req.url));

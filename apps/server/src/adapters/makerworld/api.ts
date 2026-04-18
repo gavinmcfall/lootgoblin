@@ -34,6 +34,14 @@ export class TransientError extends Error {
   constructor(status: number) { super(`transient error: HTTP ${status}`); }
 }
 
+export class BotChallengeError extends Error {
+  name = 'BotChallengeError' as const;
+  retryable = false as const;
+  constructor(public pendingFiles: Array<{ url: string; name: string }>) {
+    super('bot challenge — extension upload required');
+  }
+}
+
 // ── Cookie helpers ─────────────────────────────────────────────────────────
 
 interface CookieEntry {
@@ -110,6 +118,14 @@ export async function mwFetch(
   if (status === 401) throw new CredentialInvalidError();
   if (status === 403) throw new PermissionDeniedError();
   if (status === 404) throw new NotFoundError();
+
+  if (status === 418) {
+    // MakerWorld's application-layer bot check — return a marker so the caller
+    // can surface it as BotChallengeError with pending-files context.
+    const err = new Error('bot-challenge');
+    (err as Error & { isBotChallenge?: boolean }).isBotChallenge = true;
+    throw err;
+  }
 
   if (status === 429) {
     const retryAfterHeader = response.headers.get('retry-after');

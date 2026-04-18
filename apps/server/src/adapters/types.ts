@@ -32,6 +32,7 @@ export interface FetchedItem {
 export interface SourceAdapter {
   capabilities: SourceCapabilities;
   fetch(sourceItemId: string, credentialBlob: string): Promise<FetchedItem>;
+  fetchMetadata?(sourceItemId: string, credentialBlob: string): Promise<Record<string, unknown>>;
   verifyCredential(blob: string): Promise<{ ok: boolean; accountLabel?: string }>;
   siteConfig(): import('../lib/site-configs').SiteConfig;
 }

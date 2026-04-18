@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { PairedState } from '@/lib/storage';
 import { api } from '@/lib/api-client';
 import { bc } from '@/lib/browser-compat';
+import type { UploadStatus } from '@/types/messages';
 
 interface Credential {
   id: string;
@@ -101,8 +102,54 @@ export function StatusView({ state, onUnpair }: { state: PairedState; onUnpair: 
 
       {error && <p className="text-xs text-red-400">{error}</p>}
 
+      {/* Upload status */}
+      <UploadStatusView />
+
       <button onClick={onUnpair} className="w-full rounded border border-slate-700 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
         Unpair
+      </button>
+    </div>
+  );
+}
+
+function UploadStatusView() {
+  const [status, setStatus] = useState<Pick<UploadStatus, 'lastRunAt' | 'pendingCount' | 'lastError'> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refresh() {
+      if (cancelled) return;
+      try {
+        const res = await bc.runtime.sendMessage({ type: 'upload-status' });
+        if (res?.ok && !cancelled) setStatus(res.data as Pick<UploadStatus, 'lastRunAt' | 'pendingCount' | 'lastError'>);
+      } catch {
+        // background not ready yet; retry
+      }
+      setTimeout(refresh, 5000);
+    }
+    refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function triggerNow() {
+    await bc.runtime.sendMessage({ type: 'upload-now' });
+  }
+
+  if (!status) return null;
+  return (
+    <div className="rounded border border-slate-700 bg-slate-900 p-3 space-y-2">
+      <div className="text-xs uppercase tracking-wider text-slate-400">File uploads</div>
+      <div className="text-xs text-slate-300">Pending: {status.pendingCount}</div>
+      {status.lastRunAt && (
+        <div className="text-xs text-slate-500">
+          Last checked {new Date(status.lastRunAt).toLocaleTimeString()}
+        </div>
+      )}
+      {status.lastError && <div className="text-xs text-red-300">{status.lastError}</div>}
+      <button onClick={triggerNow} className="w-full rounded border border-slate-700 py-1 text-xs text-slate-300 hover:bg-slate-800">
+        Check now
       </button>
     </div>
   );

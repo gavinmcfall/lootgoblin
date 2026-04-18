@@ -1,3 +1,9 @@
+// NOTE: v1 schema targets SQLite. The `unixepoch()` timestamp defaults are
+// SQLite-specific; running `drizzle-kit generate` against a Postgres URL
+// will produce a migration that fails at runtime. Full Postgres parity is
+// tracked as post-v1 work — until then, Postgres deployments require a
+// separate schema file per dialect or an ORM-level abstraction layer.
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 
@@ -5,13 +11,29 @@ import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-or
 const id = () => text('id').primaryKey();
 const ts = (name: string) => integer(name, { mode: 'timestamp_ms' });
 
+export const sourceCredentials = sqliteTable(
+  'source_credentials',
+  {
+    id: id(),
+    sourceId: text('source_id').notNull(),
+    label: text('label').notNull(),
+    kind: text('kind').notNull(), // cookie-jar | oauth-token | api-key
+    encryptedBlob: blob('encrypted_blob').notNull(),
+    expiresAt: ts('expires_at'),
+    lastUsedAt: ts('last_used_at'),
+    status: text('status').notNull().default('active'),
+    createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => ({ labelUniq: uniqueIndex('src_cred_label_uniq').on(t.sourceId, t.label) }),
+);
+
 export const destinations = sqliteTable('destinations', {
   id: id(),
   name: text('name').notNull(),
   type: text('type').notNull(), // 'filesystem'
   config: text('config', { mode: 'json' }).notNull(),
   packager: text('packager').notNull(), // 'manyfold-v0'
-  credentialId: text('credential_id'), // nullable FK
+  credentialId: text('credential_id').references(() => sourceCredentials.id), // nullable FK
   createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
   updatedAt: ts('updated_at').notNull().default(sql`(unixepoch() * 1000)`),
 });
@@ -25,8 +47,8 @@ export const items = sqliteTable(
     contentType: text('content_type').notNull(),
     sourceUrl: text('source_url').notNull(),
     snapshot: text('snapshot', { mode: 'json' }),
-    destinationId: text('destination_id'),
-    credentialId: text('credential_id'),
+    destinationId: text('destination_id').references(() => destinations.id), // nullable FK
+    credentialId: text('credential_id').references(() => sourceCredentials.id), // nullable FK
     status: text('status').notNull(), // queued|running|done|failed|skipped
     retryCount: integer('retry_count').notNull().default(0),
     lastError: text('last_error'),
@@ -45,28 +67,12 @@ export const items = sqliteTable(
 
 export const itemEvents = sqliteTable('item_events', {
   id: id(),
-  itemId: text('item_id').notNull(),
+  itemId: text('item_id').notNull().references(() => items.id, { onDelete: 'cascade' }),
   kind: text('kind').notNull(),
   message: text('message'),
   meta: text('meta', { mode: 'json' }),
   createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
 });
-
-export const sourceCredentials = sqliteTable(
-  'source_credentials',
-  {
-    id: id(),
-    sourceId: text('source_id').notNull(),
-    label: text('label').notNull(),
-    kind: text('kind').notNull(), // cookie-jar | oauth-token | api-key
-    encryptedBlob: blob('encrypted_blob').notNull(),
-    expiresAt: ts('expires_at'),
-    lastUsedAt: ts('last_used_at'),
-    status: text('status').notNull().default('active'),
-    createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
-  },
-  (t) => ({ labelUniq: uniqueIndex('src_cred_label_uniq').on(t.sourceId, t.label) }),
-);
 
 export const apiKeys = sqliteTable('api_keys', {
   id: id(),

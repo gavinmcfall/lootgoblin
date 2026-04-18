@@ -8,9 +8,10 @@ import { fileURLToPath } from 'node:url';
 import * as schema from './schema';
 
 let cached: ReturnType<typeof drizzleSqlite> | ReturnType<typeof drizzlePg> | null = null;
+let cachedUrl: string | null = null;
 
 export function getDb(url = process.env.DATABASE_URL ?? 'file:./lootgoblin.db') {
-  if (cached) return cached;
+  if (cached && cachedUrl === url) return cached;
   if (url.startsWith('postgres')) {
     const client = postgres(url);
     cached = drizzlePg(client, { schema });
@@ -21,13 +22,21 @@ export function getDb(url = process.env.DATABASE_URL ?? 'file:./lootgoblin.db') 
     sqlite.pragma('foreign_keys = ON');
     cached = drizzleSqlite(sqlite, { schema });
   }
+  cachedUrl = url;
   return cached;
 }
 
+export function resetDbCache(): void {
+  cached = null;
+  cachedUrl = null;
+}
+
 export async function runMigrations(url = process.env.DATABASE_URL ?? 'file:./lootgoblin.db') {
-  // Resolves relative to this compiled file, not process.cwd(),
-  // so it works whether Next.js runs from repo root or apps/server/.
-  const migrationsFolder = fileURLToPath(new URL('./migrations', import.meta.url));
+  // MIGRATIONS_DIR env override lets standalone/bundled builds (e.g. Next.js
+  // standalone output) point at the real migrations folder, since import.meta.url
+  // would otherwise resolve into .next/server/chunks/… at runtime.
+  const migrationsFolder =
+    process.env.MIGRATIONS_DIR ?? fileURLToPath(new URL('./migrations', import.meta.url));
   if (url.startsWith('postgres')) {
     const client = postgres(url);
     await migratePg(drizzlePg(client), { migrationsFolder });

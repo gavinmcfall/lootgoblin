@@ -46,3 +46,13 @@ input, button { font: inherit; }
 button { cursor: pointer; border: none; }
 input { display: block; width: 100%; box-sizing: border-box; }
 label > span { display: block; margin-bottom: 4px; }
+.p-3 { padding: 12px; }
+.flex { display: flex; }
+.justify-between { justify-content: space-between; }
+.items-center { align-items: center; }
+.uppercase { text-transform: uppercase; }
+.mt-2 { margin-top: 8px; }
+.space-y-2 > * + * { margin-top: 8px; }
+.text-amber-300 { color: #fcd34d; }
+.text-red-300 { color: #fca5a5; }
+.disabled\:opacity-40:disabled { opacity: 0.4; }

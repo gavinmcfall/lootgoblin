@@ -98,6 +98,20 @@ loose STLs) if the Manyfold UI needs them separately.
 - No 429s or throttles observed across ~20 probing requests in quick succession.
 - Conservative default for the site-config: **1 req / 2s**, matching the spec.
 
+## Anti-bot observations (critical — 2026-04-18 smoke test)
+
+Real-world testing against `/api/v1/design-service/instance/{id}/f3mf` from a server-side Node `fetch` (via this adapter, running inside Next.js) consistently returns:
+
+```
+HTTP 418 — body: {"captchaId":"<id>","code":1,"error":"We need to confirm that you are not a robot."}
+```
+
+Same cookies + same User-Agent + full client hints (`sec-ch-ua`, `sec-fetch-*`) DO work for `/design-service/design/{id}` and `/design-user-service/my/preference`. The `/f3mf` endpoint specifically is gated more strictly — likely TLS-fingerprint / behavioral anti-bot, not a pure header check.
+
+**Architectural implication:** for v1, file downloads from MakerWorld must be performed by the **browser extension** (Plan D), which runs in the user's authenticated browser with genuine fingerprint + passed anti-bot state. The server-side adapter is still responsible for metadata; the extension fetches the f3mf URL + streams bytes to a new lootgoblin upload endpoint.
+
+See `docs/superpowers/specs/2026-04-18-lootgoblin-v1-design.md` §3.4 pipeline addendum (to be added in a Plan D addendum spec).
+
 ## Error classification
 
 Responses observed during discovery:

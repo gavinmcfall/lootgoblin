@@ -43,14 +43,20 @@ interface CookieEntry {
 }
 
 /**
- * Filter a cookie jar by domain suffix and join as a single Cookie header value.
+ * Filter a cookie jar by domain (exact match on host, or any subdomain match) and
+ * join as a single Cookie header value. Handles both `.makerworld.com` (leading dot
+ * for subdomains) and `makerworld.com` (exact host) — real cookie jars contain both.
  */
 export function buildCookieHeader(
   jar: CookieEntry[],
   domainSuffix = '.makerworld.com',
 ): string {
+  const bareHost = domainSuffix.replace(/^\./, '');
   return jar
-    .filter(c => c.domain === domainSuffix || c.domain.endsWith(domainSuffix))
+    .filter(c => {
+      const d = c.domain.replace(/^\./, '');
+      return d === bareHost || d.endsWith('.' + bareHost);
+    })
     .map(c => `${c.name}=${c.value}`)
     .join('; ');
 }
@@ -73,18 +79,31 @@ export async function mwFetch(
   const { cookies } = JSON.parse(credentialBlob) as { cookies: CookieEntry[] };
   const cookieHeader = buildCookieHeader(cookies);
 
+  // MakerWorld sits behind Cloudflare; cf_clearance cookies are bound to a
+  // (UA + IP) pair. Send a realistic browser UA so Cloudflare doesn't 403 us.
+  // Caller-supplied init.headers can override any of these.
   const headers: Record<string, string> = {
-    'User-Agent': 'lootgoblin/1.0 (+https://github.com/gavinmcfall/lootgoblin)',
+    'User-Agent':
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
     'Referer': 'https://makerworld.com/',
+    'Origin': 'https://makerworld.com',
+    // Client hints + fetch metadata — some endpoints gate on presence.
+    'sec-ch-ua': '"Chromium";v="145", "Not:A-Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Linux"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
     ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     ...(init.headers ?? {}),
   };
 
   const response = await globalThis.fetch(url, { ...init, headers });
 
-  if (response.ok) {
-    return response;
-  }
+  if (response.ok) return response;
 
   const { status } = response;
 

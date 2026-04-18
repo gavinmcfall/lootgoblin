@@ -1,6 +1,12 @@
 // WXT injects the `browser` global via webextension-polyfill; this module
 // narrows to the specific APIs LootGoblin uses and papers over vendor edges.
-// Using `browser.*` works on Chrome/Firefox/Edge/Opera.
+//
+// IMPORTANT: content scripts have a restricted surface — `browser.tabs`,
+// `browser.cookies`, and `browser.alarms` are UNDEFINED in that context.
+// Accessing them at module-load time (even just `browser.tabs.onUpdated`)
+// throws a `Cannot read properties of undefined` error. We use getters +
+// thin wrappers so the expressions are only evaluated when the caller
+// actually uses them from a context where the API exists.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare const browser: any;
@@ -24,13 +30,21 @@ export const bc = {
     },
   },
   tabs: {
-    query: (q: { active?: boolean; currentWindow?: boolean }) => browser.tabs.query(q),
-    onUpdated: browser.tabs.onUpdated,
+    query: (q: { active?: boolean; currentWindow?: boolean }) => browser.tabs?.query(q),
+    get onUpdated() {
+      return browser.tabs?.onUpdated;
+    },
   },
   runtime: {
-    sendMessage: browser.runtime.sendMessage,
-    onMessage: browser.runtime.onMessage,
-    id: browser.runtime.id as string,
+    sendMessage: (m: unknown) => browser.runtime.sendMessage(m),
+    get onMessage() {
+      return browser.runtime.onMessage;
+    },
+    get id() {
+      return browser.runtime?.id as string | undefined;
+    },
   },
-  alarms: browser.alarms,
+  get alarms() {
+    return browser.alarms;
+  },
 };

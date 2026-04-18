@@ -1,4 +1,5 @@
 .superpowers/
+.repoql/
 .claude/.worklog.lock
 .claude/.sid-*
 .claude/.session-tracker

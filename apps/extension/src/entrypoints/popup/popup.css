@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-width: 320px;
+  background: #0b0d12;
+  color: #e8eaed;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+}
+#root { padding: 16px; }
+
+/* lightweight utility-like classes we use in the React tree */
+.space-y-3 > * + * { margin-top: 12px; }
+.text-xs { font-size: 11px; }
+.text-sm { font-size: 13px; }
+.text-3xl { font-size: 28px; }
+.font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tracking-wider { letter-spacing: 0.08em; }
+.font-medium { font-weight: 500; }
+.text-center { text-align: center; }
+.text-slate-100 { color: #f1f5f9; }
+.text-slate-200 { color: #e2e8f0; }
+.text-slate-300 { color: #cbd5e1; }
+.text-slate-400 { color: #94a3b8; }
+.text-slate-500 { color: #64748b; }
+.text-emerald-50 { color: #ecfdf5; }
+.text-emerald-300 { color: #6ee7b7; }
+.text-red-400 { color: #f87171; }
+.bg-emerald-600 { background: #059669; }
+.hover\:bg-emerald-500:hover { background: #10b981; }
+.hover\:bg-slate-800:hover { background: #1e293b; }
+.bg-slate-900 { background: #0f172a; }
+.border { border: 1px solid; }
+.border-slate-700 { border-color: #334155; }
+.border-emerald-700 { border-color: #047857; }
+.rounded { border-radius: 4px; }
+.p-2 { padding: 8px; }
+.py-2 { padding-top: 8px; padding-bottom: 8px; }
+.py-1\.5 { padding-top: 6px; padding-bottom: 6px; }
+.mt-1 { margin-top: 4px; }
+.w-full { width: 100%; }
+.block { display: block; }
+input, button { font: inherit; }
+button { cursor: pointer; border: none; }
+input { display: block; width: 100%; box-sizing: border-box; }
+label > span { display: block; margin-bottom: 4px; }

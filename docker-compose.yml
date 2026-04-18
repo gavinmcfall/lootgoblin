@@ -1,0 +1,32 @@
+services:
+  lootgoblin:
+    image: ghcr.io/gavinmcfall/lootgoblin:latest
+    container_name: lootgoblin
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      PORT: 7393
+      LOOTGOBLIN_SECRET: ${LOOTGOBLIN_SECRET}
+      DATABASE_URL: ${DATABASE_URL:-file:/config/lootgoblin.db}
+      AUTH_METHODS: ${AUTH_METHODS:-forms}
+      TZ: ${TZ:-Pacific/Auckland}
+      # OIDC (optional — leave unset for forms-only auth)
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+      OIDC_ADMIN_GROUP: ${OIDC_ADMIN_GROUP:-}
+      # OpenTelemetry (optional)
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-lootgoblin}
+      # Worker tuning
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      WORKER_PER_SOURCE_CONCURRENCY: ${WORKER_PER_SOURCE_CONCURRENCY:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ./data:/config
+      # Point this at wherever your library lives. The path inside the
+      # container is matched to a destination's config.path in the UI.
+      - ${LIBRARY_HOST_PATH:-./library}:/library
+    ports:
+      - "${HOST_PORT:-7393}:7393"

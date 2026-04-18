@@ -19,7 +19,7 @@ const TOKEN_RE = /\{([a-z_]+)(\?)?\}/g;
 
 export function expandTemplate(template: string, ctx: NamingContext): string {
   const expanded = template.replace(TOKEN_RE, (_m, name: string, optional?: string) => {
-    const value = (ctx as Record<string, string | undefined>)[name];
+    const value = (ctx as unknown as Record<string, string | undefined>)[name];
     if (value === undefined) {
       if (optional) return '';
       throw new Error(`Unknown token: ${name}`);

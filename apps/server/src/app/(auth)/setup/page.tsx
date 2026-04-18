@@ -1,26 +1,48 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { AdminStep } from './steps/AdminStep';
+import { LibraryStep } from './steps/LibraryStep';
+import { ExtensionPairStep } from './steps/ExtensionPairStep';
+
+type Step = 'admin' | 'library' | 'extension';
+
+const STEPS: Step[] = ['admin', 'library', 'extension'];
 
 export default function SetupPage() {
-  const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState<Step>('admin');
 
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const form = new FormData(e.currentTarget);
-    const res = await fetch('/api/setup', { method: 'POST', body: form });
-    if (res.ok) window.location.href = '/login';
-    else setError((await res.json()).error ?? 'Setup failed');
+  // Preserve step across refresh via URL hash
+  useEffect(() => {
+    const hash = window.location.hash.replace('#', '') as Step;
+    if (STEPS.includes(hash)) setStep(hash);
+  }, []);
+
+  useEffect(() => {
+    window.location.hash = step;
+  }, [step]);
+
+  function advance(next: Step | 'done') {
+    if (next === 'done') {
+      window.location.hash = '';
+      window.location.href = '/';
+    } else {
+      setStep(next);
+    }
   }
 
   return (
-    <main className="mx-auto mt-20 max-w-md p-8 space-y-4">
-      <h1 className="text-xl font-semibold">Welcome to LootGoblin — create admin</h1>
-      <form onSubmit={onSubmit} className="space-y-3">
-        <input name="username" placeholder="Username" required className="w-full rounded border border-slate-700 bg-slate-900 p-2" />
-        <input name="password" type="password" placeholder="Password (min 12 chars)" required className="w-full rounded border border-slate-700 bg-slate-900 p-2" />
-        <button type="submit" className="rounded bg-emerald-600 px-4 py-2 w-full">Create admin</button>
-        {error && <p className="text-red-400 text-sm">{error}</p>}
-      </form>
+    <main className="mx-auto mt-20 max-w-md space-y-6 p-8">
+      <div className="flex items-center justify-center gap-2 text-[10px] uppercase tracking-wider">
+        {STEPS.map((s, i) => (
+          <div key={s} className="flex items-center gap-2">
+            <span className={step === s ? 'text-emerald-300' : 'text-slate-500'}>{s}</span>
+            {i < STEPS.length - 1 && <span className="text-slate-700">→</span>}
+          </div>
+        ))}
+      </div>
+      {step === 'admin' && <AdminStep onDone={() => advance('library')} />}
+      {step === 'library' && <LibraryStep onDone={() => advance('extension')} onSkip={() => advance('extension')} />}
+      {step === 'extension' && <ExtensionPairStep onDone={() => advance('done')} />}
     </main>
   );
 }

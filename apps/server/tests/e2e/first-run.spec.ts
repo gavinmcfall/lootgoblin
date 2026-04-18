@@ -6,16 +6,24 @@ test.beforeEach(() => {
 });
 
 test('first-run wizard creates admin and signs in', async ({ page }) => {
+  // Step 1: redirects to /setup on first run
   await page.goto('/');
   await expect(page).toHaveURL(/\/setup/);
+
+  // Step 2: admin step — fill and submit
   await page.fill('input[name=username]', 'admin');
   await page.fill('input[name=password]', 'correct-horse-battery-staple');
   await page.click('button[type=submit]');
-  await expect(page).toHaveURL(/\/login/);
-  await page.fill('input[placeholder=Username]', 'admin');
-  await page.fill('input[placeholder=Password]', 'correct-horse-battery-staple');
-  await page.click('button[type=submit]');
-  // After sign-in the middleware+(app)/page.tsx redirects → /activity → 404 (page lands in C-4)
-  // Assert we land on /activity (regardless of whether that page exists yet)
+
+  // After admin creation + auto sign-in, wizard advances to library step
+  await expect(page).toHaveURL(/\/setup/);
+
+  // Step 3: skip library creation
+  await page.click('button:has-text("Skip")');
+
+  // Step 4: extension pairing — finish setup
+  await page.click('button:has-text("Finish setup")');
+
+  // After finishing, the wizard redirects to /activity
   await expect(page).toHaveURL(/\/activity$/);
 });

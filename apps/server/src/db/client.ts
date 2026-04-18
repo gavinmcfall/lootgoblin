@@ -36,7 +36,7 @@ export async function runMigrations(url = process.env.DATABASE_URL ?? 'file:./lo
   // standalone output) point at the real migrations folder, since import.meta.url
   // would otherwise resolve into .next/server/chunks/… at runtime.
   const migrationsFolder =
-    process.env.MIGRATIONS_DIR ?? fileURLToPath(new URL('./migrations', import.meta.url));
+    process.env.MIGRATIONS_DIR ?? fileURLToPath(new URL(/* webpackIgnore: true */ './migrations', import.meta.url));
   if (url.startsWith('postgres')) {
     const client = postgres(url);
     await migratePg(drizzlePg(client), { migrationsFolder });

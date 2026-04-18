@@ -16,5 +16,5 @@ export function classifyError(err: unknown): { retryable: boolean; reason: strin
 export function nextRetryDelayMs(policy: RetryPolicy, attemptsSoFar: number): number | null {
   if (attemptsSoFar >= policy.maxRetries) return null;
   const idx = Math.min(attemptsSoFar, policy.backoffMs.length - 1);
-  return policy.backoffMs[idx];
+  return policy.backoffMs[idx] ?? null;
 }

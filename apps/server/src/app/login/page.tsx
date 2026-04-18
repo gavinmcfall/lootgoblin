@@ -17,7 +17,7 @@ export default function LoginPage() {
       <form onSubmit={onSubmit} className="space-y-3">
         <input value={username} onChange={(e) => setU(e.target.value)} placeholder="Username" className="w-full rounded border border-slate-700 bg-slate-900 p-2" />
         <input type="password" value={password} onChange={(e) => setP(e.target.value)} placeholder="Password" className="w-full rounded border border-slate-700 bg-slate-900 p-2" />
-        <button className="rounded bg-emerald-600 px-4 py-2 w-full">Sign in</button>
+        <button type="submit" className="rounded bg-emerald-600 px-4 py-2 w-full">Sign in</button>
         {err && <p className="text-red-400 text-sm">{err}</p>}
       </form>
       <a href="/api/auth/signin/oidc" className="block text-center text-sm text-slate-400 hover:text-slate-200">Sign in with OIDC</a>

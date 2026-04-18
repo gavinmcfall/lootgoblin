@@ -31,6 +31,53 @@ export function resetDbCache(): void {
   cachedUrl = null;
 }
 
+/**
+ * Returns the number of rows in the users table.
+ * Uses a raw SQL query to avoid the TypeScript union-type incompatibility
+ * that arises when calling dialect-specific methods on the union return type
+ * of `getDb()`.
+ */
+export async function countUsers(): Promise<number> {
+  const url = process.env.DATABASE_URL ?? 'file:./lootgoblin.db';
+  if (url.startsWith('postgres')) {
+    const client = postgres(url);
+    const result = await client`SELECT count(*)::int AS value FROM users`;
+    await client.end();
+    return Number(result[0]?.value ?? 0);
+  } else {
+    const file = url.replace(/^file:/, '');
+    const sqlite = new Database(file);
+    const row = sqlite.prepare('SELECT count(*) AS value FROM users').get() as { value: number } | undefined;
+    sqlite.close();
+    return row?.value ?? 0;
+  }
+}
+
+/**
+ * Inserts a new user row. Uses raw SQL to avoid the TypeScript union-type
+ * incompatibility on `getDb()`.
+ */
+export async function insertUser(user: {
+  id: string;
+  username: string;
+  passwordHash: string | null;
+  role: string;
+}): Promise<void> {
+  const url = process.env.DATABASE_URL ?? 'file:./lootgoblin.db';
+  if (url.startsWith('postgres')) {
+    const client = postgres(url);
+    await client`INSERT INTO users (id, username, password_hash, role) VALUES (${user.id}, ${user.username}, ${user.passwordHash}, ${user.role})`;
+    await client.end();
+  } else {
+    const file = url.replace(/^file:/, '');
+    const sqlite = new Database(file);
+    sqlite
+      .prepare('INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, unixepoch() * 1000)')
+      .run(user.id, user.username, user.passwordHash, user.role);
+    sqlite.close();
+  }
+}
+
 export async function runMigrations(url = process.env.DATABASE_URL ?? 'file:./lootgoblin.db') {
   // MIGRATIONS_DIR env override lets standalone/bundled builds (e.g. Next.js
   // standalone output) point at the real migrations folder, since import.meta.url

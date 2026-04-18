@@ -13,3 +13,8 @@ build/
 
 # TypeScript
 tsconfig.tsbuildinfo
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/

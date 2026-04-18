@@ -21,6 +21,10 @@ export async function middleware(req: NextRequest) {
   // Extension-facing endpoints — use x-api-key auth inside the handler, no session needed.
   if (pathname.startsWith('/api/v1/items/awaiting-upload')) return NextResponse.next();
   if (pathname.startsWith('/api/v1/items/') && pathname.endsWith('/upload')) return NextResponse.next();
+  if (pathname.startsWith('/api/v1/site-configs')) return NextResponse.next();
+  if (pathname.startsWith('/api/v1/sources')) return NextResponse.next();
+  if (pathname.startsWith('/api/v1/source-credentials/')) return NextResponse.next();
+  if (pathname === '/api/v1/queue') return NextResponse.next(); // POST tag from extension; GET list is session-only but check happens in handler
   if (PUBLIC.has(pathname)) return NextResponse.next();
   const session = await auth();
   if (!session) return NextResponse.redirect(new URL('/login', req.url));

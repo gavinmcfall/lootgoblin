@@ -29,9 +29,10 @@ export async function POST(req: Request, context: { params: Promise<{ source: st
   return NextResponse.json({ id, label });
 }
 
-export async function GET(_req: Request, context: { params: Promise<{ source: string }> }) {
+export async function GET(req: Request, context: { params: Promise<{ source: string }> }) {
   const { source } = await context.params;
-  if (!(await auth())) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const apiKey = req.headers.get('x-api-key');
+  if (!(await auth()) && !apiKey) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const rows = await (getDb() as any)
     .select({ id: schema.sourceCredentials.id, label: schema.sourceCredentials.label, status: schema.sourceCredentials.status, lastUsedAt: schema.sourceCredentials.lastUsedAt })
     .from(schema.sourceCredentials)

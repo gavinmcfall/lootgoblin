@@ -1,0 +1,116 @@
+# Values for bjw-s/helm-charts app-template v3
+# https://bjw-s.github.io/helm-charts/docs/app-template/
+#
+# Install:
+#   helm repo add bjw-s https://bjw-s.github.io/helm-charts
+#   helm upgrade --install lootgoblin bjw-s/app-template \
+#     --namespace lootgoblin --create-namespace \
+#     --values values.yaml
+#
+# Pre-requisites:
+#   kubectl create ns lootgoblin
+#   # Create the secret (see lootgoblin-secret.yaml below)
+#   # Create the persistent-volume claim for /config
+
+controllers:
+  lootgoblin:
+    type: deployment
+    replicas: 1
+    strategy: Recreate  # SQLite file + single worker pool — no rolling updates
+    containers:
+      app:
+        image:
+          repository: ghcr.io/gavinmcfall/lootgoblin
+          # Pin by digest for reproducibility — Renovate keeps this current
+          # (see renovate.json custom manager for this file).
+          tag: "latest@sha256:REPLACE_WITH_DIGEST_FROM_GITHUB_RELEASE"
+          pullPolicy: IfNotPresent
+        env:
+          PORT: "7393"
+          DATABASE_URL: "file:/config/lootgoblin.db"
+          TZ: "Pacific/Auckland"
+          AUTH_METHODS: "forms,oidc"
+          OIDC_ISSUER_URL: "https://auth.example.com"
+          OIDC_CLIENT_ID: "lootgoblin"
+          OIDC_REDIRECT_URI: "https://lootgoblin.example.com/api/auth/callback/oidc"
+          OIDC_ADMIN_GROUP: "homelab-admins"
+          OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability:4318"
+          LOG_LEVEL: "info"
+          WORKER_CONCURRENCY: "2"
+        envFrom:
+          # Contains LOOTGOBLIN_SECRET, OIDC_CLIENT_SECRET, optional AUTH_SECRET.
+          - secretRef:
+              name: lootgoblin-secret
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          readOnlyRootFilesystem: false  # /config + /tmp need writes
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 10m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+        probes:
+          liveness:
+            enabled: true
+            custom: true
+            spec:
+              httpGet: { path: /api/health, port: 7393 }
+              initialDelaySeconds: 10
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+          readiness:
+            enabled: true
+            custom: true
+            spec:
+              httpGet: { path: /api/health, port: 7393 }
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 3
+              failureThreshold: 2
+
+service:
+  app:
+    controller: lootgoblin
+    ports:
+      http:
+        port: 7393
+
+ingress:
+  app:
+    enabled: true
+    className: internal  # replace with your IngressClass
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: lootgoblin.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+            service:
+              identifier: app
+              port: http
+    tls:
+      - hosts: [lootgoblin.example.com]
+        secretName: lootgoblin-tls
+
+persistence:
+  config:
+    enabled: true
+    existingClaim: lootgoblin-config  # PVC you created ahead of install
+    globalMounts:
+      - path: /config
+  library:
+    # Example: NFS mount from a NAS where your existing Manyfold library lives.
+    # Swap for hostPath / CSI / whatever suits your cluster.
+    type: nfs
+    server: nas.example.com
+    path: /mnt/Library/3DModels
+    globalMounts:
+      - path: /library/3DModels

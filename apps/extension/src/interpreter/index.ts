@@ -21,11 +21,19 @@ export function runInterpreter(config: SiteConfig): void {
 }
 
 function applyTrigger(config: SiteConfig, trigger: Trigger): void {
+  if (trigger.urlMatch && !trigger.urlMatch.some((p) => matchGlob(p, location.href))) return;
   const roots = document.querySelectorAll<HTMLElement>(trigger.selector);
   roots.forEach((root) => {
     const data = extract(root, trigger.extract);
     inject(root, trigger.inject, () => onTagClick(config, data));
   });
+}
+
+function matchGlob(pattern: string, url: string): boolean {
+  const re = new RegExp(
+    '^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$',
+  );
+  return re.test(url);
 }
 
 async function onTagClick(config: SiteConfig, data: Record<string, string | null>): Promise<void> {

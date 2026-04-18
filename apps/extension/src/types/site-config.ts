@@ -8,6 +8,10 @@ export interface ExtractRule {
 export interface Trigger {
   name: string;
   selector: string;
+  // Optional: per-trigger URL patterns (glob-style with `*`). If set, the trigger
+  // only runs when the current page URL matches at least one pattern. If unset,
+  // the trigger runs everywhere the site-config matches.
+  urlMatch?: string[];
   extract: Record<string, ExtractRule>;
   inject: { button?: { template: string; position: 'append' | 'prepend' | 'topbar'; label: string } };
 }

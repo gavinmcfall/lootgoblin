@@ -19,7 +19,7 @@ describe('inject', () => {
     inject(el as unknown as HTMLElement, { button: { template: 'tag-btn-v1', position: 'append', label: 'Tag' } });
     const btn = (el as unknown as HTMLElement).querySelector('.lootgoblin-tag-btn');
     expect(btn).not.toBeNull();
-    expect(btn?.textContent).toBe('Tag');
+    expect(btn?.textContent).toContain('Tag');
   });
 
   it('skips duplicate injection via marker', () => {

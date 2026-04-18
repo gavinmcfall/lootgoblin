@@ -12,6 +12,9 @@ export interface ExtractRule {
 export interface Trigger {
   name: string;
   selector: string;
+  // Optional per-trigger URL glob patterns — if set, trigger only runs when
+  // the page URL matches. Interpreter version 1+ supports this field.
+  urlMatch?: string[];
   extract: Record<string, ExtractRule>;
   inject: { button?: { template: string; position: string; label: string } };
 }

@@ -1,0 +1,128 @@
+name: release-server
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write    # create GitHub Release
+  packages: write    # push to GHCR
+  id-token: write    # OIDC for attest-build-provenance
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository_owner }}/lootgoblin
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/lootgoblin
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build and push (multi-arch, provenance, sbom)
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest build provenance (GHCR)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/lootgoblin
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest build provenance (Docker Hub)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/lootgoblin
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog from commits
+        id: changelog
+        shell: bash
+        run: |
+          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV" ]; then
+            LOG=$(git log --pretty=format:'- %s (%h)' HEAD)
+          else
+            LOG=$(git log --pretty=format:'- %s (%h)' $PREV..HEAD)
+          fi
+          {
+            echo 'body<<EOF'
+            echo "$LOG"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Server ${{ github.ref_name }}
+          body: |
+            ## Server ${{ github.ref_name }}
+
+            ### Changes
+            ${{ steps.changelog.outputs.body }}
+
+            ### Pin by digest (recommended)
+
+            ```
+            ghcr.io/${{ github.repository_owner }}/lootgoblin@${{ needs.build.outputs.digest }}
+            ```
+
+            ${{ secrets.DOCKERHUB_USERNAME && format('docker.io/{0}/lootgoblin@{1}', secrets.DOCKERHUB_USERNAME, needs.build.outputs.digest) || '' }}
+
+            ### Verify build provenance
+
+            ```
+            gh attestation verify oci://ghcr.io/${{ github.repository_owner }}/lootgoblin@${{ needs.build.outputs.digest }} \
+              --owner ${{ github.repository_owner }}
+            ```

@@ -1,0 +1,51 @@
+name: release-extension
+
+on:
+  push:
+    tags: ['extension-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm run build --workspace=extension
+      - run: npm run build:firefox --workspace=extension
+      - run: npm run build:edge --workspace=extension
+      - run: npm run zip:all --workspace=extension
+
+      - name: Compute SHA256 checksums
+        shell: bash
+        working-directory: apps/extension/.output
+        run: |
+          sha256sum *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Extension ${{ github.ref_name }}
+          body: |
+            ## Extension ${{ github.ref_name }}
+
+            ### Artifacts
+
+            - `lootgoblin-chrome-<ver>.zip` — Chrome / Edge / Opera (sideload via `chrome://extensions` developer mode)
+            - `lootgoblin-firefox-<ver>.zip` — Firefox (sideload via `about:debugging` → This Firefox → Load Temporary Add-on)
+            - `lootgoblin-edge-<ver>.zip` — Edge-optimized build
+            - `lootgoblin-firefox-source-<ver>.zip` — AMO reproducible-source submission
+            - `SHA256SUMS` — sha256 checksums
+
+            Chrome Web Store + Firefox AMO links will appear here once reviewed.
+          files: |
+            apps/extension/.output/*.zip
+            apps/extension/.output/SHA256SUMS

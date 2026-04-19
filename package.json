@@ -3,8 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "workspaces": ["apps/*"],
-  "engines": { "node": ">=22" },
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "npm run dev --workspace=server",
     "build": "npm run build --workspaces --if-present",
@@ -13,7 +17,10 @@
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
+    "adm-zip": "^0.5.17",
+    "playwright": "^1.59.1",
     "prettier": "^3.3.0",
+    "sharp": "^0.34.5",
     "typescript": "^5.6.0"
   }
 }

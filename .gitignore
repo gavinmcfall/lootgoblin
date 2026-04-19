@@ -9,3 +9,11 @@ node_modules/
 **/lootgoblin.db-journal
 **/lootgoblin.db-wal
 **/lootgoblin.db-shm
+
+# WXT auto-generated — regenerated on every dev/build
+apps/extension/.wxt/
+apps/extension/.output/
+
+# One-off design-feed artifacts produced by scrape.mjs + build-mw-scrape.mjs
+mw-scrape/
+mw-scrape.zip

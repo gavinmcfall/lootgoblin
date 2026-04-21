@@ -10,7 +10,6 @@
     "node": ">=22"
   },
   "scripts": {
-    "prepare": "git config core.hooksPath .githooks",
     "dev": "npm run dev --workspace=server",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

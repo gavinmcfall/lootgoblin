@@ -12,10 +12,6 @@
 tests
 coverage
 .env*
-.claude
-.superpowers
-.repoql
-.playwright-mcp
 planning
 apps/extension
 apps/server/lootgoblin.db*

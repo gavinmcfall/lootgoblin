@@ -1,7 +1,3 @@
-.superpowers/
-.repoql/
-.claude/
-.playwright-mcp/
 node_modules/
 
 # Planning / IP / research — stays local, never committed

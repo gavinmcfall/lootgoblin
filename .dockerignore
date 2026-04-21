@@ -16,6 +16,6 @@ coverage
 .superpowers
 .repoql
 .playwright-mcp
-docs/superpowers
+planning
 apps/extension
 apps/server/lootgoblin.db*

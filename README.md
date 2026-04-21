@@ -63,10 +63,6 @@ cd apps/server && npx playwright test  # E2E first-run wizard
 
 Requires Node 22+.
 
-## Design
-
-The v1 design spec lives at **[docs/superpowers/specs/2026-04-18-lootgoblin-v1-design.md](docs/superpowers/specs/2026-04-18-lootgoblin-v1-design.md)**. Implementation plans (A–E): **[docs/superpowers/plans/](docs/superpowers/plans/)**.
-
 ## License
 
 MIT.

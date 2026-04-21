@@ -1,10 +1,11 @@
 .superpowers/
 .repoql/
-.claude/.worklog.lock
-.claude/.sid-*
-.claude/.session-tracker
+.claude/
 .playwright-mcp/
 node_modules/
+
+# Planning / IP / research — stays local, never committed
+/planning/
 **/lootgoblin.db
 **/lootgoblin.db-journal
 **/lootgoblin.db-wal

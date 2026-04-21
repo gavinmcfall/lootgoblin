@@ -108,9 +108,7 @@ HTTP 418 — body: {"captchaId":"<id>","code":1,"error":"We need to confirm that
 
 Same cookies + same User-Agent + full client hints (`sec-ch-ua`, `sec-fetch-*`) DO work for `/design-service/design/{id}` and `/design-user-service/my/preference`. The `/f3mf` endpoint specifically is gated more strictly — likely TLS-fingerprint / behavioral anti-bot, not a pure header check.
 
-**Architectural implication:** for v1, file downloads from MakerWorld must be performed by the **browser extension** (Plan D), which runs in the user's authenticated browser with genuine fingerprint + passed anti-bot state. The server-side adapter is still responsible for metadata; the extension fetches the f3mf URL + streams bytes to a new lootgoblin upload endpoint.
-
-See `docs/superpowers/specs/2026-04-18-lootgoblin-v1-design.md` §3.4 pipeline addendum (to be added in a Plan D addendum spec).
+**Architectural implication:** for v1, file downloads from MakerWorld must be performed by the **browser extension**, which runs in the user's authenticated browser with genuine fingerprint + passed anti-bot state. The server-side adapter is still responsible for metadata; the extension fetches the f3mf URL + streams bytes to a new lootgoblin upload endpoint.
 
 ## Error classification
 

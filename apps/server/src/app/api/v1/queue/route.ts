@@ -1,12 +1,11 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@/auth';
 import { and, desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
 import { enqueueItem } from '@/workers/queue';
 import { randomUUID } from 'node:crypto';
 
 export async function POST(req: Request) {
-  const session = await auth();
+  const session = null; // TODO: auth pending V2-001-T2
   const apiKey = req.headers.get('x-api-key');
   if (!session && !apiKey) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const body = await req.json() as {
@@ -51,7 +50,7 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-  const session = await auth();
+  const session = null; // TODO: auth pending V2-001-T2
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const db = getDb() as any;
   const rows = await db.select().from(schema.items).orderBy(desc(schema.items.createdAt)).limit(200);

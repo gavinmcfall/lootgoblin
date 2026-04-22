@@ -1,5 +1,4 @@
 import { redirect } from 'next/navigation';
-import { auth } from '@/auth';
 import { runMigrations, countUsers } from '@/db/client';
 import { Sidebar } from '@/components/shell/Sidebar';
 import { Topbar } from '@/components/shell/Topbar';
@@ -10,8 +9,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   await runMigrations();
   const userCount = await countUsers();
   if (userCount === 0) redirect('/setup');
-  const session = await auth();
-  if (!session) redirect('/login');
+  // TODO: auth integration pending V2-001-T2 (BetterAuth install)
+  // Session validation will be added in the auth plugin.
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-100">
       <Sidebar />

@@ -1,0 +1,4 @@
+-- V2 cleanup: remove Auth.js v5 wiring
+-- CollectionACL table and Collection.visibility column have been removed
+-- BetterAuth replaces Auth.js v5 in V2-001-T2
+-- This migration is a marker; all schema changes were consolidated in prior migrations.

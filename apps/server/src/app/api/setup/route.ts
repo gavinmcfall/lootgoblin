@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { runMigrations, countUsers, insertUser } from '@/db/client';
-import { hashPassword } from '@/auth/password';
+
+// TODO: auth integration pending V2-001-T2 (BetterAuth install)
+// Password hashing will be provided by BetterAuth plugins.
 
 export async function POST(req: Request) {
   await runMigrations();
@@ -13,11 +15,12 @@ export async function POST(req: Request) {
   const password = String(form.get('password') ?? '');
   if (!username) return NextResponse.json({ error: 'Username required' }, { status: 400 });
   try {
-    const hash = await hashPassword(password);
+    // TODO: auth integration pending V2-001-T2 (BetterAuth install)
+    // Password hashing will be provided by BetterAuth plugins.
     await insertUser({
       id: randomUUID(),
       username,
-      passwordHash: hash,
+      passwordHash: '', // TODO: hash password using BetterAuth
       role: 'admin',
     });
     return NextResponse.json({ ok: true });

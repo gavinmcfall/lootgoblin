@@ -1,9 +1,8 @@
-import NextAuth from 'next-auth';
-import authConfig from './auth.config';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const { auth } = NextAuth(authConfig);
+// TODO: auth integration pending V2-001-T2 (BetterAuth install)
+// Session validation will be added in the auth plugin.
 
 // '/' is intentionally omitted here — the root page handles its own redirect
 // logic (setup vs login vs dashboard) because it needs DB access to check
@@ -48,15 +47,14 @@ export async function middleware(req: NextRequest) {
     return res;
   };
 
-  if (pathname.startsWith('/api/auth')) return addCors(NextResponse.next());
   if (pathname.startsWith('/api/setup')) return addCors(NextResponse.next());
   if (pathname.startsWith('/api/health')) return addCors(NextResponse.next());
   if (pathname.startsWith('/api/metrics')) return addCors(NextResponse.next());
   if (extensionApi) return addCors(NextResponse.next());
   if (PUBLIC.has(pathname)) return NextResponse.next();
 
-  const session = await auth();
-  if (!session) return NextResponse.redirect(new URL('/login', req.url));
+  // TODO: auth integration pending V2-001-T2 (BetterAuth install)
+  // Session validation will be added in the auth plugin.
   return NextResponse.next();
 }
 

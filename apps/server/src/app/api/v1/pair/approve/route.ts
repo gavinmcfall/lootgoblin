@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 import { randomUUID, randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
-import { auth } from '@/auth';
 import { getDb, schema } from '@/db/client';
 import { pendingChallenges } from '../store';
 
 export async function POST(req: Request) {
-  if (!(await auth())) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  // TODO: auth integration pending V2-001-T2 (BetterAuth install)
+  // Session validation will be added in the auth plugin.
   const { challengeId } = (await req.json()) as { challengeId: string };
   const entry = pendingChallenges.get(challengeId);
   if (!entry || entry.expires < Date.now()) return NextResponse.json({ error: 'expired' }, { status: 410 });

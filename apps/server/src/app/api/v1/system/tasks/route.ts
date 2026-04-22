@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@/auth';
 import { tasks, getLastRun } from '@/workers/tasks';
 import { getSetting, setSetting } from '@/lib/settings';
 
 export async function GET() {
-  const session = await auth();
+  const session = null; // TODO: auth pending V2-001-T2
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const out = await Promise.all(tasks.map(async (t) => ({
     id: t.id,
@@ -17,7 +16,7 @@ export async function GET() {
 }
 
 export async function PUT(req: Request) {
-  const session = await auth();
+  const session = null; // TODO: auth pending V2-001-T2
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const { id, enabled } = (await req.json()) as { id: string; enabled: boolean };
   const task = tasks.find((t) => t.id === id);

@@ -4,14 +4,26 @@ import { and, eq } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
 import { encrypt } from '@/crypto';
 import { getAdapter } from '@/adapters';
-import { getSessionOrNull, isValidApiKey } from '@/auth/helpers';
+import { getSessionOrNull, isValidApiKeyWithScope } from '@/auth/helpers';
 
 export async function POST(req: Request, context: { params: Promise<{ source: string }> }) {
   const { source } = await context.params;
   // Session-or-apikey: the extension submits cookies via API key; UI uses session.
+  // API key access requires extension_pairing scope.
   const session = await getSessionOrNull(req);
-  const apiKeyValid = session ? false : await isValidApiKey(req);
-  if (!session && !apiKeyValid) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  if (!session) {
+    const keyResult = await isValidApiKeyWithScope(req, ['extension_pairing']);
+    if (!keyResult.valid) {
+      if (keyResult.reason === 'wrong-scope') {
+        return NextResponse.json(
+          { error: 'wrong-scope', expected: keyResult.expected, actual: keyResult.actual },
+          { status: 403 },
+        );
+      }
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+  }
+
   const body = await req.json() as { label?: string; cookies: unknown[] };
   const blob = JSON.stringify({ cookies: body.cookies });
   const adapter = getAdapter(source);
@@ -34,11 +46,28 @@ export async function POST(req: Request, context: { params: Promise<{ source: st
 export async function GET(req: Request, context: { params: Promise<{ source: string }> }) {
   const { source } = await context.params;
   // Session-or-apikey: extension reads credentials it uploaded via API key; UI uses session.
+  // API key access requires extension_pairing scope.
   const session = await getSessionOrNull(req);
-  const apiKeyValid = session ? false : await isValidApiKey(req);
-  if (!session && !apiKeyValid) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  if (!session) {
+    const keyResult = await isValidApiKeyWithScope(req, ['extension_pairing']);
+    if (!keyResult.valid) {
+      if (keyResult.reason === 'wrong-scope') {
+        return NextResponse.json(
+          { error: 'wrong-scope', expected: keyResult.expected, actual: keyResult.actual },
+          { status: 403 },
+        );
+      }
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+  }
+
   const rows = await (getDb() as any)
-    .select({ id: schema.sourceCredentials.id, label: schema.sourceCredentials.label, status: schema.sourceCredentials.status, lastUsedAt: schema.sourceCredentials.lastUsedAt })
+    .select({
+      id: schema.sourceCredentials.id,
+      label: schema.sourceCredentials.label,
+      status: schema.sourceCredentials.status,
+      lastUsedAt: schema.sourceCredentials.lastUsedAt,
+    })
     .from(schema.sourceCredentials)
     .where(eq(schema.sourceCredentials.sourceId, source));
   return NextResponse.json({ credentials: rows });

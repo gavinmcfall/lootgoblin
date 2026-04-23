@@ -36,6 +36,13 @@
       "when": 1745510400000,
       "tag": "0004_config_resolver",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1745596800000,
+      "tag": "0005_api_key_scopes",
+      "breakpoints": true
     }
   ]
 }

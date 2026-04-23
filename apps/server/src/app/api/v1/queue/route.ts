@@ -3,13 +3,24 @@ import { and, desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
 import { enqueueItem } from '@/workers/queue';
 import { randomUUID } from 'node:crypto';
-import { getSessionOrNull, isValidApiKey } from '@/auth/helpers';
+import { getSessionOrNull, isValidApiKeyWithScope } from '@/auth/helpers';
 
 export async function POST(req: Request) {
   // Session-or-apikey: the extension submits items via API key; the UI uses session.
+  // API key access requires extension_pairing scope.
   const session = await getSessionOrNull(req);
-  const apiKeyValid = session ? false : await isValidApiKey(req);
-  if (!session && !apiKeyValid) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  if (!session) {
+    const keyResult = await isValidApiKeyWithScope(req, ['extension_pairing']);
+    if (!keyResult.valid) {
+      if (keyResult.reason === 'wrong-scope') {
+        return NextResponse.json(
+          { error: 'wrong-scope', expected: keyResult.expected, actual: keyResult.actual },
+          { status: 403 },
+        );
+      }
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+  }
   const body = await req.json() as {
     sourceId: string;
     sourceItemId: string;

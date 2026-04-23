@@ -3,9 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { runMigrations, getDb, schema, resetDbCache } from '../../src/db/client';
 
 // Mock auth helpers so the route sees a valid API-key auth without a real BetterAuth instance.
+// T5: queue route uses isValidApiKeyWithScope; mock returns a valid extension_pairing result.
 vi.mock('@/auth/helpers', () => ({
   getSessionOrNull: vi.fn().mockResolvedValue(null),
   isValidApiKey: vi.fn().mockResolvedValue(true),
+  isValidApiKeyWithScope: vi.fn().mockResolvedValue({
+    valid: true,
+    scope: 'extension_pairing',
+    keyId: 'test-key-id',
+  }),
 }));
 
 // Provide a minimal NextResponse shim so next/server doesn't need to load

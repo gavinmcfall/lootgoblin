@@ -206,8 +206,27 @@ export const auth = betterAuth({
     organization(),
 
     // Extension + Courier + programmatic pairing support per V2-001-T5.
-    // T5: tune prefix, expiration defaults, rate limits, and per-scope permissions.
-    apiKey(),
+    //
+    // The BetterAuth apiKey plugin manages its own `apikey` table (see schema.auth.ts).
+    // Application-managed keys live in the custom `api_keys` Drizzle table and are
+    // verified via argon2 in auth/helpers.ts — separate from BetterAuth's own key table.
+    // The plugin is configured here for completeness and future BetterAuth-native key
+    // creation paths (e.g. per-user keys through the authClient).
+    //
+    // Per-scope defaults are enforced at key-creation time in /api/v1/api-keys.
+    // Route-level scope enforcement uses isValidApiKeyWithScope() from auth/helpers.ts.
+    apiKey({
+      enableMetadata: true,
+      keyExpiration: {
+        // Allow creation of non-expiring keys (courier_pairing).
+        disableCustomExpiresTime: false,
+      },
+      rateLimit: {
+        enabled: true,
+        timeWindow: 60 * 1000, // 1 minute window (scopes override per-key at creation)
+        maxRequests: 600,      // matches extension_pairing default
+      },
+    }),
   ],
 });
 

@@ -1,14 +1,19 @@
 /**
- * Route auth policy integration tests — V2-001-T4
+ * Route auth policy integration tests — V2-001-T4 / T5
  *
  * Covers three auth policy classes with at least one route each:
  *
  *   session-only     — /api/v1/destinations       (GET/POST)
- *   session-or-apikey— /api/v1/queue              (POST)
+ *   session-or-apikey— /api/v1/queue              (POST)  [T5: scope-enforced]
  *   admin-only       — /api/v1/system/tasks        (GET)
  *
- * Pattern: mock @/auth/helpers so that getSessionOrNull and isValidApiKey
- * return controlled values without needing a real BetterAuth instance or DB.
+ * Pattern: mock @/auth/helpers so that getSessionOrNull and
+ * isValidApiKeyWithScope return controlled values without needing a real
+ * BetterAuth instance or DB.
+ *
+ * Note (T5): queue POST now calls isValidApiKeyWithScope (not isValidApiKey).
+ * The mock returns { valid: true, scope: 'extension_pairing', keyId: '...' }
+ * for the "valid API key" case.
  */
 
 import { describe, it, expect, beforeAll, vi } from 'vitest';
@@ -28,10 +33,12 @@ vi.mock('next/server', () => ({
 // ── Mock auth helpers — controlled per-test ────────────────────────────────
 const mockGetSession = vi.fn();
 const mockIsValidApiKey = vi.fn();
+const mockIsValidApiKeyWithScope = vi.fn();
 
 vi.mock('../../src/auth/helpers', () => ({
   getSessionOrNull: (...args: unknown[]) => mockGetSession(...args),
   isValidApiKey: (...args: unknown[]) => mockIsValidApiKey(...args),
+  isValidApiKeyWithScope: (...args: unknown[]) => mockIsValidApiKeyWithScope(...args),
 }));
 
 // ── Minimal session fixture ────────────────────────────────────────────────
@@ -86,7 +93,7 @@ describe('session-only: GET /api/v1/destinations', () => {
   });
 });
 
-// ── session-or-apikey routes ───────────────────────────────────────────────
+// ── session-or-apikey routes (T5: scope-enforced) ─────────────────────────
 describe('session-or-apikey: POST /api/v1/queue', () => {
   const getRoute = () => import('../../src/app/api/v1/queue/route').then((m) => m.POST);
 
@@ -99,7 +106,7 @@ describe('session-or-apikey: POST /api/v1/queue', () => {
 
   it('returns 401 when neither session nor API key is valid', async () => {
     mockGetSession.mockResolvedValue(null);
-    mockIsValidApiKey.mockResolvedValue(false);
+    mockIsValidApiKeyWithScope.mockResolvedValue({ valid: false, reason: 'invalid' });
     const POST = await getRoute();
     const res = await POST(makeReq('POST', queueBody));
     expect(res.status).toBe(401);
@@ -107,7 +114,6 @@ describe('session-or-apikey: POST /api/v1/queue', () => {
 
   it('returns 200 with a valid session', async () => {
     mockGetSession.mockResolvedValue(VALID_SESSION);
-    mockIsValidApiKey.mockResolvedValue(false);
     const POST = await getRoute();
     const res = await POST(makeReq('POST', { ...queueBody, sourceItemId: `sess-${Date.now()}` }));
     const json = await res.json();
@@ -116,14 +122,35 @@ describe('session-or-apikey: POST /api/v1/queue', () => {
     expect(json.id ?? json.duplicate).toBeDefined();
   });
 
-  it('returns 200 with a valid API key and no session', async () => {
+  it('returns 200 with a valid extension_pairing API key and no session', async () => {
     mockGetSession.mockResolvedValue(null);
-    mockIsValidApiKey.mockResolvedValue(true);
+    mockIsValidApiKeyWithScope.mockResolvedValue({
+      valid: true,
+      scope: 'extension_pairing',
+      keyId: 'key-1',
+    });
     const POST = await getRoute();
-    const res = await POST(makeReq('POST', { ...queueBody, sourceItemId: `apikey-${Date.now()}` }, 'lg_validkey'));
+    const res = await POST(
+      makeReq('POST', { ...queueBody, sourceItemId: `apikey-${Date.now()}` }, 'lg_ext_validkey'),
+    );
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.id ?? json.duplicate).toBeDefined();
+  });
+
+  it('returns 403 wrong-scope when a non-extension key hits queue POST', async () => {
+    mockGetSession.mockResolvedValue(null);
+    mockIsValidApiKeyWithScope.mockResolvedValue({
+      valid: false,
+      reason: 'wrong-scope',
+      expected: ['extension_pairing'],
+      actual: 'programmatic',
+    });
+    const POST = await getRoute();
+    const res = await POST(makeReq('POST', queueBody, 'lg_api_wrongscope'));
+    expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json.error).toBe('wrong-scope');
   });
 });
 

@@ -85,7 +85,13 @@ export const apiKeys = sqliteTable('api_keys', {
   id: id(),
   name: text('name').notNull(),
   keyHash: text('key_hash').notNull(),
-  scopes: text('scopes').notNull(), // csv
+  // scope: typed single-value scope — one of extension_pairing | courier_pairing | programmatic.
+  // Added in migration 0005 (V2-001-T5). Backfilled to 'extension_pairing' for pre-T5 rows.
+  scope: text('scope').notNull().default('extension_pairing'),
+  // Legacy scopes CSV column (pre-T5). Still NOT NULL in DB; kept with a default so new
+  // inserts that omit it don't fail the constraint. New code writes scope instead.
+  scopesLegacy: text('scopes').notNull().default(''),
+  expiresAt: ts('expires_at'),
   lastUsedAt: ts('last_used_at'),
   createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
   revokedAt: ts('revoked_at'),

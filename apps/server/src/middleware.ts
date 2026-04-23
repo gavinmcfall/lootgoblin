@@ -42,6 +42,15 @@ function isExtensionApi(pathname: string): boolean {
   );
 }
 
+/**
+ * Federation / Courier identity endpoint — always public.
+ * Couriers and future federation peers reach this before they have credentials.
+ * (V2-001-T6)
+ */
+function isInstanceEndpoint(pathname: string): boolean {
+  return pathname === '/api/v1/instance';
+}
+
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
@@ -70,6 +79,7 @@ export async function middleware(req: NextRequest) {
   if (pathname.startsWith('/api/health')) return addCors(NextResponse.next());
   if (pathname.startsWith('/api/metrics')) return addCors(NextResponse.next());
   if (isAuthRoute(pathname)) return addCors(NextResponse.next());
+  if (isInstanceEndpoint(pathname)) return NextResponse.next();
   if (extensionApi) return addCors(NextResponse.next());
   if (PUBLIC.has(pathname)) return NextResponse.next();
 

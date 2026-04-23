@@ -110,3 +110,39 @@ export const users = sqliteTable('users', {
   role: text('role').notNull().default('admin'),
   createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
 });
+
+/**
+ * Instance identity — V2-001-T6
+ *
+ * Exactly one row per database. On first boot the instrumentation layer
+ * generates a UUIDv4 + Ed25519 keypair and inserts this row. Subsequent
+ * boots are no-ops (the row already exists).
+ *
+ * Key encoding:
+ *   public_key  — raw Ed25519 public key (32 bytes), base64url-encoded.
+ *   private_key — raw Ed25519 private key (32 bytes, the "d" component from JWK),
+ *                 base64url-encoded. The PKCS8 DER wrapper is stripped.
+ *
+ * Single-row invariant is enforced by a unique index on the constant
+ * "singleton" column (always the value 1). An INSERT that would create
+ * a second row fails with a UNIQUE constraint violation.
+ *
+ * SECURITY: private_key lives in the DB as the security boundary. It is
+ * never logged, never returned on any endpoint, and never appears in
+ * any exported type except InstanceIdentityFull (internal to identity/index.ts).
+ */
+export const instanceIdentity = sqliteTable(
+  'instance_identity',
+  {
+    id: id(),
+    // Singleton guard: always 1 — the unique index on this column enforces
+    // the single-row constraint without application-level locking.
+    singleton: integer('singleton').notNull().default(1),
+    public_key: text('public_key').notNull(),
+    /** NEVER expose outside identity/index.ts */
+    private_key: text('private_key').notNull(),
+    name: text('name'),
+    created_at: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => ({ singletonUniq: uniqueIndex('instance_identity_singleton_uniq').on(t.singleton) }),
+);

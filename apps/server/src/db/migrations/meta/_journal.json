@@ -43,6 +43,13 @@
       "when": 1745596800000,
       "tag": "0005_api_key_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1745683200000,
+      "tag": "0006_instance_identity",
+      "breakpoints": true
     }
   ]
 }

@@ -12,9 +12,11 @@ export async function register() {
     // Must run BEFORE migrations and workers so that DATABASE_URL and other
     // boot-time values are confirmed present. A ConfigurationError here is
     // fatal — the process exits non-zero so Docker / K8s restarts cleanly.
+    let resolvedInstanceName: string | null = null;
     try {
       const { configResolver } = await import('./config/index');
       await configResolver.resolve();
+      resolvedInstanceName = configResolver.get('INSTANCE_NAME') ?? null;
       logger.info('config resolved');
     } catch (err) {
       process.stderr.write(
@@ -32,6 +34,18 @@ export async function register() {
     } catch (err) {
       logger.error({ err }, 'migrations failed');
       throw err;
+    }
+
+    // ── Instance identity bootstrap (V2-001-T6) ────────────────────────
+    // Runs after migrations (schema must exist) and after config resolution
+    // (we want INSTANCE_NAME if configured). Idempotent — no-op if the row
+    // already exists. Failures are non-fatal but logged.
+    try {
+      const { bootstrapInstanceIdentity } = await import('./identity/index');
+      await bootstrapInstanceIdentity(resolvedInstanceName);
+      logger.info('instance identity bootstrapped');
+    } catch (err) {
+      logger.error({ err }, 'instance identity bootstrap failed');
     }
 
     startWorkers();

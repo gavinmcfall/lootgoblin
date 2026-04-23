@@ -29,6 +29,13 @@
       "when": 1776971489073,
       "tag": "0003_plain_green_goblin",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1745510400000,
+      "tag": "0004_config_resolver",
+      "breakpoints": true
     }
   ]
 }

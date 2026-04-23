@@ -1,11 +1,25 @@
 /**
- * BetterAuth configuration — V2-001-T2
+ * BetterAuth configuration — V2-001-T2 / T3
  *
  * Plugins wired here: emailAndPassword (built-in), genericOAuth, organization, apiKey.
  *
+ * ── CLI vs runtime split (T3) ────────────────────────────────────────────────
+ * BetterAuth CLI (`auth generate`) runs via `jiti` and executes this module at
+ * schema-generation time, outside the Next.js runtime. The three-tier resolver
+ * requires the database to be available (for provenance writes) and is only
+ * fully initialised after instrumentation.ts has called configResolver.resolve().
+ *
+ * To avoid blocking the CLI on DB availability, this module uses a two-path
+ * approach:
+ *   - During `auth generate` (NEXT_RUNTIME is undefined): reads directly from
+ *     process.env, exactly as BetterAuth expects for schema generation.
+ *   - During Next.js application runtime: reads from the resolver singleton,
+ *     which was populated by instrumentation.ts before any request handler runs.
+ *
+ * The resolver's values take precedence at runtime; the env-var fallback is
+ * only ever used by the CLI and in early-boot scenarios before resolve() fires.
+ *
  * TODOs for later tasks:
- *   - T3: Replace process.env reads with three-tier ConfigResolver (BETTER_AUTH_SECRET,
- *         BETTER_AUTH_URL) so they pick up file / env / DB overrides consistently.
  *   - T4: Wire argon2id custom hasher/verifier into emailAndPassword.password.*
  *         Currently uses BetterAuth's default scrypt hasher (safe but not argon2id).
  *   - T4: Populate genericOAuth.config[] with real provider entries from ConfigResolver
@@ -30,13 +44,51 @@ import { apiKey } from '@better-auth/api-key';
 import { getDb } from '../db/client';
 import * as authSchema from '../db/schema.auth';
 
+/**
+ * Resolves the BetterAuth secret and base URL.
+ *
+ * At Next.js runtime, reads from the singleton ConfigResolver which was
+ * populated in instrumentation.ts. Falls back to direct env-var reads so
+ * that `auth generate` (CLI / jiti execution) continues to work without
+ * a running database or a resolved config.
+ */
+function getAuthConfig(): { secret: string | undefined; baseURL: string } {
+  // Attempt resolver path first (application runtime).
+  // We guard with a try/catch so the CLI does not crash if the resolver
+  // has not been initialised (e.g. during `npx @better-auth/cli generate`).
+  try {
+    // Dynamic require-style import avoids jiti resolving the full module graph
+    // at schema-generation time. At Next.js runtime this path always succeeds.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('../config/index') as typeof import('../config/index');
+    const resolver = mod.configResolver;
+    // resolver.getResolved() returns null if resolve() has not been called yet.
+    const resolved = resolver.getResolved();
+    if (resolved) {
+      return {
+        secret: resolved.BETTER_AUTH_SECRET,
+        baseURL: resolved.BETTER_AUTH_URL,
+      };
+    }
+  } catch {
+    // CLI context — resolver module cannot be loaded or has not been initialised.
+  }
+
+  // Fallback: direct env-var reads (CLI / pre-resolve startup path).
+  return {
+    secret: process.env.BETTER_AUTH_SECRET,
+    baseURL: process.env.BETTER_AUTH_URL ?? 'http://localhost:7393',
+  };
+}
+
 const dbUrl = process.env.DATABASE_URL ?? 'file:./lootgoblin.db';
 const dbProvider = dbUrl.startsWith('postgres') ? 'pg' : 'sqlite';
 
+const { secret, baseURL } = getAuthConfig();
+
 export const auth = betterAuth({
-  // T3: Replace with ConfigResolver values once the three-tier resolver is in place.
-  baseURL: process.env.BETTER_AUTH_URL ?? 'http://localhost:7393',
-  secret: process.env.BETTER_AUTH_SECRET,
+  baseURL,
+  secret,
 
   database: drizzleAdapter(getDb(dbUrl), {
     provider: dbProvider,

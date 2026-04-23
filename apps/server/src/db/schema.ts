@@ -8,6 +8,9 @@
 // Re-exported here so Drizzle's migration tooling sees them alongside app tables.
 export * from './schema.auth';
 
+// Config-resolver tables — V2-001-T3.
+export * from './schema.config';
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 

@@ -20,13 +20,18 @@ import argon2 from 'argon2';
 import { isNull } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
 import { getSessionOrNull } from '@/auth/helpers';
+import { resolveAcl } from '@/acl/resolver';
 import { API_KEY_SCOPES, isValidScope } from '@/auth/scopes';
 import type { ApiKeyScope } from '@/auth/scopes';
 
 export async function GET(req: Request) {
-  // Admin-only: API key management is a privileged operation.
   const session = await getSessionOrNull(req);
-  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  // Admin reads all; owner reads own. For listing without an ownerId filter, we
+  // pass user's own id as ownerId so the resolver allows self-reads (admins still
+  // see all via admin-read path).
+  const acl = resolveAcl({ user, resource: { kind: 'api_key', ownerId: user?.id }, action: 'read' });
+  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
 
   const rows = await (getDb() as any)
     .select({
@@ -64,9 +69,11 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  // Admin-only: creating API keys requires an authenticated session.
   const session = await getSessionOrNull(req);
-  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  // Users create their own keys; ownerId = self. Admin can create for others too.
+  const acl = resolveAcl({ user, resource: { kind: 'api_key', ownerId: user?.id }, action: 'create' });
+  if (!acl.allowed) return NextResponse.json({ error: acl.reason ?? 'unauthorized' }, { status: user ? 403 : 401 });
 
   const body = (await req.json()) as {
     name?: unknown;

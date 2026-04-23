@@ -1,5 +1,5 @@
 /**
- * Auth helpers for route handlers — V2-001-T4 / T5
+ * Auth helpers for route handlers — V2-001-T4 / T5 / T7
  *
  * Provides lightweight wrappers for the two session-validation patterns used
  * across API routes:
@@ -9,6 +9,16 @@
  *                               valid, unrevoked, non-expired key (any scope).
  *   isValidApiKeyWithScope    — returns { valid, scope, userId, reason } after
  *                               verifying the key AND enforcing scope membership.
+ *
+ * V2-001-T7 extension:
+ *   The BetterAuth `user` table does not carry a `role` column — role is stored
+ *   on the `member` table (BetterAuth organization plugin).  getSessionOrNull
+ *   now performs a single Drizzle lookup to resolve the member role and attaches
+ *   it to the returned session payload as `user.role`.  Route handlers that call
+ *   resolveAcl() can then read `session.user.role` without an extra DB round-trip.
+ *
+ *   If no member row exists (pre-setup or OIDC user before first org membership),
+ *   the role defaults to 'user' so callers never receive undefined.
  *
  * Implementation note (V2-001-T5):
  *   Application-managed keys are stored in the custom `api_keys` Drizzle table
@@ -30,7 +40,7 @@
  */
 
 import argon2 from 'argon2';
-import { isNull } from 'drizzle-orm';
+import { eq, isNull } from 'drizzle-orm';
 import type { NextRequest } from 'next/server';
 import type { ApiKeyScope } from './scopes';
 import { getDb, schema } from '@/db/client';
@@ -42,16 +52,63 @@ function getAuth() {
 }
 
 /**
- * Returns the BetterAuth session + user for the current request, or null if
- * no valid session cookie is present.
+ * Shape returned by getSessionOrNull.
+ *
+ * Extends BetterAuth's native session shape with a `role` field resolved from
+ * the `member` table. Consumers that need to call resolveAcl() should read
+ * `session.user.role` directly — no extra DB query needed.
  */
-export async function getSessionOrNull(req: Request | NextRequest) {
+export type SessionWithRole = {
+  session: { id: string; userId: string; expiresAt: Date; token: string };
+  user: { id: string; name: string; email: string; emailVerified: boolean; image?: string | null; role: 'admin' | 'user' };
+};
+
+/**
+ * Returns the BetterAuth session + user (with resolved member role) for the
+ * current request, or null if no valid session cookie is present.
+ *
+ * Role resolution: looks up the first `member` row for the authenticated user.
+ * BetterAuth stores 'admin' or 'member' in that column. We map 'admin' → 'admin'
+ * and anything else → 'user' to match the v2 AclUser interface.
+ */
+export async function getSessionOrNull(req: Request | NextRequest): Promise<SessionWithRole | null> {
   const authInst = getAuth();
+  let raw: Awaited<ReturnType<typeof authInst.api.getSession>> | null = null;
   try {
-    return await authInst.api.getSession({ headers: req.headers as Headers });
+    raw = await authInst.api.getSession({ headers: req.headers as Headers });
   } catch {
     return null;
   }
+  if (!raw) return null;
+
+  // Resolve role from member table. Defaults to 'user' if no row found.
+  let role: 'admin' | 'user' = 'user';
+  try {
+    const db = getDb() as any;
+    const rows: Array<{ role: string }> = await db
+      .select({ role: schema.member.role })
+      .from(schema.member)
+      .where(eq(schema.member.userId, raw.user.id))
+      .limit(1);
+    const firstRow = rows[0];
+    if (firstRow && firstRow.role === 'admin') {
+      role = 'admin';
+    }
+  } catch {
+    // Non-fatal — if the member table lookup fails, default to 'user' role.
+  }
+
+  return {
+    session: raw.session as SessionWithRole['session'],
+    user: {
+      id: raw.user.id,
+      name: raw.user.name,
+      email: raw.user.email,
+      emailVerified: raw.user.emailVerified,
+      image: (raw.user as Record<string, unknown>).image as string | null | undefined,
+      role,
+    },
+  };
 }
 
 /**

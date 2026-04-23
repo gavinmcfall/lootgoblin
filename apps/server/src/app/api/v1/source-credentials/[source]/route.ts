@@ -5,6 +5,7 @@ import { getDb, schema } from '@/db/client';
 import { encrypt } from '@/crypto';
 import { getAdapter } from '@/adapters';
 import { getSessionOrNull, isValidApiKeyWithScope } from '@/auth/helpers';
+import { resolveAcl } from '@/acl/resolver';
 
 export async function POST(req: Request, context: { params: Promise<{ source: string }> }) {
   const { source } = await context.params;
@@ -75,9 +76,12 @@ export async function GET(req: Request, context: { params: Promise<{ source: str
 
 export async function DELETE(req: Request, context: { params: Promise<{ source: string }> }) {
   const { source } = await context.params;
-  // Session-only: credential deletion is a UI admin action.
   const session = await getSessionOrNull(req);
-  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  // Source credential delete maps to loot delete (credentials gate source access = loot pipeline).
+  // Owner or admin. Credentials have no per-user owner in v2-001; treat caller as owner.
+  const acl = resolveAcl({ user, resource: { kind: 'loot', ownerId: user?.id }, action: 'delete' });
+  if (!acl.allowed) return NextResponse.json({ error: acl.reason ?? 'unauthorized' }, { status: user ? 403 : 401 });
   const url = new URL(req.url);
   const id = url.searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });

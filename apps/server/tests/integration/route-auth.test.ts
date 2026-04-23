@@ -42,9 +42,10 @@ vi.mock('../../src/auth/helpers', () => ({
 }));
 
 // ── Minimal session fixture ────────────────────────────────────────────────
+// T7: role field added to user shape. getSessionOrNull now returns SessionWithRole.
 const VALID_SESSION = {
   session: { id: 'sess-1', userId: 'user-1', expiresAt: new Date(Date.now() + 86400_000), token: 'tok' },
-  user: { id: 'user-1', email: 'admin@example.com', name: 'Admin', emailVerified: true },
+  user: { id: 'user-1', email: 'admin@example.com', name: 'Admin', emailVerified: true, role: 'admin' as const },
 };
 
 function makeReq(method = 'GET', body?: unknown, apiKey?: string): Request {

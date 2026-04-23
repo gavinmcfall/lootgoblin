@@ -4,6 +4,7 @@ import { getDb, schema } from '@/db/client';
 import { enqueueItem } from '@/workers/queue';
 import { randomUUID } from 'node:crypto';
 import { getSessionOrNull, isValidApiKeyWithScope } from '@/auth/helpers';
+import { resolveAcl } from '@/acl/resolver';
 
 export async function POST(req: Request) {
   // Session-or-apikey: the extension submits items via API key; the UI uses session.
@@ -20,6 +21,11 @@ export async function POST(req: Request) {
       }
       return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
+    // Extension API key path is pre-authorised by scope check above — skip ACL.
+  } else {
+    const user = { id: session.user.id, role: session.user.role };
+    const acl = resolveAcl({ user, resource: { kind: 'loot' }, action: 'create' });
+    if (!acl.allowed) return NextResponse.json({ error: acl.reason }, { status: 403 });
   }
   const body = await req.json() as {
     sourceId: string;
@@ -63,9 +69,10 @@ export async function POST(req: Request) {
 }
 
 export async function GET(req: Request) {
-  // Session-only: queue listing is a UI-facing operation.
   const session = await getSessionOrNull(req);
-  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const acl = resolveAcl({ user, resource: { kind: 'loot' }, action: 'read' });
+  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
   const db = getDb() as any;
   const rows = await db.select().from(schema.items).orderBy(desc(schema.items.createdAt)).limit(200);
   return NextResponse.json({ items: rows });

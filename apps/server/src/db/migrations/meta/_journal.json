@@ -21,7 +21,7 @@
       "version": "7",
       "when": 1776477600000,
       "tag": "0002_v2_auth_cleanup",
-      "breakpoints": false
+      "breakpoints": true
     },
     {
       "idx": 3,

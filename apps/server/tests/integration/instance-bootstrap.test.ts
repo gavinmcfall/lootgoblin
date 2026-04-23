@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { existsSync, unlinkSync } from 'node:fs';
 import { runMigrations, getDb, schema, resetDbCache } from '../../src/db/client';
 import {
   bootstrapInstanceIdentity,
@@ -35,6 +36,12 @@ const DB_PATH = '/tmp/lootgoblin-integration-identity.db';
 
 beforeAll(async () => {
   process.env.DATABASE_URL = `file:${DB_PATH}`;
+  // Start from a clean DB — previous test runs leave state that conflicts
+  // with the "fresh DB" assertions below.
+  for (const suffix of ['', '-journal', '-wal', '-shm']) {
+    const p = `${DB_PATH}${suffix}`;
+    if (existsSync(p)) unlinkSync(p);
+  }
   resetDbCache();
   await runMigrations(`file:${DB_PATH}`);
 });

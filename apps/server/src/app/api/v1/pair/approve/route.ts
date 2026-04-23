@@ -3,10 +3,12 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
 import { getDb, schema } from '@/db/client';
 import { pendingChallenges } from '../store';
+import { getSessionOrNull } from '@/auth/helpers';
 
 export async function POST(req: Request) {
-  // TODO: auth integration pending V2-001-T2 (BetterAuth install)
-  // Session validation will be added in the auth plugin.
+  // Session-only: approving pairing requests is a UI admin action.
+  const session = await getSessionOrNull(req);
+  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const { challengeId } = (await req.json()) as { challengeId: string };
   const entry = pendingChallenges.get(challengeId);
   if (!entry || entry.expires < Date.now()) return NextResponse.json({ error: 'expired' }, { status: 410 });

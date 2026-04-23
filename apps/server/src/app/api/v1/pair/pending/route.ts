@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { pendingChallenges } from '../store';
+import { getSessionOrNull } from '@/auth/helpers';
 
-export async function GET() {
-  // TODO: auth integration pending V2-001-T2 (BetterAuth install)
-  // Session validation will be added in the auth plugin.
+export async function GET(req: Request) {
+  // Session-only: listing pending pairing challenges is a UI admin action.
+  const session = await getSessionOrNull(req);
+  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const now = Date.now();
   const list = [...pendingChallenges.entries()]
     .filter(([, v]) => !v.approvedKey && v.expires > now)

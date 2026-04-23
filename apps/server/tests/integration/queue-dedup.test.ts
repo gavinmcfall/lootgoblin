@@ -2,8 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { runMigrations, getDb, schema, resetDbCache } from '../../src/db/client';
 
-// Mock next-auth so the route module can load without a Next.js runtime
-vi.mock('@/auth', () => ({ auth: vi.fn().mockResolvedValue(null) }));
+// Mock auth helpers so the route sees a valid API-key auth without a real BetterAuth instance.
+vi.mock('@/auth/helpers', () => ({
+  getSessionOrNull: vi.fn().mockResolvedValue(null),
+  isValidApiKey: vi.fn().mockResolvedValue(true),
+}));
 
 // Provide a minimal NextResponse shim so next/server doesn't need to load
 vi.mock('next/server', () => ({

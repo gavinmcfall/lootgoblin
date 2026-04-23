@@ -3,9 +3,12 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
 import { isNull } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
+import { getSessionOrNull } from '@/auth/helpers';
 
-export async function GET() {
-  if (false) // TODO: auth pending V2-001-T2 return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+export async function GET(req: Request) {
+  // Admin-only: API key management is a privileged operation.
+  const session = await getSessionOrNull(req);
+  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const rows = await (getDb() as any)
     .select({
       id: schema.apiKeys.id,
@@ -20,7 +23,9 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  if (false) // TODO: auth pending V2-001-T2 return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  // Admin-only: creating API keys requires an authenticated session.
+  const session = await getSessionOrNull(req);
+  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const { name, scopes } = (await req.json()) as { name: string; scopes: string };
   if (!name || !scopes) return NextResponse.json({ error: 'name and scopes required' }, { status: 400 });
   const plaintext = `lg_${randomBytes(24).toString('base64url')}`;

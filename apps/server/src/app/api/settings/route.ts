@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getSetting, setSetting } from '@/lib/settings';
+import { getSessionOrNull } from '@/auth/helpers';
 
 export async function GET(req: Request) {
-  const session = null; // TODO: auth pending V2-001-T2
+  // Session-only: settings access is a UI admin operation.
+  const session = await getSessionOrNull(req);
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const url = new URL(req.url);
   const key = url.searchParams.get('key');
@@ -11,7 +13,8 @@ export async function GET(req: Request) {
 }
 
 export async function PUT(req: Request) {
-  const session = null; // TODO: auth pending V2-001-T2
+  // Session-only: settings mutation is a UI admin operation.
+  const session = await getSessionOrNull(req);
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const body = await req.json() as { key: string; value: unknown };
   if (!body?.key) return NextResponse.json({ error: 'key required' }, { status: 400 });

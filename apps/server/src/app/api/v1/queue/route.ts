@@ -3,11 +3,13 @@ import { and, desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
 import { enqueueItem } from '@/workers/queue';
 import { randomUUID } from 'node:crypto';
+import { getSessionOrNull, isValidApiKey } from '@/auth/helpers';
 
 export async function POST(req: Request) {
-  const session = null; // TODO: auth pending V2-001-T2
-  const apiKey = req.headers.get('x-api-key');
-  if (!session && !apiKey) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  // Session-or-apikey: the extension submits items via API key; the UI uses session.
+  const session = await getSessionOrNull(req);
+  const apiKeyValid = session ? false : await isValidApiKey(req);
+  if (!session && !apiKeyValid) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const body = await req.json() as {
     sourceId: string;
     sourceItemId: string;
@@ -49,8 +51,9 @@ export async function POST(req: Request) {
   return NextResponse.json({ id });
 }
 
-export async function GET() {
-  const session = null; // TODO: auth pending V2-001-T2
+export async function GET(req: Request) {
+  // Session-only: queue listing is a UI-facing operation.
+  const session = await getSessionOrNull(req);
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const db = getDb() as any;
   const rows = await db.select().from(schema.items).orderBy(desc(schema.items.createdAt)).limit(200);

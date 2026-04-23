@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { tasks, getLastRun } from '@/workers/tasks';
 import { getSetting, setSetting } from '@/lib/settings';
+import { getSessionOrNull } from '@/auth/helpers';
 
-export async function GET() {
-  const session = null; // TODO: auth pending V2-001-T2
+export async function GET(req: Request) {
+  // Session-only: system task listing is a UI admin operation.
+  const session = await getSessionOrNull(req);
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const out = await Promise.all(tasks.map(async (t) => ({
     id: t.id,
@@ -16,7 +18,8 @@ export async function GET() {
 }
 
 export async function PUT(req: Request) {
-  const session = null; // TODO: auth pending V2-001-T2
+  // Session-only: toggling system tasks is a UI admin operation.
+  const session = await getSessionOrNull(req);
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const { id, enabled } = (await req.json()) as { id: string; enabled: boolean };
   const task = tasks.find((t) => t.id === id);

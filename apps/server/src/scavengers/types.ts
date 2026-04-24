@@ -95,6 +95,13 @@ export type AdapterFailureReason =
   | 'anti-bot-challenge' // Cloudflare Turnstile, CAPTCHA, etc
   | 'format-unsupported' // Adapter received a file type it cannot handle
   | 'network-error' // TCP-level or DNS failure
+  /**
+   * The source has metadata for the item but no downloadable formats are
+   * available to this caller. Distinct from `content-removed` (item gone)
+   * and from `auth-revoked` (caller can't access). Used by adapters such as
+   * Sketchfab where source-file-only models exist with no public download.
+   */
+  | 'no-downloadable-formats'
   | 'unknown'; // Catch-all — log `details` for diagnostics
 
 // ---------------------------------------------------------------------------
@@ -175,6 +182,17 @@ export type FetchContext = {
    * The adapter MUST NOT write outside this directory.
    */
   stagingDir: string;
+  /**
+   * Optional callback fired when the adapter successfully refreshes an OAuth
+   * token (or any other credential material). The pipeline persists the new
+   * credentials to source_credentials. Adapters MUST call this with the
+   * complete refreshed credential bag, not just the changed fields.
+   *
+   * If the caller does not provide this, the adapter still refreshes for the
+   * current request but the new tokens are NOT persisted — callers without
+   * a persistence story should accept this trade-off.
+   */
+  onTokenRefreshed?: (newCredentials: Record<string, unknown>) => Promise<void> | void;
   /**
    * AbortSignal — may fire if the user removes the job or the server is
    * shutting down. Adapters SHOULD check `signal.aborted` before each

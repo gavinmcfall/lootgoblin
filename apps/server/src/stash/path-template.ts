@@ -185,11 +185,32 @@ function parseSegment(
       if (!fieldName || fieldName.trim().length === 0) {
         throw new Error(`Empty field name in '${raw}' at position ${i}`);
       }
+      const transforms = transformParts.map((t) => t.trim()).filter((t) => t.length > 0);
+
+      // Parse-time validation: truncate:<arg> must have a positive integer arg.
+      // Bare `truncate` (no colon) stays unknown-transform at resolve time per spec.
+      for (const spec of transforms) {
+        if (spec.startsWith('truncate:')) {
+          const argStr = spec.slice('truncate:'.length);
+          if (argStr.length === 0) {
+            throw new Error(`Transform "${spec}" missing argument (expected positive integer)`);
+          }
+          // Require all digits (no signs, no floats, no letters)
+          if (!/^\d+$/.test(argStr)) {
+            throw new Error(`Transform "${spec}" has non-integer argument "${argStr}"`);
+          }
+          const n = parseInt(argStr, 10);
+          if (n <= 0) {
+            throw new Error(`Transform "${spec}" argument must be > 0, got ${n}`);
+          }
+        }
+      }
+
       parts.push({
         kind: 'field',
         field: {
           name: fieldName.trim(),
-          transforms: transformParts.map((t) => t.trim()).filter((t) => t.length > 0),
+          transforms,
         },
       });
       i = closeIdx + 1;

@@ -104,6 +104,18 @@ describe('parseTemplate — parser', () => {
   it('rejects double slash', () => {
     expect(() => parseTemplate('{creator}//{title}')).toThrow();
   });
+
+  it('rejects truncate:0 at parse time', () => {
+    expect(() => parseTemplate('{title|truncate:0}')).toThrow();
+  });
+
+  it('rejects truncate:-5 at parse time', () => {
+    expect(() => parseTemplate('{title|truncate:-5}')).toThrow();
+  });
+
+  it('rejects truncate:abc at parse time', () => {
+    expect(() => parseTemplate('{title|truncate:abc}')).toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -277,19 +289,6 @@ describe('resolveTemplate — resolution', () => {
       targetOS: 'linux',
     });
     expect(result).toMatchObject({ ok: false, reason: 'segment-too-long' });
-  });
-
-  it('returns path-too-long when total path exceeds 260 chars on windows', () => {
-    const pt = parseTemplate('{title}');
-    const result = resolveTemplate(pt, {
-      metadata: { title: 'a'.repeat(261) },
-      targetOS: 'windows',
-    });
-    // 261 chars > 260 windows limit but need to also check: could be segment-too-long first
-    // 261 bytes is > 255 so this will be segment-too-long; use a 256-char title instead
-    // Actually 256 > 255 segment limit → segment-too-long. For path-too-long we need <= 255 per
-    // segment but > 260 total. Use two segments each ~130 chars.
-    expect(result.ok).toBe(false);
   });
 
   it('returns path-too-long when two segments together exceed 260 on windows', () => {

@@ -23,6 +23,9 @@ export * from './schema.indexer';
 // Ledger tables — V2-002-T13.
 export * from './schema.ledger';
 
+// Ingest jobs table — V2-003-T2.
+export * from './schema.ingest';
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 

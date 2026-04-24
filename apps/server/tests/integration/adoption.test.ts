@@ -16,9 +16,11 @@
  *   9.  Apply partial failure — file copy fail mid-way → that candidate in errors[], others ok
  *   10. noPatternDetected scenario → irregular depths, only starter templates
  *   11. Starter template applied → resolves correctly against candidates
+ *   12. Transactional rollback — hook throws (lootFile insert fails) → source intact, destination rolled back, no DB row leaked
+ *   13. linkOrCopy returns failed (destination pre-exists) → source intact, reported in errors, other candidates unaffected
  */
 
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import * as fsp from 'node:fs/promises';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -453,5 +455,165 @@ describe('AdoptionEngine — apply edge cases', () => {
     expect(report.lootsCreated + report.skippedCandidates.length + report.errors.length).toBe(
       proposal.candidates.length,
     );
+  }, 30_000);
+
+  it('12. transactional rollback: hook throws (lootFile insert fails) → source intact, destination rolled back, no DB row leaked', async () => {
+    const scratch = await makeScratchDir();
+    const userId = await seedUser();
+
+    // Two candidates — one with hook failure, one that should still adopt cleanly.
+    await writeFile(path.join(scratch, 'FailCandidate', 'fail.stl'));
+    await writeFile(path.join(scratch, 'OkCandidate', 'ok.stl'));
+
+    const stashRootId = await seedStashRoot(userId, scratch);
+    const proposal = await engine().scan(stashRootId);
+    expect(proposal.candidates.length).toBe(2);
+
+    const failCandidate = proposal.candidates.find(
+      (c) => c.folderRelativePath === 'FailCandidate',
+    )!;
+    const okCandidate = proposal.candidates.find(
+      (c) => c.folderRelativePath === 'OkCandidate',
+    )!;
+
+    // Remember source absolute path BEFORE apply, so we can assert it still exists after.
+    const failSourcePath = failCandidate.files[0]!.absolutePath;
+    const okSourcePath = okCandidate.files[0]!.absolutePath;
+    expect(fs.existsSync(failSourcePath)).toBe(true);
+
+    // Spy on the DB's insert method. When called with the lootFiles table AND the
+    // lootFile row is for the fail candidate's path, throw. Other inserts pass through.
+    // The throw propagates from the hook into linkOrCopy, which must:
+    //   - roll back the destination (unlink it)
+    //   - leave the source intact (not unlink)
+    //   - return status: 'failed', reason: 'db-commit-failed'
+    const realDb = getDb(DB_URL) as DB;
+    const originalInsert = realDb.insert.bind(realDb);
+    const insertSpy = vi.spyOn(realDb, 'insert').mockImplementation((table: unknown) => {
+      const builder = originalInsert(table as Parameters<typeof originalInsert>[0]);
+      if (table === schema.lootFiles) {
+        // Wrap the .values() chain so we can inspect the row before inserting.
+        const originalValues = builder.values.bind(builder);
+        builder.values = ((row: Record<string, unknown>) => {
+          if (typeof row.path === 'string' && row.path.includes('fail')) {
+            // Return a thenable/promise that rejects when awaited — mimics a
+            // failing drizzle insert. Must still be chainable.
+            const rejection = Promise.reject(new Error('synthetic lootFile insert failure'));
+            // Silence unhandledRejection by attaching a noop catch.
+            rejection.catch(() => {});
+            return {
+              then: rejection.then.bind(rejection),
+              catch: rejection.catch.bind(rejection),
+              finally: rejection.finally.bind(rejection),
+            };
+          }
+          return originalValues(row);
+        }) as typeof builder.values;
+      }
+      return builder;
+    });
+
+    const plan = {
+      stashRootId,
+      chosenTemplate: '{title|slug}',
+      mode: 'copy-then-cleanup' as const,
+      candidateIds: [failCandidate.id, okCandidate.id],
+      confirmFieldsUserSupplied: {
+        [failCandidate.id]: { title: 'fail' }, // slug includes 'fail' — triggers mock
+        [okCandidate.id]: { title: 'okay' },
+      },
+    };
+
+    try {
+      const report = await engine().apply(plan);
+
+      // The fail candidate's loot row was inserted, but the lootFile hook threw.
+      // The adapter rolled back the destination. Source file MUST still exist.
+      expect(fs.existsSync(failSourcePath), 'fail candidate source must remain intact').toBe(true);
+
+      // The destination for the fail candidate should NOT exist (rollback worked).
+      const failDest = path.join(scratch, 'fail', 'fail.stl');
+      expect(fs.existsSync(failDest), 'fail candidate destination must be rolled back').toBe(false);
+
+      // The error is reported.
+      expect(report.errors.length).toBeGreaterThanOrEqual(1);
+      const failError = report.errors.find((e) => e.candidateId === failCandidate.id);
+      expect(failError).toBeDefined();
+
+      // No lootFile row for the failing file was inserted.
+      const allLootFiles = await db().select().from(schema.lootFiles);
+      const leaked = allLootFiles.filter(
+        (lf) => typeof lf.path === 'string' && lf.path.includes('fail') && lf.path.endsWith('fail.stl'),
+      );
+      expect(leaked, 'no lootFile row should have been persisted for the failing candidate').toHaveLength(0);
+
+      // The OK candidate should have adopted successfully (other candidates unaffected).
+      // Its source should be GONE (moved in immediate cleanup).
+      expect(fs.existsSync(okSourcePath), 'ok candidate source should have been unlinked').toBe(false);
+      // And its destination should exist.
+      const okDest = path.join(scratch, 'okay', 'ok.stl');
+      expect(fs.existsSync(okDest), 'ok candidate destination should exist').toBe(true);
+    } finally {
+      insertSpy.mockRestore();
+    }
+  }, 30_000);
+
+  it('13. linkOrCopy returns failed (destination pre-exists) → source intact, reported in errors, other candidates unaffected', async () => {
+    const scratch = await makeScratchDir();
+    const userId = await seedUser();
+
+    // Two candidates. For the "blocked" one, pre-create the destination
+    // so linkOrCopy returns { status: 'failed', reason: 'destination-exists' }.
+    await writeFile(path.join(scratch, 'BlockedCandidate', 'blocked.stl'), 'source content');
+    await writeFile(path.join(scratch, 'CleanCandidate', 'clean.stl'), 'source content');
+
+    const stashRootId = await seedStashRoot(userId, scratch);
+    const proposal = await engine().scan(stashRootId);
+    expect(proposal.candidates.length).toBe(2);
+
+    const blockedCand = proposal.candidates.find(
+      (c) => c.folderRelativePath === 'BlockedCandidate',
+    )!;
+    const cleanCand = proposal.candidates.find(
+      (c) => c.folderRelativePath === 'CleanCandidate',
+    )!;
+
+    const blockedSourcePath = blockedCand.files[0]!.absolutePath;
+
+    // Pre-create the destination that template {title|slug} would resolve to.
+    // title will be "blocked" (slug of "blocked") → destination folder = "blocked".
+    const blockedDest = path.join(scratch, 'blocked', 'blocked.stl');
+    await fsp.mkdir(path.dirname(blockedDest), { recursive: true });
+    await fsp.writeFile(blockedDest, 'pre-existing content');
+    expect(fs.existsSync(blockedDest)).toBe(true);
+
+    const plan = {
+      stashRootId,
+      chosenTemplate: '{title|slug}',
+      mode: 'copy-then-cleanup' as const,
+      candidateIds: [blockedCand.id, cleanCand.id],
+      confirmFieldsUserSupplied: {
+        [blockedCand.id]: { title: 'blocked' },
+        [cleanCand.id]: { title: 'clean' },
+      },
+    };
+
+    const report = await engine().apply(plan);
+
+    // Source of blocked candidate MUST still exist (linkOrCopy never reached unlink).
+    expect(fs.existsSync(blockedSourcePath), 'blocked candidate source must remain intact').toBe(true);
+
+    // Pre-existing destination should still contain its original content (not overwritten).
+    const existingContent = await fsp.readFile(blockedDest, 'utf8');
+    expect(existingContent).toBe('pre-existing content');
+
+    // Error reported for blocked candidate.
+    const blockedError = report.errors.find((e) => e.candidateId === blockedCand.id);
+    expect(blockedError, 'blocked candidate should be in report.errors').toBeDefined();
+    expect(blockedError!.error).toMatch(/destination-exists|Partial candidate/);
+
+    // Clean candidate unaffected — successfully adopted.
+    const cleanDest = path.join(scratch, 'clean', 'clean.stl');
+    expect(fs.existsSync(cleanDest), 'clean candidate destination should exist').toBe(true);
   }, 30_000);
 });

@@ -293,67 +293,12 @@ async function applyCopyThenCleanup(
   now: Date,
   report: AdoptionReport,
 ): Promise<void> {
-  // Move each file to its resolved path under the stash root.
-  // Files keep their original filename (only the containing folder changes).
-  const movedFiles: Array<{
-    newRelativePath: string;
-    absolutePath: string;
-    size: number;
-    hash: string;
-  }> = [];
-  let anyMoveFailed = false;
-
-  for (const file of candidate.files) {
-    const filename = path.basename(file.relativePath);
-    const newRelativePath = `${resolvedPath}/${filename}`;
-    const destination = path.join(stashRootPath, newRelativePath);
-
-    let hash = '';
-    const moveResult = await linkOrCopy({
-      source: file.absolutePath,
-      destination,
-      cleanupPolicy: 'immediate',
-      onAfterDestinationVerified: async () => {
-        // Will be called after destination is verified — hash computed below.
-      },
-    });
-
-    if (moveResult.status === 'failed') {
-      logger.warn(
-        { candidateId: candidate.id, file: file.relativePath, reason: moveResult.reason },
-        'adoption: file move failed in copy-then-cleanup mode',
-      );
-      anyMoveFailed = true;
-      break; // Skip this candidate
-    }
-
-    // Compute hash of destination
-    try {
-      hash = await sha256Hex(destination);
-    } catch {
-      hash = '0000000000000000000000000000000000000000000000000000000000000000';
-    }
-
-    movedFiles.push({
-      newRelativePath,
-      absolutePath: destination,
-      size: file.size,
-      hash,
-    });
-  }
-
-  if (anyMoveFailed) {
-    report.errors.push({
-      candidateId: candidate.id,
-      error: `One or more file moves failed; candidate skipped`,
-    });
-    return;
-  }
-
-  // All files moved — insert DB rows.
-  const lootId = crypto.randomUUID();
-
-  // Use effective metadata (includes user-supplied overrides) for the loot row.
+  // ── Phase 1: Insert loot row FIRST (FK parent for lootFiles). ─────────────
+  //
+  // If loot insert fails, no files have moved yet — source files intact,
+  // no destination created, no DB rows leaked. Clean early-exit.
+  //
+  // Use effective metadata (user-supplied overrides) for the loot row.
   const effectiveTitle =
     (metadata['title'] as string | undefined) ??
     candidate.classification.title?.value ??
@@ -371,6 +316,8 @@ async function applyCopyThenCleanup(
     candidate.classification.license?.value ??
     null;
   const effectiveTags = candidate.classification.tags?.value ?? [];
+
+  const lootId = crypto.randomUUID();
 
   try {
     await db.insert(schema.loot).values({
@@ -390,35 +337,101 @@ async function applyCopyThenCleanup(
   } catch (err) {
     report.errors.push({
       candidateId: candidate.id,
-      error: `Failed to insert loot row after move: ${(err as Error).message}`,
+      error: `Failed to insert loot row: ${(err as Error).message}`,
     });
     return;
   }
 
+  // ── Phase 2: Per-file linkOrCopy with lootFile insert INSIDE the hook. ────
+  //
+  // This is the critical transactional-safety step. The T3 FS adapter calls
+  // onAfterDestinationVerified() AFTER destination is verified but BEFORE
+  // source is unlinked. If the hook throws, the adapter rolls back the
+  // destination and leaves the source intact — so a DB insert failure
+  // never leaves a file moved with no DB record tracking it.
+  //
+  // Partial-candidate note: if a later file fails mid-candidate, earlier
+  // files in the same candidate have already been moved + have their
+  // lootFile rows. The loot row is retained. Other candidates in the plan
+  // continue to be processed. This is intentional: per-file transactional
+  // safety is the strongest guarantee we can make without wrapping the
+  // entire candidate in a cross-filesystem distributed transaction.
   let fileCount = 0;
-  for (const moved of movedFiles) {
-    const fileId = crypto.randomUUID();
-    const ext = path.extname(moved.newRelativePath).slice(1).toLowerCase() || 'bin';
+  let perFileError: string | null = null;
 
-    try {
-      await db.insert(schema.lootFiles).values({
-        id: fileId,
-        lootId,
-        path: moved.newRelativePath,
-        format: ext,
-        size: moved.size,
-        hash: moved.hash,
-        origin: 'adoption',
-        provenance: null,
-        createdAt: now,
-      });
-      fileCount++;
-    } catch (err) {
+  for (const file of candidate.files) {
+    const filename = path.basename(file.relativePath);
+    const newRelativePath = `${resolvedPath}/${filename}`;
+    const destination = path.join(stashRootPath, newRelativePath);
+
+    const moveResult = await linkOrCopy({
+      source: file.absolutePath,
+      destination,
+      cleanupPolicy: 'immediate',
+      // The hook runs after destination verification, before source unlink.
+      // If it throws, the adapter:
+      //   (a) removes the destination (rollback),
+      //   (b) leaves the source intact,
+      //   (c) returns status 'failed' with reason 'db-commit-failed'.
+      // Thus any throw inside here surfaces as a failed moveResult, not a
+      // data-loss window.
+      onAfterDestinationVerified: async () => {
+        // Compute hash of destination (verified but not yet unlinked).
+        // Best-effort: if hashing fails, use zero-hash (matches in-place
+        // mode's fallback). The move is still transactional.
+        let hash: string;
+        try {
+          hash = await sha256Hex(destination);
+        } catch {
+          hash = '0000000000000000000000000000000000000000000000000000000000000000';
+        }
+
+        const fileId = crypto.randomUUID();
+        const ext = path.extname(newRelativePath).slice(1).toLowerCase() || 'bin';
+
+        // This throw propagates up into linkOrCopy, triggering rollback.
+        // Do NOT try/catch here.
+        await db.insert(schema.lootFiles).values({
+          id: fileId,
+          lootId,
+          path: newRelativePath,
+          format: ext,
+          size: file.size,
+          hash,
+          origin: 'adoption',
+          provenance: null,
+          createdAt: now,
+        });
+      },
+    });
+
+    if (moveResult.status === 'failed') {
+      // linkOrCopy failed at any step (source-not-found, destination-exists,
+      // mkdir-failed, link/copy-failed, hash-mismatch, db-commit-failed,
+      // source-cleanup-failed). Adapter has already rolled back destination
+      // if applicable. Stop processing this candidate's remaining files.
+      const reason =
+        moveResult.reason === 'db-commit-failed'
+          ? `lootFile insert failed (destination rolled back): ${String((moveResult.error as Error | undefined)?.message ?? 'unknown')}`
+          : `${moveResult.reason}: ${moveResult.details}`;
       logger.warn(
-        { candidateId: candidate.id, path: moved.newRelativePath, err },
-        'adoption: failed to insert lootFile row (copy-then-cleanup)',
+        { candidateId: candidate.id, file: file.relativePath, reason: moveResult.reason, rollbackError: moveResult.rollbackError },
+        'adoption: file move failed in copy-then-cleanup mode',
       );
+      perFileError = reason;
+      break;
     }
+
+    fileCount++;
+  }
+
+  if (perFileError !== null) {
+    report.errors.push({
+      candidateId: candidate.id,
+      error: `Partial candidate — ${fileCount} of ${candidate.files.length} files moved before failure: ${perFileError}`,
+    });
+    // Don't decrement lootsCreated — loot row is real, some files are too.
+    // The partial state is visible to the user via the error report.
   }
 
   report.lootsCreated++;

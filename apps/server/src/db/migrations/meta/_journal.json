@@ -15,6 +15,41 @@
       "when": 1776477478176,
       "tag": "0001_silent_fixer",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776477600000,
+      "tag": "0002_v2_auth_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1776971489073,
+      "tag": "0003_plain_green_goblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1745510400000,
+      "tag": "0004_config_resolver",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1745596800000,
+      "tag": "0005_api_key_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1745683200000,
+      "tag": "0006_instance_identity",
+      "breakpoints": true
     }
   ]
 }

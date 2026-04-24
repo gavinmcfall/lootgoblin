@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@/auth';
 import { pendingChallenges } from '../store';
+import { getSessionOrNull } from '@/auth/helpers';
 
-export async function GET() {
-  if (!(await auth())) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+export async function GET(req: Request) {
+  // Session-only: listing pending pairing challenges is a UI admin action.
+  const session = await getSessionOrNull(req);
+  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const now = Date.now();
   const list = [...pendingChallenges.entries()]
     .filter(([, v]) => !v.approvedKey && v.expires > now)

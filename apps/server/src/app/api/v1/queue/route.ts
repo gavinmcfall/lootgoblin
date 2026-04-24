@@ -1,14 +1,32 @@
 import { NextResponse } from 'next/server';
-import { auth } from '@/auth';
 import { and, desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
 import { enqueueItem } from '@/workers/queue';
 import { randomUUID } from 'node:crypto';
+import { getSessionOrNull, isValidApiKeyWithScope } from '@/auth/helpers';
+import { resolveAcl } from '@/acl/resolver';
 
 export async function POST(req: Request) {
-  const session = await auth();
-  const apiKey = req.headers.get('x-api-key');
-  if (!session && !apiKey) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  // Session-or-apikey: the extension submits items via API key; the UI uses session.
+  // API key access requires extension_pairing scope.
+  const session = await getSessionOrNull(req);
+  if (!session) {
+    const keyResult = await isValidApiKeyWithScope(req, ['extension_pairing']);
+    if (!keyResult.valid) {
+      if (keyResult.reason === 'wrong-scope') {
+        return NextResponse.json(
+          { error: 'wrong-scope', expected: keyResult.expected, actual: keyResult.actual },
+          { status: 403 },
+        );
+      }
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+    // Extension API key path is pre-authorised by scope check above — skip ACL.
+  } else {
+    const user = { id: session.user.id, role: session.user.role };
+    const acl = resolveAcl({ user, resource: { kind: 'loot' }, action: 'create' });
+    if (!acl.allowed) return NextResponse.json({ error: acl.reason }, { status: 403 });
+  }
   const body = await req.json() as {
     sourceId: string;
     sourceItemId: string;
@@ -50,9 +68,11 @@ export async function POST(req: Request) {
   return NextResponse.json({ id });
 }
 
-export async function GET() {
-  const session = await auth();
-  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+export async function GET(req: Request) {
+  const session = await getSessionOrNull(req);
+  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const acl = resolveAcl({ user, resource: { kind: 'loot' }, action: 'read' });
+  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
   const db = getDb() as any;
   const rows = await db.select().from(schema.items).orderBy(desc(schema.items.createdAt)).limit(200);
   return NextResponse.json({ items: rows });

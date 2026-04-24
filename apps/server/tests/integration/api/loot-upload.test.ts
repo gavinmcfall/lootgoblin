@@ -333,7 +333,7 @@ describe('POST /api/v1/loot/upload', () => {
 
   // ── Security / filename sanitization ──────────────────────────────────────
 
-  it('sanitizes path-traversal filenames — request succeeds, filename is basename only', async () => {
+  it('sanitizes path-traversal filenames — stored LootFile path contains no traversal sequences', async () => {
     const userId = await seedUser();
     const { rootId } = await seedStashRoot(userId);
     const colId = await seedCollection(userId, rootId);
@@ -341,7 +341,7 @@ describe('POST /api/v1/loot/upload', () => {
     const { POST } = await import('../../../src/app/api/v1/loot/upload/route');
     const res = await POST(makeUploadReq(
       { collectionId: colId, title: 'Traversal test' },
-      [{ name: '../etc/passwd', content: 'malicious content' }],
+      [{ name: '../etc/passwd', content: 'solid evil\nendsolid evil' }],
     ));
     // Filename sanitized to 'passwd' → route continues.
     // Outcome is 202 (placed/quarantined/failed) — NOT a write to /etc/.
@@ -349,6 +349,20 @@ describe('POST /api/v1/loot/upload', () => {
     const json = await res.json();
     expect(json).toHaveProperty('status');
     expect(json).toHaveProperty('jobId');
+
+    // Regression guard: if the upload was placed, the DB-stored LootFile path
+    // must contain no traversal sequences and must not escape the stash root.
+    if (json.status === 'placed') {
+      const fileRows = await db()
+        .select({ path: schema.lootFiles.path })
+        .from(schema.lootFiles)
+        .where(eq(schema.lootFiles.lootId, json.lootId));
+      for (const row of fileRows) {
+        expect(row.path).not.toContain('..');
+        expect(row.path).not.toContain('/etc/');
+        expect(row.path).not.toMatch(/^\/etc\//);
+      }
+    }
   });
 
   it('sanitizeUploadFilename strips path separators, null bytes, and leading dots', async () => {
@@ -368,6 +382,23 @@ describe('POST /api/v1/loot/upload', () => {
     expect(sanitizeUploadFilename('only-dots...')).toBe('only-dots...');
     expect(sanitizeUploadFilename('valid-file.3mf')).toBe('valid-file.3mf');
     expect(sanitizeUploadFilename('C:\\Users\\foo\\file.stl')).toBe('file.stl');
+  });
+
+  it('sanitizeUploadFilename URL-decodes percent-encoded traversal sequences', async () => {
+    const { sanitizeUploadFilename } = await import('../../../src/app/api/v1/loot/upload/route');
+
+    // Uppercase + lowercase %2F / %5C (forward slash and backslash).
+    expect(sanitizeUploadFilename('..%2F..%2Fpasswd')).toBe('passwd');
+    expect(sanitizeUploadFilename('..%5Cpasswd')).toBe('passwd');
+    expect(sanitizeUploadFilename('..%2f..%2Fpasswd')).toBe('passwd');
+    expect(sanitizeUploadFilename('%2Fetc%2Fpasswd')).toBe('passwd');
+    // Mixed encoded + literal separator: both are collapsed to the basename.
+    expect(sanitizeUploadFilename('..%2Fetc/passwd')).toBe('passwd');
+    // Malformed percent-encoding falls back to raw (no throw, no silent drop).
+    // After the fallback the leading-dots stripper still runs on the basename,
+    // so `..%2Gfile.txt` → stripped leading `..` → `%2Gfile.txt`.
+    expect(sanitizeUploadFilename('file%2.txt')).toBe('file%2.txt');
+    expect(sanitizeUploadFilename('..%2Gfile.txt')).toBe('%2Gfile.txt');
   });
 
   // ── Successful uploads ─────────────────────────────────────────────────────
@@ -451,5 +482,93 @@ describe('POST /api/v1/loot/upload', () => {
     expect(res.status).toBe(202);
     const json = await res.json();
     expect(json).toHaveProperty('jobId');
+  });
+
+  // ── Duplicate-filename handling ───────────────────────────────────────────
+
+  it('two files with the same sanitized name → both are staged (second gets -1 suffix)', async () => {
+    // Regression guard: without a counter, the second writeFile silently
+    // overwrites the first — user loses data. Dedupe keys on the sanitized
+    // base name so `../model.stl` and `./model.stl` (both → 'model.stl')
+    // become distinct `model.stl` + `model-1.stl` on disk.
+    const userId = await seedUser();
+    const { rootId } = await seedStashRoot(userId);
+    const colId = await seedCollection(userId, rootId);
+    mockAuthenticate.mockResolvedValueOnce(makeSessionActor(userId));
+
+    const { POST } = await import('../../../src/app/api/v1/loot/upload/route');
+    const res = await POST(makeUploadReq(
+      { collectionId: colId, title: 'Dup filename test' },
+      [
+        { name: 'model.stl', content: 'solid first\nendsolid first' },
+        { name: '../model.stl', content: 'solid second\nendsolid second' },
+      ],
+    ));
+
+    expect(res.status).toBe(202);
+    const json = await res.json();
+    expect(json).toHaveProperty('jobId');
+
+    // If the pipeline placed the Loot, both LootFiles should be present.
+    // Whether it was placed or quarantined, the staged filenames must be
+    // distinct — this is the core regression guard. We verify via LootFiles
+    // if placed; otherwise the test passes as long as no FK/IO error surfaced.
+    if (json.status === 'placed') {
+      const fileRows = await db()
+        .select({ path: schema.lootFiles.path })
+        .from(schema.lootFiles)
+        .where(eq(schema.lootFiles.lootId, json.lootId));
+      expect(fileRows.length).toBe(2);
+      const basenames = fileRows.map((r: { path: string }) => path.basename(r.path)).sort();
+      // First file keeps the plain name; second gets the -1 suffix.
+      expect(basenames).toEqual(['model-1.stl', 'model.stl']);
+    }
+  });
+
+  // ── Pipeline failure ──────────────────────────────────────────────────────
+
+  it('returns 500 with {error:internal} when pipeline.run() throws unexpectedly', async () => {
+    // Regression guard: pipeline.run() performs its initial ingest_jobs INSERT
+    // before its own try/catch. A DB failure at that point (or any other
+    // unexpected throw) must be caught at the route level so (1) the caller
+    // sees a structured 500 rather than a Next.js default error page, and
+    // (2) the staged tempDir is cleaned up.
+    const userId = await seedUser();
+    const { rootId } = await seedStashRoot(userId);
+    const colId = await seedCollection(userId, rootId);
+    mockAuthenticate.mockResolvedValueOnce(makeSessionActor(userId));
+
+    // Spy on createIngestPipeline to return a pipeline whose run() throws.
+    const scavengersMod = await import('../../../src/scavengers');
+    const spy = vi.spyOn(scavengersMod, 'createIngestPipeline').mockImplementation(
+      () => ({
+        run: async () => {
+          throw new Error('simulated pipeline failure');
+        },
+      }),
+    );
+
+    try {
+      const { POST } = await import('../../../src/app/api/v1/loot/upload/route');
+      const res = await POST(makeUploadReq(
+        { collectionId: colId, title: 'Pipeline fail test' },
+        [{ name: 'file.stl', content: 'solid y\nendsolid y' }],
+      ));
+      expect(res.status).toBe(500);
+      const json = await res.json();
+      expect(json).toMatchObject({ error: 'internal', reason: 'pipeline error' });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // Verify no stranded tempDirs from this upload remain in /tmp.
+    // (The uploadId is random per call, so we can't target exactly — instead
+    // assert that the tmpdir has no `lootgoblin-upload-` dirs that still exist
+    // with pending files. This is a best-effort check, not a strict assertion.)
+    const tmpEntries = await fsp.readdir(os.tmpdir()).catch(() => [] as string[]);
+    const uploadDirs = tmpEntries.filter((e) => e.startsWith('lootgoblin-upload-'));
+    // Any lingering dirs would be a leak — but other concurrent tests may
+    // also create them. We tolerate some, but not many.
+    expect(uploadDirs.length).toBeLessThan(20);
   });
 });

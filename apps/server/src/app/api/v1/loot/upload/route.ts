@@ -30,7 +30,7 @@ import { authenticateRequest, INVALID_API_KEY } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { getDb, schema } from '@/db/client';
 import { eq } from 'drizzle-orm';
-import { createDefaultRegistry, createIngestPipeline } from '@/scavengers';
+import { createDefaultRegistry, createIngestPipeline, type IngestOutcome } from '@/scavengers';
 import { logger } from '@/logger';
 
 // ---------------------------------------------------------------------------
@@ -54,6 +54,9 @@ const UploadMetadataBody = z.object({
 // requests.
 // ---------------------------------------------------------------------------
 
+// HMR-safe: stateless factory — createDefaultRegistry() returns a fresh Map-backed
+// registry with no external state. Multiple module reloads during dev HMR produce
+// independent registries that are functionally equivalent.
 const _registry = createDefaultRegistry();
 
 // ---------------------------------------------------------------------------
@@ -136,6 +139,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // 'update' grants write access to collection contents — adding a Loot to a
+  // Collection mutates the Collection's membership, so the uploader must have
+  // update permission on the target. 'create' is NOT used because that action
+  // refers to creating a Collection itself, not adding items to one.
   const acl = resolveAcl({
     user,
     resource: { kind: 'collection', ownerId: collectionRow.ownerId },
@@ -171,9 +178,26 @@ export async function POST(req: NextRequest) {
   const tempDir = path.join(os.tmpdir(), `lootgoblin-upload-${uploadId}`);
   await fsp.mkdir(tempDir, { recursive: true });
 
+  // Dedupe filenames: browsers don't enforce uniqueness of uploaded filenames,
+  // and our sanitizer can also collide (e.g. '../model.stl' and './model.stl'
+  // both sanitize to 'model.stl'). Without a counter, the second writeFile
+  // would silently overwrite the first — user loses data with no feedback.
+  // On first occurrence: use the base name as-is.
+  // On subsequent occurrences: insert '-N' before the extension (model-1.stl).
+  const seen = new Map<string, number>();
   try {
     for (const file of files) {
-      const safe = sanitizeUploadFilename(file.name) ?? `upload-${randomUUID()}.bin`;
+      const base = sanitizeUploadFilename(file.name) ?? `upload-${randomUUID()}.bin`;
+      const count = seen.get(base) ?? 0;
+      seen.set(base, count + 1);
+
+      let safe = base;
+      if (count > 0) {
+        const ext = path.extname(base);
+        const stem = base.slice(0, base.length - ext.length);
+        safe = `${stem}-${count}${ext}`;
+      }
+
       const buf = Buffer.from(await file.arrayBuffer());
       await fsp.writeFile(path.join(tempDir, safe), buf);
     }
@@ -203,13 +227,32 @@ export async function POST(req: NextRequest) {
     collectionId,
   });
 
-  const outcome = await pipeline.run({
-    adapter,
-    target: {
-      kind: 'raw',
-      payload: { tempDir, metadata } satisfies import('@/scavengers').UploadRawPayload,
-    },
-  });
+  // pipeline.run() performs its initial ingest_jobs INSERT BEFORE its own
+  // try/catch block. Any DB failure at that point (lock timeout, schema
+  // mismatch mid-migration, FK violation) propagates uncaught and would leak
+  // the tempDir. Wrap the run in a route-level guard so the tempDir is always
+  // cleaned up and the caller sees a structured 500 instead of Next.js's
+  // default error page.
+  let outcome: IngestOutcome;
+  try {
+    outcome = await pipeline.run({
+      adapter,
+      target: {
+        kind: 'raw',
+        payload: { tempDir, metadata } satisfies import('@/scavengers').UploadRawPayload,
+      },
+    });
+  } catch (err) {
+    logger.error(
+      { err, uploadId, collectionId },
+      'loot/upload: pipeline.run() threw unexpectedly',
+    );
+    await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    return NextResponse.json(
+      { error: 'internal', reason: 'pipeline error' },
+      { status: 500 },
+    );
+  }
 
   return NextResponse.json(outcome, { status: 202 });
 }
@@ -226,6 +269,8 @@ export async function POST(req: NextRequest) {
  * sanitization (caller should substitute a safe fallback name).
  *
  * Rules:
+ *   - URL-decode the input first so that percent-encoded separators
+ *     (e.g. `..%2F..%2Fpasswd`) are caught by the path-traversal strip.
  *   - Strip everything up to and including the last path separator (/ or \)
  *     to prevent directory traversal.
  *   - Remove null bytes (\0) and ASCII control characters (0x01–0x1F).
@@ -235,8 +280,23 @@ export async function POST(req: NextRequest) {
 export function sanitizeUploadFilename(raw: string): string | null {
   if (!raw) return null;
 
+  // Decode percent-encoded separators BEFORE splitting, so encoded traversal
+  // (e.g. `..%2F..%2Fpasswd`) is caught the same as literal traversal.
+  // Latent hazard otherwise: any downstream consumer that URL-decodes
+  // filenames (Content-Disposition header, UI link render) would see an
+  // active traversal sequence even though our local filesystem writes are
+  // safe (POSIX filesystems treat %2F as a literal character).
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    // Malformed percent-encoding (e.g. `file%2.txt`) — fall back to the raw
+    // input. The remaining strip rules still apply.
+    decoded = raw;
+  }
+
   // Strip path traversal: take only the basename component.
-  const base = raw.split(/[/\\]/).pop();
+  const base = decoded.split(/[/\\]/).pop();
   if (!base) return null;
 
   // Remove null bytes and ASCII control characters (U+0000–U+001F).
@@ -248,6 +308,11 @@ export function sanitizeUploadFilename(raw: string): string | null {
   if (cleaned.length === 0) return null;
 
   // Truncate to 255 bytes (UTF-8 aware).
+  //
+  // Buffer.slice drops incomplete multibyte sequences silently — intentional.
+  // This is safer than TextDecoder({fatal:true}) which would throw on
+  // truncation, or string.slice(0, 255) which counts UTF-16 code units not
+  // UTF-8 bytes (our actual filesystem limit on most platforms is 255 bytes).
   const truncated = Buffer.from(cleaned).slice(0, 255).toString('utf8');
 
   return truncated.length > 0 ? truncated : null;

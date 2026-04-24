@@ -14,6 +14,9 @@ export * from './schema.config';
 // Stash pillar tables — V2-002-T1.
 export * from './schema.stash';
 
+// Inbox Triage tables — V2-002-T8.
+export * from './schema.inbox';
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 

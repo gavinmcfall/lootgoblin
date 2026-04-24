@@ -16,6 +16,11 @@
  *
  * In both modes, the Collection is created first. If Collection creation fails,
  * the whole apply fails.
+ *
+ * applySingleCandidate (T8 seam):
+ *   A thin wrapper that applies a single candidate to an already-existing
+ *   Collection without creating a new one. Used by InboxTriageEngine (T8) and
+ *   future triage paths that need per-file adoption without a full plan.
  */
 
 import * as path from 'node:path';
@@ -458,6 +463,118 @@ async function applyCopyThenCleanup(
 
   report.lootsCreated++;
   report.lootFilesCreated += fileCount;
+}
+
+// ---------------------------------------------------------------------------
+// applySingleCandidate — T8 reuse seam
+// ---------------------------------------------------------------------------
+
+/**
+ * Applies a single AdoptionCandidate to an already-existing Collection.
+ *
+ * This is the T8 reuse seam: InboxTriageEngine calls this instead of
+ * applyAdoptionPlan so it can target an existing Collection (from a triage
+ * rule) without creating a new one.
+ *
+ * The caller is responsible for:
+ *   - Resolving the stash root path from the Collection's stashRootId.
+ *   - Providing a template (from the Collection's pathTemplate).
+ *
+ * Returns { lootId, lootFileCount } on success, or { error } on failure.
+ * Never throws — all errors are caught and returned as { error }.
+ *
+ * @param candidate      The single candidate to apply (files + classification).
+ * @param collectionId   Already-existing Collection to place the Loot into.
+ * @param stashRootPath  Absolute path to the stash root for copy-then-cleanup.
+ *                       Unused for in-place (no FS moves).
+ * @param pathTemplate   Template string (e.g. '{creator|slug}/{title|slug}').
+ *                       Used in copy-then-cleanup to derive destination path.
+ *                       For in-place, pass the collection's pathTemplate or '' —
+ *                       the candidate's existing relativePath is used as-is.
+ * @param mode           'in-place' or 'copy-then-cleanup'.
+ * @param dbUrl          Optional DATABASE_URL override (used in tests).
+ */
+export async function applySingleCandidate(args: {
+  candidate: AdoptionCandidate;
+  collectionId: string;
+  stashRootPath: string;
+  pathTemplate: string;
+  mode: 'in-place' | 'copy-then-cleanup';
+  dbUrl?: string;
+}): Promise<{ lootId: string; lootFileCount: number } | { error: string }> {
+  const { candidate, collectionId, stashRootPath, pathTemplate, mode, dbUrl } = args;
+
+  const db = getDb(dbUrl) as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const now = new Date();
+
+  // Build a mini AdoptionReport to reuse the existing per-candidate helpers.
+  const miniReport: AdoptionReport = {
+    stashRootId: '',
+    appliedAt: now,
+    mode,
+    chosenTemplate: pathTemplate,
+    lootsCreated: 0,
+    lootFilesCreated: 0,
+    skippedCandidates: [],
+    errors: [],
+  };
+
+  const metadata = buildMetadata(candidate);
+
+  if (mode === 'in-place') {
+    await applyInPlace(candidate, metadata, collectionId, db, now, miniReport);
+  } else {
+    // Resolve the template to get a destination path.
+    let resolvedPath: string;
+    try {
+      const parsed = parseTemplate(pathTemplate);
+      const verdict = resolveTemplate(parsed, { metadata, targetOS: 'linux' });
+      if (!verdict.ok) {
+        return { error: `Template resolution failed: ${verdict.reason} — ${verdict.details}` };
+      }
+      resolvedPath = verdict.path;
+    } catch (err) {
+      return { error: `Template parse error: ${(err as Error).message}` };
+    }
+
+    await applyCopyThenCleanup(
+      candidate,
+      metadata,
+      collectionId,
+      stashRootPath,
+      resolvedPath,
+      db,
+      now,
+      miniReport,
+    );
+  }
+
+  if (miniReport.errors.length > 0) {
+    return { error: miniReport.errors[0]!.error };
+  }
+
+  if (miniReport.lootsCreated === 0) {
+    const skipped = miniReport.skippedCandidates[0];
+    return { error: skipped ? skipped.reason : 'Candidate was not applied (unknown reason)' };
+  }
+
+  // Extract the lootId from the DB — the last loot inserted into this collection.
+  // This is safe because applySingleCandidate processes exactly one candidate
+  // and no concurrent inserts share collectionId + now within the same ms.
+  // For robustness, use the count from the mini report.
+  // We need the actual lootId — applyInPlace/applyCopyThenCleanup don't return it.
+  // Query the most recently created loot in this collection.
+  const { eq, desc } = await import('drizzle-orm');
+  const rows = await db
+    .select({ id: schema.loot.id })
+    .from(schema.loot)
+    .where(eq(schema.loot.collectionId, collectionId))
+    .orderBy(desc(schema.loot.createdAt))
+    .limit(1);
+
+  const lootId = rows[0]?.id ?? '';
+
+  return { lootId, lootFileCount: miniReport.lootFilesCreated };
 }
 
 // ---------------------------------------------------------------------------

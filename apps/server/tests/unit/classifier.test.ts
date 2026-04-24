@@ -235,14 +235,41 @@ describe('createClassifier — consensus combiner', () => {
     expect(result.tags).toBeUndefined();
   });
 
-  it('13. provider that rejects → classifier rejects', async () => {
+  it('13a. provider that throws → skipped, remaining providers still contribute', async () => {
     const badProvider: ClassifierProvider = {
       name: 'bad',
       classify: async () => { throw new Error('provider failed'); },
     };
+    const goodProvider = stubProvider('good', {
+      title: { value: 'Survived', confidence: 0.9 },
+    });
 
-    const classifier = createClassifier({ providers: [badProvider] });
-    await expect(classifier.classify(EMPTY_INPUT)).rejects.toThrow('provider failed');
+    const classifier = createClassifier({ providers: [badProvider, goodProvider] });
+    // Must NOT reject — bad provider's failure is isolated.
+    const result = await classifier.classify(EMPTY_INPUT);
+
+    expect(result.title?.value).toBe('Survived');
+    expect(result.title?.source).toBe('good');
+    expect(result.needsUserInput).not.toContain('title');
+  });
+
+  it('13b. all providers throw → required fields in needsUserInput, no values populated', async () => {
+    const bad1: ClassifierProvider = {
+      name: 'bad1',
+      classify: async () => { throw new Error('bad1 failed'); },
+    };
+    const bad2: ClassifierProvider = {
+      name: 'bad2',
+      classify: async () => { throw new Error('bad2 failed'); },
+    };
+
+    const classifier = createClassifier({ providers: [bad1, bad2] });
+    // Must NOT reject.
+    const result = await classifier.classify(EMPTY_INPUT);
+
+    expect(result.title).toBeUndefined();
+    expect(result.creator).toBeUndefined();
+    expect(result.needsUserInput).toContain('title'); // default required field
   });
 
   it('14. tags from multiple providers deduplicate correctly', async () => {

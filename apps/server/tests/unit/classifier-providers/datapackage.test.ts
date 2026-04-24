@@ -182,4 +182,25 @@ describe('createDatapackageProvider', () => {
     const result = await provider.classify({ files: [] });
     expect(result).toEqual({});
   });
+
+  it('9. oversize datapackage.json (>1 MB) → empty result, file not parsed', async () => {
+    // Build a datapackage.json larger than the 1,000,000-byte limit.
+    // Keep the file syntactically valid so we can prove the size guard
+    // short-circuits BEFORE JSON.parse would have succeeded.
+    const padding = 'x'.repeat(1_100_000);
+    const filePath = await writeDp('datapackage.json', {
+      title: 'Should Not Be Emitted',
+      description: padding,
+    });
+
+    // Sanity check: the file really is oversized.
+    const { size } = await fs.stat(filePath);
+    expect(size).toBeGreaterThan(1_000_000);
+
+    const provider = createDatapackageProvider();
+    const result = await provider.classify(makeInput(filePath));
+
+    // Size guard skips the file — nothing extracted.
+    expect(result).toEqual({});
+  });
 });

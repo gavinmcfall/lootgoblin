@@ -24,6 +24,13 @@ import type { ClassifierProvider, ClassifierInput, PartialClassification } from 
 
 const DATAPACKAGE_FILENAME = 'datapackage.json';
 
+/**
+ * Hard size ceiling for datapackage.json. 1 MiB is ~1000x the real-world
+ * typical size (~1-5 KB); anything larger is either corrupted, malicious
+ * (OOM DoS), or abusing the file for non-metadata payload. Skip + log warn.
+ */
+const MAX_DATAPACKAGE_SIZE = 1_000_000;
+
 type DatapackageJson = {
   name?: string;
   title?: string;
@@ -48,6 +55,21 @@ export function createDatapackageProvider(): ClassifierProvider {
       );
 
       if (dpFile == null) return {};
+
+      // Size guard: stat before read to avoid OOMing on a hostile/corrupt file.
+      try {
+        const stat = await fs.stat(dpFile.absolutePath);
+        if (stat.size > MAX_DATAPACKAGE_SIZE) {
+          logger.warn(
+            { path: dpFile.absolutePath, size: stat.size, limit: MAX_DATAPACKAGE_SIZE },
+            'datapackage: file exceeds size limit; skipping',
+          );
+          return {};
+        }
+      } catch (err) {
+        logger.warn({ path: dpFile.absolutePath, err }, 'datapackage: failed to stat file');
+        return {};
+      }
 
       let raw: string;
       try {

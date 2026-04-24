@@ -31,9 +31,15 @@ let tmpDir: string;
 async function create3mf(
   filename: string,
   modelXml: string,
+  /**
+   * Optional: override the ZIP entry path for the model XML. Defaults to the
+   * spec-standard "3D/3dmodel.model". Tests use this to verify
+   * case-insensitive fallback behaviour for non-conforming slicers.
+   */
+  modelEntryPath = '3D/3dmodel.model',
 ): Promise<string> {
   const zip = new JSZip();
-  zip.file('3D/3dmodel.model', modelXml);
+  zip.file(modelEntryPath, modelXml);
   zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -228,5 +234,32 @@ describe('createThreeMfProvider', () => {
     const provider = createThreeMfProvider();
     const result = await provider.classify({ files: [] });
     expect(result).toEqual({});
+  });
+
+  it('9. lowercase entry path "3d/3dmodel.model" → metadata extracted via case-insensitive fallback', async () => {
+    const filePath = await create3mf(
+      'lowercase-entry.3mf',
+      makeModelXml({ Title: 'Lowercase Model', Designer: 'Ci-fallback' }),
+      '3d/3dmodel.model', // non-standard lowercase path
+    );
+
+    const provider = createThreeMfProvider();
+    const result = await provider.classify(makeInput(filePath));
+
+    expect(result.title).toEqual({ value: 'Lowercase Model', confidence: 0.9 });
+    expect(result.creator).toEqual({ value: 'Ci-fallback', confidence: 0.9 });
+  });
+
+  it('10. mixed-case entry path "3D/3Dmodel.model" → also resolved', async () => {
+    const filePath = await create3mf(
+      'mixed-case-entry.3mf',
+      makeModelXml({ Title: 'Mixed Case' }),
+      '3D/3Dmodel.model', // capital D in "3Dmodel"
+    );
+
+    const provider = createThreeMfProvider();
+    const result = await provider.classify(makeInput(filePath));
+
+    expect(result.title?.value).toBe('Mixed Case');
   });
 });

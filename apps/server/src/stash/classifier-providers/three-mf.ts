@@ -23,10 +23,15 @@ const THREE_MF_EXT = '.3mf';
 const MODEL_PATH = '3D/3dmodel.model';
 
 // fast-xml-parser options — extract text content from elements.
+// `processEntities: false` disables XML entity expansion — billion-laughs
+// defense for files from untrusted sources (downloaded stash contents). 3MF
+// manifests never legitimately use entities, so this has no impact on valid
+// inputs but prevents malicious 3MFs from consuming unbounded memory/CPU.
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
   isArray: (name) => name === 'metadata',
+  processEntities: false,
 });
 
 type MetadataEntry = {
@@ -59,7 +64,16 @@ async function extractThreeMfMetadata(
     return null;
   }
 
-  const modelFile = zip.file(MODEL_PATH);
+  // Primary lookup: spec-standard casing "3D/3dmodel.model".
+  // Fallback: case-insensitive match for non-conforming slicers that emit
+  // "3d/3dmodel.model", "3D/3Dmodel.model", etc. Some real-world producers
+  // (older Cura, custom exporters) don't match the spec's exact casing.
+  let modelFile = zip.file(MODEL_PATH);
+  if (modelFile === null) {
+    const lookupName = MODEL_PATH.toLowerCase();
+    const match = Object.keys(zip.files).find((name) => name.toLowerCase() === lookupName);
+    modelFile = match ? zip.file(match) : null;
+  }
   if (modelFile === null) {
     logger.debug({ path: absolutePath, entry: MODEL_PATH }, 'three-mf: model entry not found in zip');
     return null;

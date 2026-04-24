@@ -17,6 +17,8 @@
  * (async, provider-agnostic) but does not include any stubs.
  */
 
+import { logger } from '../logger';
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -161,13 +163,29 @@ export function createClassifier(options: ClassifierOptions): Classifier {
 
   return {
     async classify(input: ClassifierInput): Promise<ClassificationResult> {
-      // Run all providers concurrently.
-      const providerOutputs = await Promise.all(
+      // Run all providers concurrently. Use allSettled so a single provider's
+      // failure (malformed file, library bug, etc.) does not take down the
+      // whole classification — remaining providers still contribute.
+      const settled = await Promise.allSettled(
         providers.map(async (provider) => {
           const partial = await provider.classify(input);
           return { name: provider.name, partial };
         }),
       );
+
+      const providerOutputs: Array<{ name: string; partial: PartialClassification }> = [];
+      for (const s of settled) {
+        if (s.status === 'fulfilled') {
+          providerOutputs.push(s.value);
+        } else {
+          // Providers should log their own parse errors internally (e.g. 3MF's
+          // jszip warn); this outer guardrail catches anything they let escape.
+          logger.warn(
+            { err: s.reason },
+            'classifier: provider threw; continuing with remaining providers',
+          );
+        }
+      }
 
       const result: ClassificationResult = { needsUserInput: [] };
 

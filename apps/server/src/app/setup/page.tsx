@@ -55,7 +55,6 @@ export default async function SetupPage() {
         <form
           key={key}
           onSubmit={undefined}
-          style={{ marginBottom: '1rem' }}
           data-wizard-key={key}
         >
           <label htmlFor={`wizard-${key}`}>{key}</label>

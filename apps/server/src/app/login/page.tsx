@@ -51,7 +51,11 @@ export default async function LoginPage() {
     });
     if (res.ok) {
       var params = new URLSearchParams(window.location.search);
-      window.location.href = params.get('callbackUrl') || '/activity';
+      var raw = params.get('callbackUrl');
+      // Same-origin guard: only accept absolute paths ('/foo'), reject
+      // protocol-relative ('//evil') and absolute URLs ('https://evil').
+      var safe = raw && raw.charAt(0) === '/' && raw.charAt(1) !== '/' ? raw : '/activity';
+      window.location.href = safe;
     } else {
       var body = await res.json().catch(function() { return {}; });
       alert(body.message || 'Sign in failed. Check your email and password.');

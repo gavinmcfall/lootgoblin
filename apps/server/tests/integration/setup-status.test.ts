@@ -9,7 +9,7 @@
  *   - POST /api/v1/setup/wizard returns 409 when setup already done.
  */
 
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { runMigrations, getDb, schema, resetDbCache } from '../../src/db/client';
 import { eq } from 'drizzle-orm';
@@ -42,6 +42,12 @@ beforeAll(async () => {
   }
   resetDbCache();
   await runMigrations(`file:${DB_PATH}`);
+});
+
+afterAll(() => {
+  for (const k of Object.keys(REQUIRED_ENV)) delete process.env[k];
+  delete process.env.STASH_ROOTS;
+  resetDbCache();
 });
 
 // ---------------------------------------------------------------------------
@@ -145,12 +151,15 @@ describe('POST /api/v1/setup/wizard', () => {
       updatedAt: new Date(),
     });
 
-    // Mock: first call returns pending, second call (after write) returns no-pending
+    // Mock call-sequence in POST handler:
+    //   1. getFirstRunState() gate      → must see pending so needsSetup:true
+    //   2. key-gate check                → must see STASH_ROOTS as pending
+    //   3. getFirstRunState() after write → pending cleared → needsSetup:false
     const configModule = await import('../../src/config/index');
     let callCount = 0;
     vi.spyOn(configModule.configResolver, 'getPendingWizardKeys').mockImplementation(() => {
       callCount++;
-      return callCount === 1 ? ['STASH_ROOTS'] : [];
+      return callCount <= 2 ? ['STASH_ROOTS'] : [];
     });
     vi.spyOn(configModule.configResolver, 'resolve').mockResolvedValue({} as any);
 
@@ -212,7 +221,12 @@ describe('POST /api/v1/setup/wizard', () => {
   });
 
   it('returns 400 for invalid JSON body', async () => {
-    // First make sure we're in setup-required state (no admin)
+    // Relies on the DB being in "no admin" state (no user seeded in this test
+    // and the afterEach cleanup in the two tests above ensures a clean slate)
+    // so getFirstRunState() returns needsSetup:true and we pass the setup gate,
+    // allowing the JSON-parse failure to surface as the 400. The mocked
+    // getPendingWizardKeys() is there so the no-admin branch returns pendingKeys
+    // consistent with the flow.
     const configModule = await import('../../src/config/index');
     vi.spyOn(configModule.configResolver, 'getPendingWizardKeys').mockReturnValue(['STASH_ROOTS']);
 
@@ -225,6 +239,39 @@ describe('POST /api/v1/setup/wizard', () => {
 
     const res = await POST(req);
     expect(res.status).toBe(400);
+
+    vi.restoreAllMocks();
+  });
+
+  it('returns 400 unknown-wizard-key when key is not in pending set', async () => {
+    // Setup gate: no admin in DB, so needsSetup:true (gate passes).
+    // Resolver mocked to return STASH_ROOTS as the only pending key.
+    const configModule = await import('../../src/config/index');
+    vi.spyOn(configModule.configResolver, 'getPendingWizardKeys').mockReturnValue(['STASH_ROOTS']);
+
+    const { POST } = await import('../../src/app/api/v1/setup/wizard/route');
+    const req = new Request('http://localhost/api/v1/setup/wizard', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // BETTER_AUTH_SECRET is a boot-time key, never in the pending set —
+      // must be rejected to prevent public-endpoint config injection.
+      body: JSON.stringify({ key: 'BETTER_AUTH_SECRET', value: 'attacker-chosen' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+
+    const body = await res.json();
+    expect(body.error).toBe('unknown-wizard-key');
+
+    // Confirm nothing was written to instance_config.
+    const db = getDb() as any;
+    const { instanceConfig } = await import('../../src/db/schema.config');
+    const rows = await db
+      .select()
+      .from(instanceConfig)
+      .where(eq(instanceConfig.key, 'BETTER_AUTH_SECRET'));
+    expect(rows).toHaveLength(0);
 
     vi.restoreAllMocks();
   });

@@ -14,9 +14,10 @@ import type { NextRequest } from 'next/server';
  * (page routes). API routes perform their own session validation using
  * auth.api.getSession() in the route handler.
  *
- * '/' is intentionally omitted from the PUBLIC set — the root page handles
- * its own redirect logic (setup vs login vs dashboard) because it needs DB
- * access to check whether any users exist, which Edge middleware cannot do.
+ * '/' is included in the PUBLIC set so the root server component can run
+ * unauthenticated; it calls getFirstRunState() and redirects accordingly
+ * (setup vs login vs dashboard). This DB-backed check cannot run at the Edge,
+ * which is why the decision is pushed into the root page instead.
  */
 
 // Publicly accessible paths — no session required.

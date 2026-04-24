@@ -26,7 +26,9 @@ export type SourceId =
   | 'sketchfab'
   | 'makerworld'
   | 'printables'
-  | 'extension-capture';
+  | 'extension-capture'
+  | 'mega' // reserved for V2-003b — no adapter yet
+  | 'mymini-factory'; // reserved for V2-003b — no adapter yet
 
 // ---------------------------------------------------------------------------
 // Normalized item — the common schema every adapter produces

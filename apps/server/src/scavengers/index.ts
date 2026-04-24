@@ -30,3 +30,7 @@ export { createIngestPipeline } from './pipeline';
 
 // Format sniff helper — T2.
 export { sniffFormat, DEFAULT_ACCEPTED_FORMATS } from './format-sniff';
+
+// Link resolver — T3.
+export type { LinkResolution, LinkContext, LinkResolver } from './link-resolver';
+export { createLinkResolver } from './link-resolver';

@@ -11,6 +11,9 @@ export * from './schema.auth';
 // Config-resolver tables — V2-001-T3.
 export * from './schema.config';
 
+// Stash pillar tables — V2-002-T1.
+export * from './schema.stash';
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 

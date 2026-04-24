@@ -18,6 +18,8 @@
  *   11. Starter template applied → resolves correctly against candidates
  *   12. Transactional rollback — hook throws (lootFile insert fails) → source intact, destination rolled back, no DB row leaked
  *   13. linkOrCopy returns failed (destination pre-exists) → source intact, reported in errors, other candidates unaffected
+ *   14. Walker skips symlinks (file + directory) — no duplicate enumeration, no cycles
+ *   15. In-place partial failure — all lootFile inserts fail → candidate in report.errors, not counted in lootsCreated
  */
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
@@ -615,5 +617,131 @@ describe('AdoptionEngine — apply edge cases', () => {
     // Clean candidate unaffected — successfully adopted.
     const cleanDest = path.join(scratch, 'clean', 'clean.stl');
     expect(fs.existsSync(cleanDest), 'clean candidate destination should exist').toBe(true);
+  }, 30_000);
+
+  it('14. walker skips symlinks — no duplicate enumeration, no cycles', async () => {
+    const scratch = await makeScratchDir();
+    const userId = await seedUser();
+
+    // Real directory with one file.
+    await writeFile(path.join(scratch, 'RealModel', 'real.stl'), 'real content');
+
+    // File symlink pointing at the real file (same scratch tree).
+    const realFilePath = path.join(scratch, 'RealModel', 'real.stl');
+    const fileSymlinkPath = path.join(scratch, 'RealModel', 'real-link.stl');
+    try {
+      await fsp.symlink(realFilePath, fileSymlinkPath);
+    } catch (err) {
+      // Some filesystems (e.g. FAT32) or sandboxed envs may not support symlinks.
+      // If symlink creation fails, skip the test — it's not applicable here.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'ENOSYS') return;
+      throw err;
+    }
+
+    // Directory symlink pointing at RealModel from a sibling location.
+    // This would cause duplicate enumeration + potentially cycles if followed.
+    const dirSymlinkPath = path.join(scratch, 'SymlinkedModel');
+    try {
+      await fsp.symlink(path.join(scratch, 'RealModel'), dirSymlinkPath);
+    } catch {
+      // Same graceful skip as above.
+    }
+
+    const stashRootId = await seedStashRoot(userId, scratch);
+    const proposal = await engine().scan(stashRootId);
+
+    // Flatten all file paths across all candidates.
+    const allPaths = proposal.candidates.flatMap((c) =>
+      c.files.map((f) => f.relativePath),
+    );
+
+    // The real file should appear EXACTLY once.
+    const realCount = allPaths.filter((p) => p === 'RealModel/real.stl').length;
+    expect(realCount, 'real file should appear exactly once').toBe(1);
+
+    // The file symlink should NOT appear at all.
+    expect(allPaths.includes('RealModel/real-link.stl'), 'file symlink should be skipped').toBe(
+      false,
+    );
+
+    // The directory symlink's contents should NOT appear (would be duplicates).
+    expect(
+      allPaths.some((p) => p.startsWith('SymlinkedModel/')),
+      'directory symlink contents should be skipped',
+    ).toBe(false);
+  }, 30_000);
+
+  it('15. in-place partial failure — all lootFile inserts fail → candidate in errors, not counted in lootsCreated', async () => {
+    const scratch = await makeScratchDir();
+    const userId = await seedUser();
+
+    // One candidate whose lootFile inserts will all fail via spy.
+    // Also a control candidate that should adopt cleanly.
+    await writeFile(path.join(scratch, 'FailAllFiles', 'a.stl'), 'a');
+    await writeFile(path.join(scratch, 'FailAllFiles', 'b.stl'), 'b');
+    await writeFile(path.join(scratch, 'CleanFolder', 'clean.stl'), 'clean');
+
+    const stashRootId = await seedStashRoot(userId, scratch);
+    const proposal = await engine().scan(stashRootId);
+    expect(proposal.candidates.length).toBe(2);
+
+    const failCand = proposal.candidates.find(
+      (c) => c.folderRelativePath === 'FailAllFiles',
+    )!;
+    const cleanCand = proposal.candidates.find(
+      (c) => c.folderRelativePath === 'CleanFolder',
+    )!;
+
+    // Spy on db.insert. Make ALL lootFile inserts for the fail candidate throw.
+    // The fail candidate has relativePath "FailAllFiles/..." — we match that substring.
+    const realDb = getDb(DB_URL) as DB;
+    const originalInsert = realDb.insert.bind(realDb);
+    const insertSpy = vi.spyOn(realDb, 'insert').mockImplementation((table: unknown) => {
+      const builder = originalInsert(table as Parameters<typeof originalInsert>[0]);
+      if (table === schema.lootFiles) {
+        const originalValues = builder.values.bind(builder);
+        builder.values = ((row: Record<string, unknown>) => {
+          if (typeof row.path === 'string' && row.path.startsWith('FailAllFiles/')) {
+            const rejection = Promise.reject(new Error('synthetic fail-all lootFile insert'));
+            rejection.catch(() => {});
+            return {
+              then: rejection.then.bind(rejection),
+              catch: rejection.catch.bind(rejection),
+              finally: rejection.finally.bind(rejection),
+            };
+          }
+          return originalValues(row);
+        }) as typeof builder.values;
+      }
+      return builder;
+    });
+
+    try {
+      const plan = {
+        stashRootId,
+        chosenTemplate: '{title|slug}',
+        mode: 'in-place' as const,
+        candidateIds: [failCand.id, cleanCand.id],
+      };
+
+      const report = await engine().apply(plan);
+
+      // The fail candidate must be in report.errors.
+      const failError = report.errors.find((e) => e.candidateId === failCand.id);
+      expect(failError, 'fail candidate should be in report.errors').toBeDefined();
+      expect(failError!.error).toMatch(/all .* lootFile inserts failed/i);
+
+      // The fail candidate must NOT contribute to lootsCreated — only the clean one.
+      expect(report.lootsCreated).toBe(1);
+
+      // Clean candidate unaffected.
+      expect(
+        report.errors.find((e) => e.candidateId === cleanCand.id),
+        'clean candidate should not be in errors',
+      ).toBeUndefined();
+    } finally {
+      insertSpy.mockRestore();
+    }
   }, 30_000);
 });

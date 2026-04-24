@@ -20,7 +20,6 @@
 
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 
@@ -162,7 +161,6 @@ export async function applyAdoptionPlan(
         candidate,
         metadata,
         collectionId,
-        ownerId,
         db,
         appliedAt,
         report,
@@ -172,7 +170,6 @@ export async function applyAdoptionPlan(
         candidate,
         metadata,
         collectionId,
-        ownerId,
         stashRootPath,
         resolvedPath,
         db,
@@ -193,7 +190,6 @@ async function applyInPlace(
   candidate: AdoptionCandidate,
   metadata: Record<string, unknown>,
   collectionId: string,
-  ownerId: string,
   db: ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>,
   now: Date,
   report: AdoptionReport,
@@ -274,6 +270,22 @@ async function applyInPlace(
     }
   }
 
+  // If every lootFile insert failed (e.g. DB constraint violation on a batch),
+  // the loot row is an orphan. Do NOT report this as a successful adoption —
+  // surface to report.errors so the caller can see the partial state.
+  //
+  // NOTE: the loot row was inserted above and is still in the DB. Orphan cleanup
+  // is intentionally deferred to V2-002's T13 ledger + later sweep tasks. The
+  // user-facing report is the source of truth about what was successfully
+  // adopted; the DB's loot row is recoverable via T13's reconciliation pass.
+  if (fileCount === 0 && candidate.files.length > 0) {
+    report.errors.push({
+      candidateId: candidate.id,
+      error: `In-place adoption: all ${candidate.files.length} lootFile inserts failed for candidate "${candidate.folderRelativePath}"`,
+    });
+    return;
+  }
+
   report.lootsCreated++;
   report.lootFilesCreated += fileCount;
 }
@@ -286,7 +298,6 @@ async function applyCopyThenCleanup(
   candidate: AdoptionCandidate,
   metadata: Record<string, unknown>,
   collectionId: string,
-  ownerId: string,
   stashRootPath: string,
   resolvedPath: string, // template-resolved relative path
   db: ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>,
@@ -430,8 +441,19 @@ async function applyCopyThenCleanup(
       candidateId: candidate.id,
       error: `Partial candidate — ${fileCount} of ${candidate.files.length} files moved before failure: ${perFileError}`,
     });
-    // Don't decrement lootsCreated — loot row is real, some files are too.
-    // The partial state is visible to the user via the error report.
+
+    // If zero files were successfully moved+inserted, the loot row is a pure
+    // orphan — don't count it as a successful adoption. Same rationale as
+    // applyInPlace: user-facing report is the source of truth.
+    //
+    // NOTE: the loot row is still in the DB. Orphan cleanup is deferred to
+    // T13 (ledger + later sweep tasks).
+    if (fileCount === 0 && candidate.files.length > 0) {
+      return;
+    }
+    // fileCount > 0 — partial success. Loot row + some lootFile rows exist.
+    // Count the loot as created (user has something) but the error entry
+    // signals the incomplete state.
   }
 
   report.lootsCreated++;
@@ -485,7 +507,7 @@ function buildMetadata(
  * Streams a file through SHA-256 and returns the hex digest.
  */
 async function sha256Hex(filePath: string): Promise<string> {
-  const hash = createHash('sha256');
+  const hash = crypto.createHash('sha256');
   const stream = fs.createReadStream(filePath);
   await pipeline(stream, async function* (source) {
     for await (const chunk of source) {

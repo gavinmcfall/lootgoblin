@@ -213,6 +213,11 @@ export function createAdoptionEngine(options: AdoptionEngineOptions = {}): Adopt
       const preClassCandidates = groupFilesIntoCandidates(walkedFiles);
 
       // Classify each candidate.
+      //
+      // TODO: wrap with p-limit(~32) for >10k-candidate libraries to avoid
+      // file-descriptor exhaustion. Acceptable for v2.0 scale (typical libraries
+      // are <1k candidates; classifier providers open at most ~3 FDs each —
+      // safe well below typical ulimit of 1024).
       const classifiedCandidates: AdoptionCandidate[] = [];
       await Promise.allSettled(
         preClassCandidates.map(async (preCand) => {

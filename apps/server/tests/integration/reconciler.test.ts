@@ -633,6 +633,52 @@ describe('11. restart is disallowed', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test 11a: Concurrent rescan calls piggyback — policy not double-invoked
+// ---------------------------------------------------------------------------
+
+describe('11a. concurrent rescan calls piggyback', () => {
+  it('two concurrent rescan() calls do not double-invoke the policy', async () => {
+    const scratchDir = makeScratchDir();
+    // Add a file not in DB → added-externally verdict on every rescan.
+    writeFileSync(path.join(scratchDir, 'orphan-race.stl'), 'orphan race');
+
+    const userId = await seedUser();
+    const rootId = await seedStashRoot(userId, scratchDir);
+
+    let addedCalls = 0;
+    const testPolicy: DriftResolutionPolicy = {
+      async onAddedExternally() {
+        addedCalls++;
+      },
+      async onRemovedExternally() {},
+      async onContentChanged() {},
+    };
+
+    const rec = createReconciler({
+      stashRoots: [{ id: rootId, path: scratchDir }],
+      rescanIntervalMs: 0,
+      eventDebounceMs: DEBOUNCE_MS,
+      policy: testPolicy,
+    });
+
+    await rec.start();
+    // Baseline from the immediate rescan inside start().
+    const baselineCalls = addedCalls;
+
+    // Fire two rescans concurrently. Expect them to piggyback — total calls
+    // should increase by exactly 1 (one added-externally verdict per rescan),
+    // NOT by 2 (which would indicate both concurrent passes ran the policy).
+    const [reportA, reportB] = await Promise.all([rec.rescan(), rec.rescan()]);
+
+    // Same promise returned → same report object reference.
+    expect(reportA).toBe(reportB);
+    expect(addedCalls).toBe(baselineCalls + 1);
+
+    await rec.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test 12: Restored file un-flags file_missing
 // ---------------------------------------------------------------------------
 

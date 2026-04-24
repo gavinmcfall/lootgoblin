@@ -133,7 +133,13 @@ export function createDefaultPolicy(): DriftResolutionPolicy {
 
     async onContentChanged(lootFileId, lootId, filePath, newHash, newSize) {
       const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-      // Filesystem is source of truth for bytes — update DB to match.
+      // Two writes without a transaction. The task brief explicitly forbids
+      // wrapping rescans in a transaction (long-running; blocks other work).
+      // If a crash hits between the two writes, lootFiles.hash is
+      // authoritative and loot.updated_at becomes stale by one update —
+      // internally consistent and self-healing on the next rescan/write.
+      //
+      // Filesystem is the source of truth for bytes — update DB to match.
       await db
         .update(schema.lootFiles)
         .set({ hash: newHash, size: newSize })
@@ -176,7 +182,17 @@ type RootState = {
     string,
     { kind: 'add' | 'change' | 'unlink' | 'unlinkDir'; event: WatcherEvent }
   >;
-  /** In-memory added-externally buffer — per-root, cap 100. */
+  /**
+   * Per-root buffer of added-externally FS entries. Cap: 100 entries,
+   * first-come-first-served — the 101st and beyond are silently dropped
+   * until the buffer is drained. T6 Classifier / T7 Adoption are the
+   * intended consumers; both must be prepared for this limit.
+   *
+   * The buffer is in-memory only — on process restart, any undrained
+   * entries are lost. The pino log trail written by the default policy's
+   * `onAddedExternally` is the durable record; T7 can backfill from logs
+   * or introduce a `discovered_files` table when adoption lands.
+   */
   addedExternallyBuffer: FsEntry[];
 };
 
@@ -254,6 +270,14 @@ export function createReconciler(options: ReconcilerOptions): Reconciler {
   let stopped = false;
   let rescanTimer: ReturnType<typeof setInterval> | null = null;
   let latestReport: ReconciliationReport | null = null;
+  /**
+   * In-flight full-rescan promise. When non-null, a rescan is running; any
+   * subsequent `rescan()` or scheduler tick piggybacks on the existing run
+   * rather than starting a second concurrent pass. Prevents double-invocation
+   * of policy callbacks and races on `latestReport` when a manual
+   * `rescan()` overlaps a scheduler tick (or vice versa).
+   */
+  let inFlightRescan: Promise<ReconciliationReport> | null = null;
 
   const rootStates = new Map<string, RootState>();
 
@@ -270,13 +294,18 @@ export function createReconciler(options: ReconcilerOptions): Reconciler {
       files = await walkStashRoot(state.rootPath);
     } catch (err) {
       counter.errors++;
-      emitSystemHealth({
-        kind: 'fs-unreachable',
-        stashRootId: state.stashRootId,
-        path: state.rootPath,
-        error: err instanceof Error ? err : new Error(String(err)),
-      });
-      state.reachable = false;
+      // Only emit on the first detection of unreachability; suppress repeat
+      // emissions while the root stays unreachable. Matches the files===null
+      // branch below so the two paths can't double-emit.
+      if (state.reachable !== false) {
+        emitSystemHealth({
+          kind: 'fs-unreachable',
+          stashRootId: state.stashRootId,
+          path: state.rootPath,
+          error: err instanceof Error ? err : new Error(String(err)),
+        });
+        state.reachable = false;
+      }
       return { stashRootId: state.stashRootId, ...counter };
     }
 
@@ -414,7 +443,7 @@ export function createReconciler(options: ReconcilerOptions): Reconciler {
   // Full rescan (all roots)
   // ---------------------------------------------------------------------------
 
-  async function runFullRescan(): Promise<ReconciliationReport> {
+  async function doFullRescan(): Promise<ReconciliationReport> {
     const perRoot: ReconciliationReport['perRoot'] = [];
     for (const [, state] of rootStates) {
       const rootResult = await rescanRoot(state);
@@ -423,6 +452,19 @@ export function createReconciler(options: ReconcilerOptions): Reconciler {
     const report: ReconciliationReport = { timestamp: new Date(), perRoot };
     latestReport = report;
     return report;
+  }
+
+  /**
+   * Re-entrancy-safe wrapper around `doFullRescan`. If a rescan is already
+   * running, piggyback on the existing promise so every caller gets a real
+   * (fresh) report without launching a second concurrent pass.
+   */
+  function runFullRescan(): Promise<ReconciliationReport> {
+    if (inFlightRescan !== null) return inFlightRescan;
+    inFlightRescan = doFullRescan().finally(() => {
+      inFlightRescan = null;
+    });
+    return inFlightRescan;
   }
 
   // ---------------------------------------------------------------------------
@@ -434,9 +476,9 @@ export function createReconciler(options: ReconcilerOptions): Reconciler {
     state.pendingEvents.clear();
     state.debounceTimer = null;
 
-    // Process each pending event.
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises
-    (async () => {
+    // Process each pending event. Fire-and-forget — the debounce timer has
+    // already been cleared, and the caller does not await this work.
+    void (async () => {
       for (const [filePath, { kind, event }] of pending) {
         try {
           if (kind === 'unlink' || kind === 'unlinkDir') {
@@ -590,8 +632,7 @@ export function createReconciler(options: ReconcilerOptions): Reconciler {
     // Schedule periodic rescans (if enabled).
     if (rescanIntervalMs > 0) {
       rescanTimer = setInterval(() => {
-        // eslint-disable-next-line @typescript-eslint/no-floating-promises
-        runFullRescan();
+        void runFullRescan();
       }, rescanIntervalMs);
     }
   }

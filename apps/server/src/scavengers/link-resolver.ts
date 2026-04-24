@@ -382,7 +382,7 @@ function matchSketchfab(parsed: URL): MatchResult {
     // uid is the last hyphen-delimited 32-char hex segment
     const seg = parts[1];
     const m = seg.match(/-([0-9a-f]{32})$/i);
-    if (m) {
+    if (m && m[1]) {
       return { sourceId: 'sketchfab', context: { kind: 'file', id: m[1].toLowerCase() } };
     }
     // No uid suffix — use the whole slug as id

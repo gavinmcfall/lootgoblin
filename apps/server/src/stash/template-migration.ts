@@ -88,7 +88,7 @@ export type ReferenceUpdater = {
 };
 
 export type TemplateMigrationOptions = {
-  ledgerEmitter?: LedgerEmitter;        // default: no-op + pino log
+  ledgerEmitter?: LedgerEmitter;        // default: DB-backed persistLedgerEvent
   referenceUpdater?: ReferenceUpdater;  // default: no-op + pino log
   /** DATABASE_URL override (used in tests). */
   dbUrl?: string;

@@ -94,9 +94,8 @@ export type BulkReport = {
 
 export type BulkLedgerEmitter = {
   /**
-   * Stub for v2-002. Emits ONE event per bulk action, NOT per-item.
-   * Spec: "auditability at intended granularity."
-   * Future V2-007 Ledger will persist this with a real event id.
+   * ONE event per bulk action, NOT per-item ("auditability at intended granularity").
+   * Default implementation persists via `persistLedgerEvent` from T13.
    */
   emitBulk(event: {
     action: BulkAction;
@@ -803,17 +802,29 @@ export function createBulkRestructureEngine(
       }
     }
 
-    // Emit ONE Ledger event for the full batch
-    const { eventId } = await ledgerEmitter.emitBulk({
-      action,
-      actorOwnerId: ownerId,
-      manifest: {
-        applied,
-        skipped: skipped.map((s) => s.lootId),
-        failed: failed.map((f) => f.lootId),
-      },
-      timestamp: appliedAt,
-    });
+    // Emit ONE Ledger event for the full batch.
+    // Defense-in-depth: the default emitter delegates to persistLedgerEvent (which never throws),
+    // but an injected test-only or future custom emitter may throw. Ledger failure MUST NOT
+    // abort the primary op — all file moves + DB updates have already committed above.
+    let eventId = '';
+    try {
+      const result = await ledgerEmitter.emitBulk({
+        action,
+        actorOwnerId: ownerId,
+        manifest: {
+          applied,
+          skipped: skipped.map((s) => s.lootId),
+          failed: failed.map((f) => f.lootId),
+        },
+        timestamp: appliedAt,
+      });
+      eventId = result.eventId;
+    } catch (bulkLedgerErr) {
+      logger.warn(
+        { bulkLedgerErr, action: action.kind },
+        'bulk-restructure: ledger emit failed — primary op unaffected',
+      );
+    }
 
     const report: BulkReport = {
       action,

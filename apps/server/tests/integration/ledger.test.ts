@@ -449,3 +449,71 @@ describe('template-migration — ledger failure does not abort primary op', () =
     expect(report.filesFailed).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 6 — Bulk primary op survives throwing emitBulk (defense-in-depth)
+// ---------------------------------------------------------------------------
+
+describe('bulk-restructure — emitBulk failure does not abort primary op', () => {
+  it('moves files and updates DB even when injected emitBulk throws', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const sourceCollId = await seedCollection(
+      ownerId, stashRootId, '{title|slug}', `bulk-guard-src-${uid().slice(0, 8)}`,
+    );
+    const targetCollId = await seedCollection(
+      ownerId, stashRootId, '{creator|slug}/{title|slug}', `bulk-guard-tgt-${uid().slice(0, 8)}`,
+    );
+
+    const lootId = await seedLoot(sourceCollId, { title: 'Hammer', creator: 'Giant' });
+    const relPath = 'hammer.stl';
+    await writeFile(path.join(scratch, relPath), 'hammer content\n');
+    const lootFileId = await seedLootFile(lootId, relPath, path.join(scratch, relPath));
+
+    // Inject a throwing bulk ledger emitter.
+    const throwingBulkLedger = {
+      async emitBulk() {
+        throw new Error('simulated bulk ledger failure');
+      },
+    };
+
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      aclCheck: async () => true,
+      ledgerEmitter: throwingBulkLedger,
+    });
+
+    // Primary op must not throw
+    const report = await engine.execute({
+      action: { kind: 'move-to-collection', targetCollectionId: targetCollId },
+      lootIds: [lootId],
+      ownerId,
+    });
+
+    // Loot was moved to target collection
+    expect(report.applied).toContain(lootId);
+    expect(report.failed).toHaveLength(0);
+
+    // ledgerEventId falls back to sentinel '' because emit threw
+    expect(report.ledgerEventId).toBe('');
+
+    // DB reflects move: loot.collectionId updated
+    const lootRows = await db()
+      .select()
+      .from(schema.loot)
+      .where(eq(schema.loot.id, lootId));
+    expect(lootRows[0]?.collectionId).toBe(targetCollId);
+
+    // File path updated via the template under target collection
+    const fileRows = await db()
+      .select()
+      .from(schema.lootFiles)
+      .where(eq(schema.lootFiles.id, lootFileId));
+    expect(fileRows[0]?.path).toBe('giant/hammer.stl');
+
+    // And on disk at the resolved destination
+    const absNewPath = path.join(scratch, 'giant/hammer.stl');
+    await expect(fsp.stat(absNewPath)).resolves.toBeTruthy();
+  });
+});

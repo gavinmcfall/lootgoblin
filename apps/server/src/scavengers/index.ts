@@ -57,6 +57,15 @@ export { createMakerWorldAdapter } from './adapters/makerworld';
 export type { PrintablesAdapterOptions } from './adapters/printables';
 export { createPrintablesAdapter } from './adapters/printables';
 
+// Sketchfab adapter — T7 (first OAuth-flow adapter).
+export type {
+  SketchfabAdapterOptions,
+  SketchfabCredentials,
+  SketchfabOAuthCredentials,
+  SketchfabApiTokenCredentials,
+} from './adapters/sketchfab';
+export { createSketchfabAdapter } from './adapters/sketchfab';
+
 // Shared filename sanitizer — used by URL-driven adapters (T5+).
 export { sanitizeFilename } from './filename-sanitize';
 
@@ -73,6 +82,7 @@ import { createUploadAdapter } from './adapters/upload';
 import { createCults3dAdapter } from './adapters/cults3d';
 import { createMakerWorldAdapter } from './adapters/makerworld';
 import { createPrintablesAdapter } from './adapters/printables';
+import { createSketchfabAdapter } from './adapters/sketchfab';
 import type { ScavengerRegistry } from './registry';
 
 /**
@@ -88,6 +98,7 @@ export function createDefaultRegistry(): ScavengerRegistry {
   registry.register(createCults3dAdapter());
   registry.register(createMakerWorldAdapter());
   registry.register(createPrintablesAdapter());
-  // T7-T8 will add: sketchfab, google-drive
+  registry.register(createSketchfabAdapter());
+  // T8 will add: google-drive
   return registry;
 }

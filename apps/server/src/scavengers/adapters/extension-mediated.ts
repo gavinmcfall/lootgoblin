@@ -115,19 +115,68 @@ function deduplicateName(base: string, seen: Map<string, number>): string {
 }
 
 /**
+ * Result of validating a payload — distinguishes the various failure modes
+ * so the adapter can surface a precise `details` string. The `reason` field
+ * is interpolated into a `failed` event's `details`, which lets tests assert
+ * specific guards (e.g. /sourceItemId/i) instead of relying on a generic
+ * "invalid shape" message.
+ */
+type PayloadValidation =
+  | { ok: true; payload: ExtensionPayload }
+  | { ok: false; reason: string };
+
+/**
  * Validate that a value looks like an ExtensionPayload.
  * Checks only the fields this adapter requires — extra fields are allowed.
+ *
+ * Each `files[].url` MUST parse to an `http:` or `https:` URL. Schemes such
+ * as `javascript:`, `file:`, `data:`, and unparseable values are rejected
+ * here so the download loop never fetches an attacker-controlled scheme even
+ * if upstream callers relax their own validation.
  */
-function validatePayload(
-  payload: unknown,
-): payload is ExtensionPayload {
-  if (!payload || typeof payload !== 'object') return false;
+function validatePayload(payload: unknown): PayloadValidation {
+  if (!payload || typeof payload !== 'object') {
+    return { ok: false, reason: 'payload is not an object' };
+  }
   const p = payload as Record<string, unknown>;
-  if (typeof p['sourceItemId'] !== 'string' || !p['sourceItemId']) return false;
-  if (typeof p['sourceUrl'] !== 'string' || !p['sourceUrl']) return false;
-  if (typeof p['title'] !== 'string' || !(p['title'] as string).trim()) return false;
-  if (!Array.isArray(p['files']) || (p['files'] as unknown[]).length === 0) return false;
-  return true;
+  if (typeof p['sourceItemId'] !== 'string' || !p['sourceItemId']) {
+    return { ok: false, reason: 'sourceItemId must be a non-empty string' };
+  }
+  if (typeof p['sourceUrl'] !== 'string' || !p['sourceUrl']) {
+    return { ok: false, reason: 'sourceUrl must be a non-empty string' };
+  }
+  if (typeof p['title'] !== 'string' || !(p['title'] as string).trim()) {
+    return { ok: false, reason: 'title must be a non-empty string' };
+  }
+  if (!Array.isArray(p['files']) || (p['files'] as unknown[]).length === 0) {
+    return { ok: false, reason: 'files must be a non-empty array' };
+  }
+
+  // Per-file URL protocol guard. Only http(s) is permitted — `javascript:`,
+  // `file:`, `data:`, and unparseable URLs all reject here.
+  const files = p['files'] as unknown[];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const rawUrl =
+      f && typeof f === 'object' ? (f as Record<string, unknown>)['url'] : undefined;
+    if (typeof rawUrl !== 'string' || !rawUrl) {
+      return { ok: false, reason: `files[${i}].url must be a non-empty string` };
+    }
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(rawUrl);
+    } catch {
+      return { ok: false, reason: `files[${i}].url is not a parseable URL: ${rawUrl}` };
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      return {
+        ok: false,
+        reason: `files[${i}].url uses unsupported protocol "${parsedUrl.protocol}": ${rawUrl}`,
+      };
+    }
+  }
+
+  return { ok: true, payload: payload as ExtensionPayload };
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +189,11 @@ function validatePayload(
  * This adapter only accepts `target.kind = 'raw'` payloads produced by the
  * paired browser extension. URL targets and source-item-id targets are
  * explicitly rejected — the extension does the scraping; the server doesn't.
+ *
+ * @internal Only `createMakerWorldAdapter` and `createPrintablesAdapter` are
+ *           public consumers — this factory is not re-exported from the
+ *           scavengers barrel. Future extension-mediated wrappers should
+ *           import this directly from `./adapters/extension-mediated`.
  *
  * @param sourceId   The SourceId this adapter handles (e.g. 'makerworld').
  * @param hosts      Exact set of hostnames whose URLs this adapter claims for
@@ -197,19 +251,17 @@ export function createExtensionMediatedAdapter(
 
             // ── 2. Validate payload shape ────────────────────────────────────
 
-            if (!validatePayload(target.payload)) {
+            const validation = validatePayload(target.payload);
+            if (!validation.ok) {
               yield {
                 kind: 'failed' as const,
                 reason: 'unknown' as const,
-                details:
-                  `${sourceId} adapter: invalid payload shape — ` +
-                  'requires sourceItemId (string), sourceUrl (string), title (string), ' +
-                  'files (non-empty array)',
+                details: `${sourceId} adapter: invalid payload — ${validation.reason}`,
               };
               return;
             }
 
-            const payload = target.payload;
+            const payload = validation.payload;
 
             logger.debug(
               {
@@ -245,6 +297,8 @@ export function createExtensionMediatedAdapter(
               };
 
               // Download with rate-limit loop (T5 pattern).
+              // Per-file retry budget — declared inside the loop so one slow
+              // file doesn't burn the whole batch's allowance.
               let dlAttempt = 1;
               while (true) {
                 let dlRes: Response;

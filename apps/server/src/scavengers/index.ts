@@ -42,11 +42,14 @@ export type { Cults3dCredentials, Cults3dAdapterOptions } from './adapters/cults
 export { createCults3dAdapter } from './adapters/cults3d';
 
 // Extension-mediated adapters — T6.
+//
+// `createExtensionMediatedAdapter` is intentionally NOT re-exported here.
+// It is an internal factory used only by the makerworld + printables wrappers;
+// public consumers should use the per-source factories below.
 export type {
   ExtensionPayload,
   ExtensionMediatedAdapterOptions,
 } from './adapters/extension-mediated';
-export { createExtensionMediatedAdapter } from './adapters/extension-mediated';
 
 export type { MakerWorldAdapterOptions } from './adapters/makerworld';
 export { createMakerWorldAdapter } from './adapters/makerworld';

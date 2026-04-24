@@ -273,3 +273,56 @@ describe('createMakerWorldAdapter — HTTP 401', () => {
     expect(last.details).toMatch(/401/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 11-12: sourceItemId validation (per-wrapper coverage)
+//
+// The shared factory test exercises validation, but each wrapper's `id`
+// threads through to the failure path. Per-wrapper tests guard against a
+// future refactor that breaks the id wiring.
+// ---------------------------------------------------------------------------
+
+describe('createMakerWorldAdapter — sourceItemId validation', () => {
+  it('test 11: payload with empty sourceItemId → failed with details mentioning sourceItemId', async () => {
+    const httpFetch = vi.fn();
+    const stagingDir = await makeStagingDir();
+    const adapter = createMakerWorldAdapter({ httpFetch });
+    const ctx = makeCtx(stagingDir);
+
+    const badPayload = makeValidPayload({ sourceItemId: '' });
+
+    const events = await collectEvents(adapter, ctx, makeRawTarget(badPayload));
+
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('unknown');
+    expect(last.details).toMatch(/sourceItemId/i);
+    expect(httpFetch).not.toHaveBeenCalled();
+  });
+
+  it('test 12: payload with sourceItemId field absent → failed with details mentioning sourceItemId', async () => {
+    const httpFetch = vi.fn();
+    const stagingDir = await makeStagingDir();
+    const adapter = createMakerWorldAdapter({ httpFetch });
+    const ctx = makeCtx(stagingDir);
+
+    // Construct a payload with sourceItemId omitted entirely — distinct from
+    // the empty-string case above. Use a fresh object to avoid spreading
+    // makeValidPayload (which always populates sourceItemId).
+    const badPayload = {
+      sourceUrl: 'https://makerworld.com/en/models/789',
+      title: 'Some Model',
+      files: [{ url: 'https://cdn.makerworld.com/file.stl', name: 'file.stl' }],
+    };
+
+    const events = await collectEvents(adapter, ctx, makeRawTarget(badPayload));
+
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('unknown');
+    expect(last.details).toMatch(/sourceItemId/i);
+    expect(httpFetch).not.toHaveBeenCalled();
+  });
+});

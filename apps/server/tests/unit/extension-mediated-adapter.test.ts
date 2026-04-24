@@ -442,3 +442,83 @@ describe('extension-mediated — NormalizedItem mapping', () => {
     expect(onDisk.toString()).toBe('3mf file bytes');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 11: HTTP 403 → auth-revoked (parallel to 10/401)
+// ---------------------------------------------------------------------------
+
+describe('extension-mediated — HTTP 403', () => {
+  it('test 11: HTTP 403 on file fetch → failed, reason=auth-revoked', async () => {
+    const httpFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 403 }));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter({ httpFetch });
+    const ctx = makeCtx(stagingDir);
+
+    const events = await collectEvents(adapter, ctx, makeRawTarget(makeValidPayload()));
+
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('auth-revoked');
+    expect(last.details).toMatch(/403/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12: payload with non-http(s) URL → failed before any network call
+// ---------------------------------------------------------------------------
+
+describe('extension-mediated — URL protocol guard', () => {
+  it(
+    'test 12: payload with javascript: URL → failed before any fetch call',
+    async () => {
+      const httpFetch = vi.fn();
+      const stagingDir = await makeStagingDir();
+      const adapter = makeAdapter({ httpFetch });
+      const ctx = makeCtx(stagingDir);
+
+      const badPayload = makeValidPayload({
+        files: [
+          { url: 'javascript:alert(1)', name: 'evil.stl', size: 0 },
+        ],
+      });
+
+      const events = await collectEvents(adapter, ctx, makeRawTarget(badPayload));
+
+      const last = events[events.length - 1];
+      expect(last?.kind).toBe('failed');
+      if (last?.kind !== 'failed') return;
+      expect(last.reason).toBe('unknown');
+      // Details should mention the offending URL so operators can diagnose.
+      expect(last.details).toMatch(/javascript/i);
+      // Critical: no network call attempted.
+      expect(httpFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    'test 12b: payload with file:// URL → failed before any fetch call',
+    async () => {
+      const httpFetch = vi.fn();
+      const stagingDir = await makeStagingDir();
+      const adapter = makeAdapter({ httpFetch });
+      const ctx = makeCtx(stagingDir);
+
+      const badPayload = makeValidPayload({
+        files: [
+          { url: 'file:///etc/passwd', name: 'evil.stl', size: 0 },
+        ],
+      });
+
+      const events = await collectEvents(adapter, ctx, makeRawTarget(badPayload));
+
+      const last = events[events.length - 1];
+      expect(last?.kind).toBe('failed');
+      if (last?.kind !== 'failed') return;
+      expect(last.reason).toBe('unknown');
+      expect(last.details).toMatch(/file:/i);
+      expect(httpFetch).not.toHaveBeenCalled();
+    },
+  );
+});

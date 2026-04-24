@@ -25,13 +25,12 @@
 
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import * as fs from 'node:fs';
-import { pipeline } from 'node:stream/promises';
 
 import { logger } from '../../logger';
 import { getDb, schema } from '../../db/client';
 import { linkOrCopy } from '../filesystem-adapter';
 import { parseTemplate, resolveTemplate } from '../path-template';
+import { sha256Hex } from '../hash-util';
 import type { AdoptionPlan, AdoptionReport, AdoptionCandidate } from '../adoption';
 
 // ---------------------------------------------------------------------------
@@ -191,6 +190,13 @@ export async function applyAdoptionPlan(
 // in-place mode
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns the created lootId on success so callers (notably
+ * `applySingleCandidate`) can surface it without a timestamp-DESC recovery
+ * query. Returns null when nothing was inserted successfully (loot insert
+ * failed, or every lootFile insert failed → orphan loot row). In both failure
+ * modes the caller should use `report.errors` to render the user-facing reason.
+ */
 async function applyInPlace(
   candidate: AdoptionCandidate,
   metadata: Record<string, unknown>,
@@ -198,7 +204,7 @@ async function applyInPlace(
   db: ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>,
   now: Date,
   report: AdoptionReport,
-): Promise<void> {
+): Promise<string | null> {
   const lootId = crypto.randomUUID();
 
   // Use effective metadata (includes user-supplied overrides) for the loot row.
@@ -240,7 +246,7 @@ async function applyInPlace(
       candidateId: candidate.id,
       error: `Failed to insert loot row: ${(err as Error).message}`,
     });
-    return;
+    return null;
   }
 
   let fileCount = 0;
@@ -288,17 +294,24 @@ async function applyInPlace(
       candidateId: candidate.id,
       error: `In-place adoption: all ${candidate.files.length} lootFile inserts failed for candidate "${candidate.folderRelativePath}"`,
     });
-    return;
+    return null;
   }
 
   report.lootsCreated++;
   report.lootFilesCreated += fileCount;
+  return lootId;
 }
 
 // ---------------------------------------------------------------------------
 // copy-then-cleanup mode
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns the created lootId on success so callers (notably
+ * `applySingleCandidate`) can surface it without a timestamp-DESC recovery
+ * query. Returns null when the loot row was never persisted successfully
+ * (insert failed, or zero files moved before an irrecoverable error).
+ */
 async function applyCopyThenCleanup(
   candidate: AdoptionCandidate,
   metadata: Record<string, unknown>,
@@ -308,7 +321,7 @@ async function applyCopyThenCleanup(
   db: ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>,
   now: Date,
   report: AdoptionReport,
-): Promise<void> {
+): Promise<string | null> {
   // ── Phase 1: Insert loot row FIRST (FK parent for lootFiles). ─────────────
   //
   // If loot insert fails, no files have moved yet — source files intact,
@@ -355,7 +368,7 @@ async function applyCopyThenCleanup(
       candidateId: candidate.id,
       error: `Failed to insert loot row: ${(err as Error).message}`,
     });
-    return;
+    return null;
   }
 
   // ── Phase 2: Per-file linkOrCopy with lootFile insert INSIDE the hook. ────
@@ -454,7 +467,7 @@ async function applyCopyThenCleanup(
     // NOTE: the loot row is still in the DB. Orphan cleanup is deferred to
     // T13 (ledger + later sweep tasks).
     if (fileCount === 0 && candidate.files.length > 0) {
-      return;
+      return null;
     }
     // fileCount > 0 — partial success. Loot row + some lootFile rows exist.
     // Count the loot as created (user has something) but the error entry
@@ -463,6 +476,7 @@ async function applyCopyThenCleanup(
 
   report.lootsCreated++;
   report.lootFilesCreated += fileCount;
+  return lootId;
 }
 
 // ---------------------------------------------------------------------------
@@ -521,8 +535,13 @@ export async function applySingleCandidate(args: {
 
   const metadata = buildMetadata(candidate);
 
+  // applyInPlace / applyCopyThenCleanup now return the created lootId directly
+  // (T8 code review fix #6). No more timestamp-DESC recovery query — which
+  // was fragile under same-millisecond concurrent inserts during sweep.
+  let lootId: string | null;
+
   if (mode === 'in-place') {
-    await applyInPlace(candidate, metadata, collectionId, db, now, miniReport);
+    lootId = await applyInPlace(candidate, metadata, collectionId, db, now, miniReport);
   } else {
     // Resolve the template to get a destination path.
     let resolvedPath: string;
@@ -537,7 +556,7 @@ export async function applySingleCandidate(args: {
       return { error: `Template parse error: ${(err as Error).message}` };
     }
 
-    await applyCopyThenCleanup(
+    lootId = await applyCopyThenCleanup(
       candidate,
       metadata,
       collectionId,
@@ -553,26 +572,10 @@ export async function applySingleCandidate(args: {
     return { error: miniReport.errors[0]!.error };
   }
 
-  if (miniReport.lootsCreated === 0) {
+  if (lootId === null || miniReport.lootsCreated === 0) {
     const skipped = miniReport.skippedCandidates[0];
     return { error: skipped ? skipped.reason : 'Candidate was not applied (unknown reason)' };
   }
-
-  // Extract the lootId from the DB — the last loot inserted into this collection.
-  // This is safe because applySingleCandidate processes exactly one candidate
-  // and no concurrent inserts share collectionId + now within the same ms.
-  // For robustness, use the count from the mini report.
-  // We need the actual lootId — applyInPlace/applyCopyThenCleanup don't return it.
-  // Query the most recently created loot in this collection.
-  const { eq, desc } = await import('drizzle-orm');
-  const rows = await db
-    .select({ id: schema.loot.id })
-    .from(schema.loot)
-    .where(eq(schema.loot.collectionId, collectionId))
-    .orderBy(desc(schema.loot.createdAt))
-    .limit(1);
-
-  const lootId = rows[0]?.id ?? '';
 
   return { lootId, lootFileCount: miniReport.lootFilesCreated };
 }
@@ -618,18 +621,4 @@ function buildMetadata(
   }
 
   return meta;
-}
-
-/**
- * Streams a file through SHA-256 and returns the hex digest.
- */
-async function sha256Hex(filePath: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  const stream = fs.createReadStream(filePath);
-  await pipeline(stream, async function* (source) {
-    for await (const chunk of source) {
-      hash.update(chunk as Buffer);
-    }
-  });
-  return hash.digest('hex');
 }

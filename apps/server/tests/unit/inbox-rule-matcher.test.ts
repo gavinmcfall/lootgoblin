@@ -158,17 +158,34 @@ function successApplier(): InboxApplier {
 /** RuleMatcher that always returns a match when confidence passes. */
 function matchingRuleMatcher(collectionId: string, minConf: number): InboxRuleMatcher {
   return {
-    async findMatch(_filename, classification, _ownerId) {
+    async find(_filename, classification, _ownerId) {
       const conf = classification.title?.confidence ?? 0;
-      if (conf >= minConf) return { ruleId: 'test-rule', ownerId: 'test-owner', collectionId, mode: 'in-place', minConfidence: minConf };
-      return null;
+      if (conf >= minConf) {
+        return {
+          kind: 'matched',
+          match: {
+            ruleId: 'test-rule',
+            ownerId: 'test-owner',
+            collectionId,
+            mode: 'in-place',
+            minConfidence: minConf,
+          },
+        };
+      }
+      return { kind: 'no-match', reason: 'low-confidence' };
     },
   };
 }
 
-/** RuleMatcher that always returns null. */
-function noRuleMatcher(): InboxRuleMatcher {
-  return { async findMatch(_filename, _classification, _ownerId) { return null; } };
+/** RuleMatcher that always returns no-match. Reason is configurable. */
+function noRuleMatcher(
+  reason: 'low-confidence' | 'no-rule-matched' = 'no-rule-matched',
+): InboxRuleMatcher {
+  return {
+    async find(_filename, _classification, _ownerId) {
+      return { kind: 'no-match', reason };
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -425,5 +442,60 @@ describe('InboxRuleMatcher — malformed regex', () => {
     // Could be auto-applied by other rules in the shared DB, or land as pending.
     // Either way, no error.
     expect(errors).toBe(0);
+  }, 15_000);
+});
+
+describe('InboxRuleMatcher — priority × confidence interaction (DB-backed)', () => {
+  it('7. Lower-priority rule with low-threshold wins when higher-priority rule is gated by confidence', async () => {
+    // Rule A: priority 5 (higher precedence), minConfidence 0.99 → fires only
+    // on near-perfect classifications. Today's classification has 0.95 → A is
+    // gated out.
+    // Rule B: priority 50 (lower precedence), minConfidence 0.5 → fires.
+    // Assert B wins — iteration must CONTINUE past a pattern-match that's
+    // gated by confidence, not stop at the first matching pattern.
+    const inboxDir = await makeScratchInbox();
+    const ownerId = await seedUser();
+    const rootId = await seedStashRoot(ownerId);
+    const colA = await seedCollection(ownerId, rootId);
+    const colB = await seedCollection(ownerId, rootId);
+
+    const tag = ownerId.replace(/-/g, '').slice(0, 8);
+    await seedRule({
+      ownerId,
+      collectionId: colA,
+      filenamePattern: `pxc_${tag}\\.stl$`,
+      minConfidence: 0.99, // gated out — 0.95 < 0.99
+      priority: 5,
+    });
+    await seedRule({
+      ownerId,
+      collectionId: colB,
+      filenamePattern: `pxc_${tag}\\.stl$`,
+      minConfidence: 0.5,  // passes
+      priority: 50,
+    });
+
+    await writeFile(path.join(inboxDir, `pxc_${tag}.stl`));
+
+    let appliedCollectionId: string | null = null;
+    const trackingApplier: InboxApplier = {
+      async apply(args) {
+        appliedCollectionId = args.collectionId;
+        return { lootId: uid(), lootFileCount: 1 };
+      },
+    };
+
+    // Real DB matcher (no injection). Floor disabled so rule eval proceeds.
+    const engine = createInboxTriageEngine({
+      inboxPath: inboxDir,
+      dbUrl: DB_URL,
+      defaultConfidenceFloor: 0,
+      classifier: highConfClassifier(), // 0.95
+      applier: trackingApplier,
+    });
+
+    const { autoApplied } = await engine.sweep();
+    expect(autoApplied).toBe(1);
+    expect(appliedCollectionId).toBe(colB);
   }, 15_000);
 });

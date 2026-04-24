@@ -23,9 +23,7 @@
 
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
-import { pipeline } from 'node:stream/promises';
 
 import { eq } from 'drizzle-orm';
 
@@ -46,6 +44,7 @@ import {
   createExifProvider,
 } from './classifier-providers';
 import { applySingleCandidate } from './adoption/applier';
+import { sha256Hex } from './hash-util';
 import type { AdoptionCandidate } from './adoption';
 
 // ---------------------------------------------------------------------------
@@ -72,25 +71,45 @@ export type InboxRuleMatch = {
   minConfidence: number;
 };
 
-export type InboxRuleMatcher = {
+/**
+ * Discriminated union returned by `InboxRuleMatcher.find`.
+ *
+ * The previous design used `InboxRuleMatch | null` and required a separate
+ * `resolveNoMatchReason()` helper that re-queried the rules table to figure
+ * out WHY the no-match happened. The discriminated union carries that reason
+ * inline, eliminating the side-channel query and making injected test seams
+ * able to report an accurate reason without hitting the DB.
+ */
+export type InboxRuleMatchResult =
+  | { kind: 'matched'; match: InboxRuleMatch }
+  | { kind: 'no-match'; reason: 'low-confidence' | 'no-rule-matched' };
+
+export interface InboxRuleMatcher {
   /**
-   * Returns the highest-priority rule matching this file + classification,
-   * or null if no rule matched.
+   * Evaluates all applicable rules against this file + classification and
+   * returns either the winning match or a structured no-match reason.
    *
    * ownerId semantics:
    *   - A specific user ID: only that user's rules are evaluated.
    *   - '*' (sentinel): all owners' rules are evaluated (used by the engine
    *     internally for the shared-inbox auto-apply decision).
    *
-   * The returned InboxRuleMatch carries the matched rule's ownerId so the
-   * engine can forward it to the applier.
+   * No-match reason semantics (DB-backed matcher):
+   *   - 'low-confidence'  — at least one rule's pattern matched but every
+   *                         matching rule's minConfidence gated out.
+   *   - 'no-rule-matched' — no rule's pattern matched (regardless of
+   *                         confidence).
+   *
+   * Injected matchers may return either reason. Tests that need to assert
+   * the exact 'low-confidence' reason should either use the DB-backed
+   * matcher (seed a rule) or explicitly return that reason from their seam.
    */
-  findMatch(
+  find(
     filename: string,
     classification: ClassificationResult,
     ownerId: string,
-  ): Promise<InboxRuleMatch | null>;
-};
+  ): Promise<InboxRuleMatchResult>;
+}
 
 export type InboxApplier = {
   /**
@@ -137,7 +156,11 @@ export interface InboxTriageEngine {
    * and tests. Returns aggregate counts.
    */
   sweep(): Promise<{ autoApplied: number; pending: number; errors: number }>;
-  /** List pending items for a given owner. */
+  /**
+   * List pending inbox items. Currently returns ALL items across the shared
+   * inbox; the `ownerId` argument is accepted for future-proofing when v3+
+   * adds per-user inboxes but has no filtering effect today.
+   */
   listPending(ownerId: string): Promise<InboxPendingItem[]>;
   /** User confirms a placement. */
   confirmPlacement(args: {
@@ -182,11 +205,11 @@ function createDbRuleMatcher(dbUrl?: string): InboxRuleMatcher {
   }
 
   return {
-    async findMatch(
+    async find(
       filename: string,
       classification: ClassificationResult,
       ownerId: string,
-    ): Promise<InboxRuleMatch | null> {
+    ): Promise<InboxRuleMatchResult> {
       const db = getDb(dbUrl) as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
 
       // '*' = all owners; otherwise scope to specific ownerId.
@@ -200,75 +223,41 @@ function createDbRuleMatcher(dbUrl?: string): InboxRuleMatcher {
 
       const rules = await rulesQuery;
 
-      // Track whether any rule's pattern matched (for the low-confidence reason).
-      let anyPatternMatched = false;
+      // Track whether any rule's pattern matched so the no-match reason is
+      // accurate (low-confidence vs no-rule-matched) without a second query.
+      let sawPatternMatch = false;
 
       for (const rule of rules) {
         const re = compilePattern(rule.filenamePattern);
         if (!re.test(filename)) continue;
 
-        anyPatternMatched = true;
+        sawPatternMatch = true;
 
-        // Gate: title confidence must meet rule's minConfidence.
+        // Gate: title confidence must meet rule's minConfidence. Iteration
+        // continues because a later (lower-priority) rule with a lower
+        // threshold might still fire — priority ordering alone doesn't
+        // guarantee the first-matching-pattern rule is the winner.
         const titleConfidence = classification.title?.confidence ?? 0;
         if (titleConfidence < rule.minConfidence) continue;
 
         return {
-          ruleId: rule.id,
-          ownerId: rule.ownerId,
-          collectionId: rule.collectionId,
-          mode: rule.mode as 'in-place' | 'copy-then-cleanup',
-          minConfidence: rule.minConfidence,
+          kind: 'matched',
+          match: {
+            ruleId: rule.id,
+            ownerId: rule.ownerId,
+            collectionId: rule.collectionId,
+            mode: rule.mode as 'in-place' | 'copy-then-cleanup',
+            minConfidence: rule.minConfidence,
+          },
         };
       }
 
-      // Return a sentinel that tells triageFile the reason for null.
-      // We encode this via a special null with attached reason — but since the
-      // interface returns InboxRuleMatch | null we use a side-channel approach:
-      // append the reason as a special property via symbol on the null. Instead,
-      // triageFile will re-derive the reason by checking if any rule existed.
-      //
-      // NOTE: We can't return structured data from a null return. The caller
-      // (triageFile) will query the reason separately if needed. For now, null
-      // means "no auto-apply" and the reason is determined by caller logic.
-      void anyPatternMatched; // used below via a separate lookup
-      return null;
+      return {
+        kind: 'no-match',
+        reason: sawPatternMatch ? 'low-confidence' : 'no-rule-matched',
+      };
     },
   };
-}
-
-// ---------------------------------------------------------------------------
-// Reason resolver — determines why auto-apply didn't fire (DB-backed only)
-// ---------------------------------------------------------------------------
-
-/**
- * Queries the DB to determine the pending reason for a file that was not
- * auto-applied. Only called when using the default DB-backed flow.
- *
- * 'low-confidence' — at least one rule's pattern matched but confidence gated.
- * 'no-rule-matched' — no rule's pattern matched.
- */
-async function resolveNoMatchReason(
-  filename: string,
-  classification: ClassificationResult,
-  dbUrl?: string,
-): Promise<'low-confidence' | 'no-rule-matched'> {
-  const db = getDb(dbUrl) as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-  const rules = await db.select().from(schema.inboxTriageRules);
-
-  const regexCache = new Map<string, RegExp>();
-  for (const rule of rules) {
-    let re = regexCache.get(rule.filenamePattern);
-    if (!re) {
-      try { re = new RegExp(rule.filenamePattern); }
-      catch { re = /(?!)/; }
-      regexCache.set(rule.filenamePattern, re);
-    }
-    if (!re.test(filename)) continue;
-    // Pattern matched — confidence must have been too low.
-    return 'low-confidence';
-  }
-  return 'no-rule-matched';
 }
 
 // ---------------------------------------------------------------------------
@@ -346,21 +335,6 @@ function createDefaultApplier(dbUrl?: string): InboxApplier {
 }
 
 // ---------------------------------------------------------------------------
-// sha256Hex — local helper
-// ---------------------------------------------------------------------------
-
-async function sha256Hex(filePath: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  const stream = fs.createReadStream(filePath);
-  await pipeline(stream, async function* (source) {
-    for await (const chunk of source) {
-      hash.update(chunk as Buffer);
-    }
-  });
-  return hash.digest('hex');
-}
-
-// ---------------------------------------------------------------------------
 // createInboxTriageEngine
 // ---------------------------------------------------------------------------
 
@@ -368,6 +342,7 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
   const {
     inboxPath,
     stabilityThresholdMs = 2000,
+    defaultConfidenceFloor = 0.75,
     dbUrl,
   } = options;
 
@@ -383,10 +358,6 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
       ],
     });
 
-  // Track whether a custom ruleMatcher was injected — used by triageFile to
-  // decide whether to use the DB-based reason resolver.
-  const customRuleMatcherInjected = options.ruleMatcher !== undefined;
-
   const ruleMatcher: InboxRuleMatcher =
     options.ruleMatcher ?? createDbRuleMatcher(dbUrl);
 
@@ -399,10 +370,11 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
   // ── triageFile ─────────────────────────────────────────────────────────────
 
   async function triageFile(absolutePath: string): Promise<'auto-applied' | 'pending' | 'error'> {
-    // lstat to guard against symlinks (learning #72).
-    let lstatResult: fs.Stats;
+    // lstat to guard against symlinks (learning #72). Async to keep the event
+    // loop free while sweep is walking many files (code review fix #8).
+    let lstatResult: Awaited<ReturnType<typeof fsp.lstat>>;
     try {
-      lstatResult = fs.lstatSync(absolutePath);
+      lstatResult = await fsp.lstat(absolutePath);
     } catch {
       logger.warn({ path: absolutePath }, 'inbox-triage: lstat failed, skipping');
       return 'error';
@@ -448,64 +420,63 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
 
     const now = new Date();
 
-    // Find the best matching rule across all owners ('*' sentinel).
-    let match: InboxRuleMatch | null = null;
-    try {
-      match = await ruleMatcher.findMatch(basename, classification, '*');
-    } catch (err) {
-      logger.warn({ path: absolutePath, err }, 'inbox-triage: ruleMatcher threw');
-    }
-
-    // Determine pending reason if no match.
+    // Global confidence floor — operator safety guardrail below which no
+    // auto-apply ever happens, regardless of what any rule's minConfidence
+    // says. Skip the rule-matcher call entirely so we never accidentally
+    // fire on a under-the-floor classification.
+    const titleConfidence = classification.title?.confidence ?? 0;
     let matchReason: 'low-confidence' | 'no-rule-matched' | 'rule-error' = 'no-rule-matched';
 
-    if (match !== null) {
-      // Auto-apply path.
-      try {
-        const result = await applier.apply({
-          inboxPath: absolutePath,
-          ownerId: match.ownerId,
-          collectionId: match.collectionId,
-          mode: match.mode,
-          classification,
-        });
-
-        if ('error' in result) {
-          logger.warn(
-            { path: absolutePath, ruleId: match.ruleId, error: result.error },
-            'inbox-triage: applier returned error, creating pending item',
-          );
-          matchReason = 'rule-error';
-        } else {
-          logger.info(
-            { path: absolutePath, lootId: result.lootId, ruleId: match.ruleId },
-            'inbox-triage: auto-applied',
-          );
-          // Remove any stale pending row for this path.
-          const db = getDb(dbUrl) as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-          await db
-            .delete(schema.inboxPendingItems)
-            .where(eq(schema.inboxPendingItems.inboxPath, absolutePath));
-          return 'auto-applied';
-        }
-      } catch (err) {
-        logger.warn({ path: absolutePath, err }, 'inbox-triage: applier threw, creating pending item');
-        matchReason = 'rule-error';
-      }
+    if (titleConfidence < defaultConfidenceFloor) {
+      matchReason = 'low-confidence';
     } else {
-      // No match — determine whether a pattern matched but confidence was too low,
-      // or no pattern matched at all.
-      if (customRuleMatcherInjected) {
-        // With an injected matcher, null means "no auto-apply" — the matcher is
-        // responsible for its own gating logic. We cannot distinguish between
-        // "no pattern matched" and "pattern matched but low confidence" from a
-        // null return alone. Record 'no-rule-matched' as the conservative default.
-        // Tests that need to assert 'low-confidence' specifically should use the
-        // DB-backed matcher path (no injection) with a seeded rule.
-        matchReason = 'no-rule-matched';
+      // Find the best matching rule across all owners ('*' sentinel).
+      // The discriminated union carries the no-match reason inline — no
+      // second query needed (code review fix #1).
+      let matchResult: InboxRuleMatchResult;
+      try {
+        matchResult = await ruleMatcher.find(basename, classification, '*');
+      } catch (err) {
+        logger.warn({ path: absolutePath, err }, 'inbox-triage: ruleMatcher threw');
+        matchResult = { kind: 'no-match', reason: 'no-rule-matched' };
+      }
+
+      if (matchResult.kind === 'matched') {
+        const { match } = matchResult;
+        // Auto-apply path.
+        try {
+          const result = await applier.apply({
+            inboxPath: absolutePath,
+            ownerId: match.ownerId,
+            collectionId: match.collectionId,
+            mode: match.mode,
+            classification,
+          });
+
+          if ('error' in result) {
+            logger.warn(
+              { path: absolutePath, ruleId: match.ruleId, error: result.error },
+              'inbox-triage: applier returned error, creating pending item',
+            );
+            matchReason = 'rule-error';
+          } else {
+            logger.info(
+              { path: absolutePath, lootId: result.lootId, ruleId: match.ruleId },
+              'inbox-triage: auto-applied',
+            );
+            // Remove any stale pending row for this path.
+            const db = getDb(dbUrl) as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+            await db
+              .delete(schema.inboxPendingItems)
+              .where(eq(schema.inboxPendingItems.inboxPath, absolutePath));
+            return 'auto-applied';
+          }
+        } catch (err) {
+          logger.warn({ path: absolutePath, err }, 'inbox-triage: applier threw, creating pending item');
+          matchReason = 'rule-error';
+        }
       } else {
-        // Default DB-backed path: query to see if any pattern matched.
-        matchReason = await resolveNoMatchReason(basename, classification, dbUrl);
+        matchReason = matchResult.reason;
       }
     }
 
@@ -564,9 +535,9 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
     for (const entry of entries) {
       const absolutePath = path.join(inboxPath, entry);
 
-      let stat: fs.Stats;
+      let stat: Awaited<ReturnType<typeof fsp.lstat>>;
       try {
-        stat = fs.lstatSync(absolutePath);
+        stat = await fsp.lstat(absolutePath);
       } catch {
         errors++;
         continue;
@@ -590,8 +561,13 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
 
     await fsp.mkdir(inboxPath, { recursive: true });
 
-    await sweep();
-
+    // Start order matters (code review fix #5). Previously: sweep → attach
+    // listener → start watcher. That left a blind spot between sweep
+    // completion and chokidar acquiring its inode watch — files added in
+    // that window were missed entirely. New order: attach watcher FIRST so
+    // any file added during the sweep window triggers the add event; the
+    // inbox_path UNIQUE upsert handles the dedup if sweep + add race for
+    // the same file.
     const fw = createFileWatcher({
       paths: [inboxPath],
       emitInitialAdds: false,
@@ -620,6 +596,10 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
     await fw.start();
     watcher = fw;
 
+    // Catch-up sweep for pre-existing files. Runs AFTER watcher is live so
+    // no new file is lost.
+    await sweep();
+
     logger.info({ inboxPath }, 'inbox-triage: engine started');
   }
 
@@ -637,10 +617,9 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
 
   // ── listPending ────────────────────────────────────────────────────────────
 
-  async function listPending(ownerId: string): Promise<InboxPendingItem[]> {
-    // Shared inbox — ownerId accepted for API consistency but the table has
-    // no owner FK. Returns all pending items.
-    void ownerId;
+  async function listPending(_ownerId: string): Promise<InboxPendingItem[]> {
+    // Shared inbox — _ownerId accepted for API consistency (future per-user
+    // inbox scoping) but the table has no owner FK today.
 
     const db = getDb(dbUrl) as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
 
@@ -649,16 +628,32 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
       .from(schema.inboxPendingItems)
       .orderBy(schema.inboxPendingItems.detectedAt);
 
-    return rows.map((row) => ({
-      id: row.id,
-      inboxPath: row.inboxPath,
-      classification: JSON.parse(row.classification) as ClassificationResult,
-      hash: row.hash,
-      size: row.size,
-      reason: row.reason as 'low-confidence' | 'no-rule-matched' | 'rule-error',
-      detectedAt: new Date(row.detectedAt as unknown as number),
-      updatedAt: new Date(row.updatedAt as unknown as number),
-    }));
+    return rows.map((row) => {
+      // Guard parse (code review fix #3) — corrupt classification JSON
+      // shouldn't poison the whole listing. Match confirmPlacement's
+      // fallback shape so downstream code stays consistent.
+      let classification: ClassificationResult;
+      try {
+        classification = JSON.parse(row.classification) as ClassificationResult;
+      } catch (err) {
+        logger.warn(
+          { err, pendingId: row.id },
+          'listPending: corrupt classification JSON; using fallback',
+        );
+        classification = { needsUserInput: ['title'] };
+      }
+
+      return {
+        id: row.id,
+        inboxPath: row.inboxPath,
+        classification,
+        hash: row.hash,
+        size: row.size,
+        reason: row.reason as 'low-confidence' | 'no-rule-matched' | 'rule-error',
+        detectedAt: new Date(row.detectedAt as unknown as number),
+        updatedAt: new Date(row.updatedAt as unknown as number),
+      };
+    });
   }
 
   // ── confirmPlacement ───────────────────────────────────────────────────────
@@ -710,8 +705,8 @@ export function createInboxTriageEngine(options: InboxTriageOptions): InboxTriag
 
   // ── dismiss ────────────────────────────────────────────────────────────────
 
-  async function dismiss(pendingId: string, ownerId: string): Promise<void> {
-    void ownerId;
+  async function dismiss(pendingId: string, _ownerId: string): Promise<void> {
+    // Shared inbox — _ownerId accepted for API consistency.
     const db = getDb(dbUrl) as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
     await db
       .delete(schema.inboxPendingItems)

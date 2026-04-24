@@ -184,10 +184,23 @@ function failApplier(): InboxApplier {
   return { async apply() { return { error: 'synthetic applier error' }; } };
 }
 
-/** Rule matcher that always returns null (no rule matches). */
-function noRuleMatcher(): InboxRuleMatcher {
+/** Applier that THROWS (not just returns { error }) — exercises the catch path. */
+function throwingApplier(): InboxApplier {
   return {
-    async findMatch(_filename, _classification, _ownerId) { return null; },
+    async apply() {
+      throw new Error('synthetic applier throw');
+    },
+  };
+}
+
+/** Rule matcher that always returns a no-match (with configurable reason). */
+function noRuleMatcher(
+  reason: 'low-confidence' | 'no-rule-matched' = 'no-rule-matched',
+): InboxRuleMatcher {
+  return {
+    async find(_filename, _classification, _ownerId) {
+      return { kind: 'no-match', reason };
+    },
   };
 }
 
@@ -198,12 +211,15 @@ function fixedRuleMatcher(match: {
   minConfidence: number;
 }): InboxRuleMatcher {
   return {
-    async findMatch(_filename, classification, _ownerId) {
+    async find(_filename, classification, _ownerId) {
       const conf = classification.title?.confidence ?? 0;
       if (conf >= match.minConfidence) {
-        return { ruleId: 'fixed-rule', ownerId: 'test-owner', ...match };
+        return {
+          kind: 'matched',
+          match: { ruleId: 'fixed-rule', ownerId: 'test-owner', ...match },
+        };
       }
-      return null;
+      return { kind: 'no-match', reason: 'low-confidence' };
     },
   };
 }
@@ -358,7 +374,7 @@ describe('InboxTriageEngine — priority resolution', () => {
       minConfidence: 0.5,
       priority: 5,
     });
-    await seedRule({
+    const rule2Id = await seedRule({
       ownerId,
       collectionId: col2Id,
       filenamePattern: `priority-${ownerId}\\.stl$`,
@@ -388,6 +404,11 @@ describe('InboxTriageEngine — priority resolution', () => {
     const result = await engine.sweep();
     expect(result.autoApplied).toBe(1);
     expect(appliedCollectionId).toBe(col1Id);
+    // Sanity: rule1Id is the higher-priority winner; rule2Id was seeded but did
+    // not fire. Assert both IDs are non-empty so a future refactor that drops a
+    // seed call is caught.
+    expect(rule1Id).toBeTruthy();
+    expect(rule2Id).toBeTruthy();
   }, 15_000);
 });
 
@@ -415,6 +436,9 @@ describe('InboxTriageEngine — user interactions', () => {
     const before = await engine.listPending(ownerId);
     const pendingItem = before.find((p) => p.inboxPath === filePath);
     expect(pendingItem).toBeDefined();
+    // Before confirmPlacement, the item must be sitting with the expected
+    // no-rule-matched reason from the noRuleMatcher seam.
+    expect(pendingItem!.reason).toBe('no-rule-matched');
 
     const result = await engine.confirmPlacement({
       pendingId: pendingItem!.id,
@@ -491,7 +515,7 @@ describe('InboxTriageEngine — user interactions', () => {
 });
 
 describe('InboxTriageEngine — sweep on startup', () => {
-  it('9. Sweep on startup — files already in inbox get triaged', async () => {
+  it('9. Direct sweep covers pre-existing files in inbox', async () => {
     const inboxDir = await makeScratchInbox();
 
     // Write files BEFORE creating engine.
@@ -600,8 +624,9 @@ describe('InboxTriageEngine — error handling', () => {
 
     await writeInboxFile(inboxDir, 'classifier-error.stl');
 
-    // noRuleMatcher returns null, so even with empty classification (from throw),
-    // we get a pending item rather than an error.
+    // Classifier throws → fallback classification has no title.confidence
+    // (defaults to 0). The defaultConfidenceFloor (0.75) trips BEFORE the
+    // rule matcher is called, so the reason is 'low-confidence'.
     const engine = createInboxTriageEngine({
       inboxPath: inboxDir,
       dbUrl: DB_URL,
@@ -618,6 +643,7 @@ describe('InboxTriageEngine — error handling', () => {
     const pending = await engine.listPending(ownerId);
     const item = pending.find((p) => p.inboxPath.endsWith('classifier-error.stl'));
     expect(item).toBeDefined();
+    expect(item!.reason).toBe('low-confidence');
   }, 15_000);
 
   it('13. Applier error during auto-apply → pending row with reason rule-error, file still in inbox', async () => {
@@ -647,5 +673,115 @@ describe('InboxTriageEngine — error handling', () => {
 
     // File still in inbox.
     expect(fs.existsSync(filePath)).toBe(true);
+  }, 15_000);
+
+  it('13b. Applier THROWS during auto-apply → catch path creates pending row with reason rule-error', async () => {
+    const inboxDir = await makeScratchInbox();
+    const stashDir = await makeScratchInbox();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, stashDir);
+    const colId = await seedCollection(ownerId, stashRootId);
+
+    const filePath = await writeInboxFile(inboxDir, 'applier-throw.stl');
+
+    // Sibling of test 13 — failApplier returns { error }, throwingApplier
+    // raises. Both paths must land the file as pending/rule-error.
+    const engine = createInboxTriageEngine({
+      inboxPath: inboxDir,
+      dbUrl: DB_URL,
+      classifier: highConfClassifier(),
+      ruleMatcher: fixedRuleMatcher({ collectionId: colId, mode: 'in-place', minConfidence: 0.5 }),
+      applier: throwingApplier(),
+    });
+
+    const result = await engine.sweep();
+    expect(result.autoApplied).toBe(0);
+    expect(result.pending).toBe(1);
+
+    const pending = await engine.listPending(ownerId);
+    const item = pending.find((p) => p.inboxPath === filePath);
+    expect(item?.reason).toBe('rule-error');
+
+    // File still in inbox (applier never got to move it).
+    expect(fs.existsSync(filePath)).toBe(true);
+  }, 15_000);
+});
+
+describe('InboxTriageEngine — defaultConfidenceFloor guardrail', () => {
+  it('14. classification below floor → skip rule eval, pending with low-confidence', async () => {
+    // Classifier reports 0.5 (above rule min 0.3, below floor 0.75).
+    // Without the floor, the fixedRuleMatcher would match and auto-apply.
+    // With the floor, the engine skips rule evaluation entirely.
+    const inboxDir = await makeScratchInbox();
+    const stashDir = await makeScratchInbox();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, stashDir);
+    const colId = await seedCollection(ownerId, stashRootId);
+
+    const filePath = await writeInboxFile(inboxDir, 'floor-test.stl');
+
+    const midConfClassifier = fixedClassifier({
+      title: { value: 'Mid Confidence', confidence: 0.5, source: 'test' },
+      needsUserInput: [],
+    });
+
+    let applierCalled = false;
+    const spyApplier: InboxApplier = {
+      async apply() {
+        applierCalled = true;
+        return { lootId: uid(), lootFileCount: 1 };
+      },
+    };
+
+    const engine = createInboxTriageEngine({
+      inboxPath: inboxDir,
+      dbUrl: DB_URL,
+      defaultConfidenceFloor: 0.75,
+      classifier: midConfClassifier,
+      // A rule that would match if reached — but the floor trips first.
+      ruleMatcher: fixedRuleMatcher({ collectionId: colId, mode: 'in-place', minConfidence: 0.3 }),
+      applier: spyApplier,
+    });
+
+    const result = await engine.sweep();
+    expect(result.autoApplied).toBe(0);
+    expect(result.pending).toBe(1);
+    expect(applierCalled).toBe(false);
+
+    const pending = await engine.listPending(ownerId);
+    const item = pending.find((p) => p.inboxPath === filePath);
+    expect(item?.reason).toBe('low-confidence');
+  }, 15_000);
+
+  it('15. explicit floor=0 disables the guardrail — rule eval runs as usual', async () => {
+    const inboxDir = await makeScratchInbox();
+    const stashDir = await makeScratchInbox();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, stashDir);
+    const colId = await seedCollection(ownerId, stashRootId);
+
+    await writeInboxFile(inboxDir, 'no-floor.stl');
+
+    const midConfClassifier = fixedClassifier({
+      title: { value: 'Mid Confidence', confidence: 0.5, source: 'test' },
+      needsUserInput: [],
+    });
+
+    const engine = createInboxTriageEngine({
+      inboxPath: inboxDir,
+      dbUrl: DB_URL,
+      defaultConfidenceFloor: 0, // disabled
+      classifier: midConfClassifier,
+      ruleMatcher: fixedRuleMatcher({ collectionId: colId, mode: 'in-place', minConfidence: 0.3 }),
+      applier: successApplier(),
+    });
+
+    const result = await engine.sweep();
+    expect(result.autoApplied).toBe(1);
+    expect(result.pending).toBe(0);
+
+    // Sanity — ownerId is used by listPending signature (no effect today).
+    const stillPending = await engine.listPending(ownerId);
+    expect(stillPending.find((p) => p.inboxPath.endsWith('no-floor.stl'))).toBeUndefined();
   }, 15_000);
 });

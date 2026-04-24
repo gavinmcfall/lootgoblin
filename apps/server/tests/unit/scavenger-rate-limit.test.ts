@@ -112,14 +112,29 @@ describe('nextRetry', () => {
       }
     });
 
-    it('retryAfterMs is clamped to maxMs before jitter', () => {
-      // retryAfterMs = 80000, maxMs = 60000 → clamped to 60000 → [42000, 78000]
-      for (let i = 0; i < 20; i++) {
+    it('retryAfterMs branch clamps AFTER jitter — result never exceeds maxMs', () => {
+      // retryAfterMs=80_000 is above maxMs=60_000. Jitter is applied first, then
+      // the jittered value is clamped to 60_000. Result: delayMs ∈ [56_000, 60_000]
+      // — the upper tail is squashed flat at maxMs because `min(jittered, maxMs)`.
+      // Lower bound: jittered can be as low as 80_000 * 0.7 = 56_000.
+      for (let i = 0; i < 30; i++) {
         const result = nextRetry(1, { maxMs: 60_000 }, 80_000);
         expect(result.retry).toBe(true);
         if (!result.retry) continue;
-        expect(result.delayMs).toBeGreaterThanOrEqual(42_000);
-        expect(result.delayMs).toBeLessThanOrEqual(78_000);
+        expect(result.delayMs).toBeLessThanOrEqual(60_000);
+        expect(result.delayMs).toBeGreaterThanOrEqual(56_000);
+      }
+    });
+
+    it('retryAfterMs exactly at maxMs — delay never exceeds server mandate', () => {
+      // retryAfterMs = maxMs = 60_000: server asked for exactly the ceiling.
+      // Jittered in [42_000, 78_000] then clamped to [42_000, 60_000].
+      // Critical property: delay MUST NOT exceed the server-mandated retry-after.
+      for (let i = 0; i < 30; i++) {
+        const result = nextRetry(1, { jitter: 0.3, maxMs: 60_000 }, 60_000);
+        expect(result.retry).toBe(true);
+        if (!result.retry) continue;
+        expect(result.delayMs).toBeLessThanOrEqual(60_000);
       }
     });
 
@@ -167,6 +182,29 @@ describe('nextRetry', () => {
       if (!result.retry) return;
       // 1000 * 2^3 = 8000
       expect(result.delayMs).toBe(8000);
+    });
+  });
+
+  describe('input validation', () => {
+    it('throws RangeError when attempt is 0', () => {
+      expect(() => nextRetry(0)).toThrow(RangeError);
+      expect(() => nextRetry(0)).toThrow(/positive integer/);
+    });
+
+    it('throws RangeError when attempt is negative', () => {
+      expect(() => nextRetry(-1)).toThrow(RangeError);
+    });
+
+    it('throws RangeError when attempt is a non-integer', () => {
+      expect(() => nextRetry(1.5)).toThrow(RangeError);
+    });
+
+    it('throws RangeError when attempt is NaN', () => {
+      expect(() => nextRetry(NaN)).toThrow(RangeError);
+    });
+
+    it('accepts attempt = 1 (boundary)', () => {
+      expect(() => nextRetry(1)).not.toThrow();
     });
   });
 
@@ -267,6 +305,62 @@ describe('sleep', () => {
       expect.fail('should have thrown');
     } catch (err) {
       expect((err as Error).name).toBe('AbortError');
+    }
+  });
+
+  it('removes the abort listener on natural resolution (no listener leak)', async () => {
+    // Spy on addEventListener / removeEventListener on the AbortSignal to prove
+    // the natural-resolution path cleans up the listener. If the fix regresses
+    // (e.g. reverts to `{ once: true }` alone), `removeEventListener` would
+    // never be called and this test fails.
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    const addSpy = vi.spyOn(signal, 'addEventListener');
+    const removeSpy = vi.spyOn(signal, 'removeEventListener');
+
+    try {
+      vi.useFakeTimers();
+      const promise = sleep(10, signal);
+      vi.advanceTimersByTime(10);
+      await promise;
+
+      // We added exactly one 'abort' listener...
+      const aborts = addSpy.mock.calls.filter((args) => args[0] === 'abort');
+      expect(aborts).toHaveLength(1);
+
+      // ...and removed exactly one 'abort' listener on natural resolution.
+      const removed = removeSpy.mock.calls.filter((args) => args[0] === 'abort');
+      expect(removed).toHaveLength(1);
+    } finally {
+      addSpy.mockRestore();
+      removeSpy.mockRestore();
+    }
+  });
+
+  it('many sequential sleeps on one signal do not accumulate listeners', async () => {
+    // Sanity check: sleep 50 times in a row, no listener growth, all resolve.
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    const addSpy = vi.spyOn(signal, 'addEventListener');
+    const removeSpy = vi.spyOn(signal, 'removeEventListener');
+
+    try {
+      vi.useFakeTimers();
+      for (let i = 0; i < 50; i++) {
+        const promise = sleep(1, signal);
+        vi.advanceTimersByTime(1);
+        await promise;
+      }
+
+      const added = addSpy.mock.calls.filter((args) => args[0] === 'abort').length;
+      const removed = removeSpy.mock.calls.filter((args) => args[0] === 'abort').length;
+      expect(added).toBe(50);
+      expect(removed).toBe(50);
+    } finally {
+      addSpy.mockRestore();
+      removeSpy.mockRestore();
     }
   });
 });

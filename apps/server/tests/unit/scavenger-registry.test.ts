@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createRegistry } from '../../src/scavengers/registry';
+import { logger } from '../../src/logger';
 import type { ScavengerAdapter, FetchContext, FetchTarget, ScavengerEvent, SourceId } from '../../src/scavengers/types';
 
 // ---------------------------------------------------------------------------
@@ -122,30 +123,41 @@ describe('ScavengerRegistry', () => {
     });
 
     it('emits a warn log when two adapters both claim the URL', () => {
-      // Import pino logger indirectly via a spy on the registry module's logger.
-      // We spy on console indirectly — but pino writes to stdout, not console.
-      // Instead we verify the warn log via the pino logger spy approach.
-      // Since logger is a module-level singleton imported by registry, we can
-      // spy on the pino instance by replacing its `warn` method before calling.
-      // However, the logger is already constructed. Use a slightly different
-      // approach: verify via the test that no error is thrown and result is correct
-      // (the warn path is covered; exact log emission is tested via logger mock).
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        const registry = createRegistry();
+        registry.register(makeAdapter('cults3d', () => true));
+        registry.register(makeAdapter('thingiverse', () => true));
 
-      // Re-create the registry and use a logger spy to catch the warn.
-      // The logger imported in registry.ts is `../logger` which exports `logger`.
-      // We can use vitest module mocking for a clean spy.
-      // For simplicity we verify the behavior (first-wins) and trust the implementation.
+        registry.resolveUrl('https://whatever.example/');
 
-      const registry = createRegistry();
-      const first = makeAdapter('makerworld', () => true);
-      const second = makeAdapter('printables', () => true);
-      registry.register(first);
-      registry.register(second);
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            url: 'https://whatever.example/',
+            firstId: 'cults3d',
+            secondId: 'thingiverse',
+          }),
+          expect.stringMatching(/multiple adapters/i),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
 
-      // Must not throw
-      expect(() => registry.resolveUrl('https://shared.example.com/')).not.toThrow();
-      // Still returns first
-      expect(registry.resolveUrl('https://shared.example.com/')).toBe(first);
+    it('does NOT emit a warn log when only one adapter matches', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        const registry = createRegistry();
+        registry.register(makeAdapter('cults3d', (url) => url.includes('cults3d.com')));
+        registry.register(makeAdapter('thingiverse', (url) => url.includes('thingiverse.com')));
+
+        registry.resolveUrl('https://cults3d.com/3d-model/1');
+
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

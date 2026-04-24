@@ -78,13 +78,13 @@ export function createRegistry(): ScavengerRegistry {
           if (first === null) {
             first = adapter;
           } else if (matchCount === 2) {
-            // Warn once when we discover the second match; stop counting after.
+            // Warn once when we discover the second match.
             logger.warn(
               { url, firstId: first.id, secondId: adapter.id },
               'ScavengerRegistry: multiple adapters claim the same URL — first-registered wins',
             );
-            // Don't break: continue iterating to log any further matches only
-            // if needed, but first-wins is already determined.
+            // Break after discovering the second match — first-registered adapter is
+            // already captured in `first`; iterating further adds no value.
             break;
           }
         }

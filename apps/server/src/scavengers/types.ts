@@ -70,8 +70,9 @@ export type NormalizedItem = {
     format?: string;
   }>;
   /**
-   * Publish/update timestamp sourced from the upstream API — NOT ingest time.
-   * Used to populate `sourcePublishedAt` on the Loot record.
+   * Timestamp from the source, not ingest time. T2 pipeline maps this to
+   * `lootSourceRecords.capturedAt` or `loot.provenance` — placement decided
+   * by T2, not by the adapter.
    */
   sourcePublishedAt?: Date;
 };

@@ -30,6 +30,13 @@ export type MoveRequest = {
    * Called AFTER destination is established and verified, BEFORE source is
    * unlinked. Caller uses this to commit DB state. If it throws, destination
    * is removed and source is left untouched.
+   *
+   * IMPORTANT: The adapter assumes this callback's promise resolves only after
+   * the DB transaction has been durably committed. If your DB uses deferred
+   * WAL flush or the callback returns before disk sync, the subsequent source
+   * unlink may precede DB durability — yielding a window where the source
+   * file is gone but the DB row referencing the new destination is not yet
+   * persisted.
    */
   onAfterDestinationVerified: () => Promise<void>;
   /**
@@ -69,6 +76,14 @@ export type MoveResult =
       reason: FailureReason;
       details: string;
       error?: unknown;
+      /**
+       * Present when the adapter attempted a best-effort cleanup (e.g. removing
+       * a corrupted destination after `hash-mismatch` or `db-commit-failed`)
+       * and that cleanup itself failed. Callers should log this and surface
+       * the orphaned destination to operators. Absence of this field means
+       * either no rollback was needed, or rollback succeeded.
+       */
+      rollbackError?: unknown;
     };
 
 export type FailureReason =
@@ -137,6 +152,7 @@ export async function linkOrCopy(req: MoveRequest): Promise<MoveResult> {
   // ── Step 1: Verify source exists and is a regular file ──────────────────
   let sourceStat: fs.Stats;
   try {
+    // stat follows symlinks — a symlink-to-file is treated as a regular file.
     sourceStat = await fs.promises.stat(source);
   } catch (err) {
     return {
@@ -196,6 +212,17 @@ export async function linkOrCopy(req: MoveRequest): Promise<MoveResult> {
       const code = (linkErr as NodeJS.ErrnoException).code;
       if (code === 'EXDEV') {
         branch = 'copied';
+      } else if (code === 'EEXIST') {
+        // Race: another process created the destination between the step 2
+        // access() check and the step 4 link() call. Report as
+        // destination-exists so callers can handle it uniformly with the
+        // pre-check path (rename/quarantine/skip).
+        return {
+          status: 'failed',
+          reason: 'destination-exists',
+          details: `Destination already exists (race after access check): ${destination}`,
+          error: linkErr,
+        };
       } else {
         return {
           status: 'failed',
@@ -227,6 +254,19 @@ export async function linkOrCopy(req: MoveRequest): Promise<MoveResult> {
     try {
       await fs.promises.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
     } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        // COPYFILE_EXCL enforces no-overwrite at the OS level. Fires under
+        // the same race as step 2/4: another process created the destination
+        // between the access() check and the copyFile() call. Report
+        // uniformly as destination-exists.
+        return {
+          status: 'failed',
+          reason: 'destination-exists',
+          details: `Destination already exists (race during copy): ${destination}`,
+          error: err,
+        };
+      }
       return {
         status: 'failed',
         reason: 'copy-failed',
@@ -239,39 +279,43 @@ export async function linkOrCopy(req: MoveRequest): Promise<MoveResult> {
     try {
       dstHash = await sha256Hex(destination);
     } catch (err) {
-      await bestEffortUnlink(destination);
+      const rollbackErr = await bestEffortUnlink(destination);
       return {
         status: 'failed',
         reason: 'copy-failed',
         details: `Failed to hash destination after copy: ${destination}`,
         error: err,
+        ...(rollbackErr ? { rollbackError: rollbackErr } : {}),
       };
     }
 
     if (dstHash !== srcHash) {
-      await bestEffortUnlink(destination);
+      const rollbackErr = await bestEffortUnlink(destination);
       return {
         status: 'failed',
         reason: 'hash-mismatch',
         details: `SHA-256 mismatch after copy: source=${srcHash} destination=${dstHash}`,
+        ...(rollbackErr ? { rollbackError: rollbackErr } : {}),
       };
     }
 
-    // Record bytes written
-    const destStat = await fs.promises.stat(destination);
-    copyBytesWritten = destStat.size;
+    // Record bytes written — reuse sourceStat.size from step 1 to avoid a
+    // second stat syscall and TOCTOU window. The hash verification above
+    // already proves the destination bytes equal the source bytes.
+    copyBytesWritten = sourceStat.size;
   }
 
   // ── Step 6: Call DB commit hook ───────────────────────────────────────────
   try {
     await onAfterDestinationVerified();
   } catch (err) {
-    await bestEffortUnlink(destination);
+    const rollbackErr = await bestEffortUnlink(destination);
     return {
       status: 'failed',
       reason: 'db-commit-failed',
       details: `onAfterDestinationVerified threw: ${source} → ${destination}`,
       error: err,
+      ...(rollbackErr ? { rollbackError: rollbackErr } : {}),
     };
   }
 
@@ -323,11 +367,16 @@ export async function linkOrCopy(req: MoveRequest): Promise<MoveResult> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Unlink without throwing — used for best-effort rollback. */
-async function bestEffortUnlink(filePath: string): Promise<void> {
+/**
+ * Unlink without throwing — used for best-effort rollback. Returns the caught
+ * Error on failure (so callers can attach it to the outgoing failure result
+ * as `rollbackError`), or null on success.
+ */
+async function bestEffortUnlink(filePath: string): Promise<Error | null> {
   try {
     await fs.promises.unlink(filePath);
-  } catch {
-    // ignore — best-effort
+    return null;
+  } catch (err) {
+    return err as Error;
   }
 }

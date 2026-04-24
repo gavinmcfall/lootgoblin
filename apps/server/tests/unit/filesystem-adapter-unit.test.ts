@@ -79,4 +79,18 @@ describe('sha256Hex', () => {
     expect(result).toHaveLength(64);
     expect(result).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  it('returns the canonical empty SHA-256 digest for a 0-byte file', async () => {
+    // Exercises the pipeline+generator path when no data chunks flow.
+    // Canonical SHA-256 of the empty byte string.
+    const emptyFile = path.join(tmpDir, 'empty.bin');
+    await fs.promises.writeFile(emptyFile, Buffer.alloc(0));
+    const stat = await fs.promises.stat(emptyFile);
+    expect(stat.size).toBe(0);
+
+    const result = await sha256Hex(emptyFile);
+    expect(result).toBe(
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+  });
 });

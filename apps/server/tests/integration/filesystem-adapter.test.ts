@@ -280,6 +280,38 @@ describe('linkOrCopy — link fails with non-EXDEV', () => {
     // Destination must NOT have been created
     await expect(fs.promises.access(dst)).rejects.toThrow();
   });
+
+  it('returns { status: failed, reason: destination-exists } when fs.link throws EEXIST (race)', async () => {
+    // Simulates another process creating the destination between the step 2
+    // access() check and the step 4 link() call. The adapter should treat
+    // this the same as the pre-check destination-exists path.
+    const dir = testDir('link-eexist-race');
+    const src = await writeFixture(dir, 'source.stl');
+    const dst = path.join(dir, 'dest.stl');
+
+    const linkSpy = vi
+      .spyOn(fs.promises, 'link')
+      .mockRejectedValueOnce(
+        Object.assign(new Error('race: dest appeared'), { code: 'EEXIST' }),
+      );
+
+    const result = await linkOrCopy({
+      source: src,
+      destination: dst,
+      cleanupPolicy: 'immediate',
+      onAfterDestinationVerified: noop,
+    });
+
+    linkSpy.mockRestore();
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      reason: 'destination-exists',
+    });
+
+    // Source must be untouched
+    await expect(fs.promises.access(src)).resolves.toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -315,9 +347,63 @@ describe('linkOrCopy — hash mismatch', () => {
       reason: 'hash-mismatch',
     });
 
+    // rollbackError must NOT be present — rollback unlink succeeded.
+    if (result.status === 'failed') {
+      expect(result.rollbackError).toBeUndefined();
+    }
+
     // Destination must have been cleaned up (rolled back)
     await expect(fs.promises.access(dst)).rejects.toThrow();
 
+    // Source must be untouched
+    await expect(fs.promises.access(src)).resolves.toBeUndefined();
+  });
+
+  it('surfaces rollbackError when hash-mismatch cleanup unlink also fails', async () => {
+    const dir = testDir('hash-mismatch-rollback-fail');
+    const src = await writeFixture(dir, 'source.stl');
+    const dst = path.join(dir, 'dest.stl');
+
+    // Corrupt the copy so the hash won't match
+    const copyFileSpy = vi
+      .spyOn(fs.promises, 'copyFile')
+      .mockImplementationOnce(
+        async (_srcPath: fs.PathLike | fs.FileHandle, dstPath: fs.PathLike | fs.FileHandle) => {
+          await fs.promises.writeFile(dstPath as string, 'CORRUPTED\n', 'utf8');
+        },
+      );
+
+    // Make the rollback unlink fail (one-shot, so only the rollback call
+    // is rejected — subsequent test unlinks still work).
+    const rollbackErr = Object.assign(new Error('rollback unlink failed'), {
+      code: 'EPERM',
+    });
+    const unlinkSpy = vi
+      .spyOn(fs.promises, 'unlink')
+      .mockRejectedValueOnce(rollbackErr);
+
+    const result = await linkOrCopy({
+      source: src,
+      destination: dst,
+      cleanupPolicy: 'immediate',
+      onAfterDestinationVerified: noop,
+      _forceExdev: true,
+    });
+
+    copyFileSpy.mockRestore();
+    unlinkSpy.mockRestore();
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      reason: 'hash-mismatch',
+    });
+    if (result.status === 'failed') {
+      expect(result.rollbackError).toBe(rollbackErr);
+    }
+
+    // Destination is still on disk (rollback failed) — test harness cleanup
+    // will remove it when the scratch dir is torn down in afterAll.
+    await expect(fs.promises.access(dst)).resolves.toBeUndefined();
     // Source must be untouched
     await expect(fs.promises.access(src)).resolves.toBeUndefined();
   });

@@ -41,6 +41,19 @@ export { createUploadAdapter } from './adapters/upload';
 export type { Cults3dCredentials, Cults3dAdapterOptions } from './adapters/cults3d';
 export { createCults3dAdapter } from './adapters/cults3d';
 
+// Extension-mediated adapters — T6.
+export type {
+  ExtensionPayload,
+  ExtensionMediatedAdapterOptions,
+} from './adapters/extension-mediated';
+export { createExtensionMediatedAdapter } from './adapters/extension-mediated';
+
+export type { MakerWorldAdapterOptions } from './adapters/makerworld';
+export { createMakerWorldAdapter } from './adapters/makerworld';
+
+export type { PrintablesAdapterOptions } from './adapters/printables';
+export { createPrintablesAdapter } from './adapters/printables';
+
 // Shared filename sanitizer — used by URL-driven adapters (T5+).
 export { sanitizeFilename } from './filename-sanitize';
 
@@ -48,13 +61,15 @@ export { sanitizeFilename } from './filename-sanitize';
 // Default registry factory — T4+
 //
 // Registers all known adapters in a single process-level registry instance.
-// URL-driven adapters (T5-T8: cults3d, makerworld, printables, sketchfab,
-// google-drive) will be added here as each task lands.
+// Extension-mediated adapters (T6: makerworld, printables) and future adapters
+// (T7-T8: sketchfab, google-drive) are added here as each task lands.
 // ---------------------------------------------------------------------------
 
 import { createRegistry } from './registry';
 import { createUploadAdapter } from './adapters/upload';
 import { createCults3dAdapter } from './adapters/cults3d';
+import { createMakerWorldAdapter } from './adapters/makerworld';
+import { createPrintablesAdapter } from './adapters/printables';
 import type { ScavengerRegistry } from './registry';
 
 /**
@@ -62,13 +77,14 @@ import type { ScavengerRegistry } from './registry';
  * adapters. Routes and instrumentation should call this once and share the
  * instance (or use a module-level singleton).
  *
- * T6-T8 will register makerworld, printables, sketchfab, google-drive
- * as each adapter task completes.
+ * T7-T8 will register sketchfab, google-drive as each adapter task completes.
  */
 export function createDefaultRegistry(): ScavengerRegistry {
   const registry = createRegistry();
   registry.register(createUploadAdapter());
   registry.register(createCults3dAdapter());
-  // T6-T8 will add: makerworld, printables, sketchfab, google-drive
+  registry.register(createMakerWorldAdapter());
+  registry.register(createPrintablesAdapter());
+  // T7-T8 will add: sketchfab, google-drive
   return registry;
 }

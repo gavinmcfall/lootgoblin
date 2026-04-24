@@ -11,12 +11,19 @@
  *   5.  buildFtsRow — empty files → empty formats.
  *   6.  buildFtsRow — multiple files of same format → deduplicated in formats.
  *   10. buildFtsRow — loot with no tags (null) → empty tags string.
+ *   11. pickPrimaryFile — empty array → null.
+ *   12. pickPrimaryFile — 3MF preferred over STL.
+ *   13. pickPrimaryFile — 3MF preferred over readme.txt regardless of id ordering.
+ *   14. pickPrimaryFile — STL preferred over unknown formats.
+ *   15. pickPrimaryFile — id tiebreaker when formats have equal priority.
+ *   16. pickPrimaryFile — both unknown formats fall back to id tiebreaker.
+ *   17. pickPrimaryFile — image formats above unknowns, below 3D formats.
+ *   18. pickPrimaryFile — format column is case-insensitive.
  *
  * F3D runner behavior (throw / failed / not-found / ok) is tested at
  * integration level only — see tests/integration/indexer.test.ts. The unit
- * tests that previously covered them (7, 8, 9) only asserted factory
- * constructability, not runtime mapping; they were consolidated into
- * integration tests 8, 9, 16.
+ * tests that previously covered them only asserted factory constructability,
+ * not runtime mapping.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -111,6 +118,75 @@ describe('buildFtsRow', () => {
       [],
     );
     expect(row.tags).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickPrimaryFile — format-priority selection
+// ---------------------------------------------------------------------------
+
+import { pickPrimaryFile } from '../../src/stash/indexer';
+
+describe('pickPrimaryFile — format priority', () => {
+  it('11. empty array returns null', () => {
+    expect(pickPrimaryFile([])).toBeNull();
+  });
+
+  it('12. 3MF is preferred over STL', () => {
+    const files = [
+      { id: 'a', path: 'model.stl', format: 'stl' },
+      { id: 'b', path: 'model.3mf', format: '3mf' },
+    ];
+    expect(pickPrimaryFile(files)?.format).toBe('3mf');
+  });
+
+  it('13. 3MF is preferred over readme.txt even when readme has lower id', () => {
+    const files = [
+      { id: 'a-first', path: 'readme.txt', format: 'txt' },
+      { id: 'z-last', path: 'model.3mf', format: '3mf' },
+    ];
+    expect(pickPrimaryFile(files)?.path).toBe('model.3mf');
+  });
+
+  it('14. STL preferred over unknown format', () => {
+    const files = [
+      { id: 'a', path: 'notes.md', format: 'md' },
+      { id: 'b', path: 'model.stl', format: 'stl' },
+    ];
+    expect(pickPrimaryFile(files)?.format).toBe('stl');
+  });
+
+  it('15. id tiebreaker applies when formats have equal priority', () => {
+    const files = [
+      { id: 'z', path: 'z.stl', format: 'stl' },
+      { id: 'a', path: 'a.stl', format: 'stl' },
+    ];
+    expect(pickPrimaryFile(files)?.id).toBe('a');
+  });
+
+  it('16. both unknown formats fall back to id tiebreaker', () => {
+    const files = [
+      { id: 'z', path: 'z.xyz', format: 'xyz' },
+      { id: 'a', path: 'a.abc', format: 'abc' },
+    ];
+    expect(pickPrimaryFile(files)?.id).toBe('a');
+  });
+
+  it('17. image formats preferred over unknowns but below 3D formats', () => {
+    const files = [
+      { id: 'a', path: 'a.txt', format: 'txt' },
+      { id: 'b', path: 'b.png', format: 'png' },
+      { id: 'c', path: 'c.stl', format: 'stl' },
+    ];
+    expect(pickPrimaryFile(files)?.format).toBe('stl');
+  });
+
+  it('18. format column is case-insensitive', () => {
+    const files = [
+      { id: 'a', path: 'a.STL', format: 'STL' },
+      { id: 'b', path: 'b.txt', format: 'txt' },
+    ];
+    expect(pickPrimaryFile(files)?.format.toLowerCase()).toBe('stl');
   });
 });
 

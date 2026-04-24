@@ -112,6 +112,12 @@ export interface IndexerEngine {
 
   /**
    * Query FTS5 for matching Loot ids, ordered by rank.
+   *
+   * ACCEPTS RAW USER INPUT. FTS5 MATCH syntax errors (from malformed queries
+   * like `hello AND`, `"unclosed`, trailing `-`, etc.) are caught internally
+   * and return an empty array with a warn log. Callers do NOT need to
+   * pre-sanitize.
+   *
    * Returns an empty array for queries that match nothing.
    */
   search(query: string, options?: { limit?: number; offset?: number }): Promise<string[]>;
@@ -158,6 +164,67 @@ export function buildFtsRow(
     tags,
     formats,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Primary-file selection
+// ---------------------------------------------------------------------------
+
+/**
+ * Extension priority for picking a Loot's "primary" file (the one we render
+ * a thumbnail from). Lower index = higher preference. 3D formats first
+ * (F3D can render them, 3mf has fast-path), images next (F3D can passthrough),
+ * everything else last.
+ *
+ * Rationale: without this, `readme.txt` or `LICENSE` files inserted before
+ * the actual model would become the thumbnail target, F3D would fail, and
+ * the Loot would show as 'failed' forever despite having a perfectly good
+ * .3mf next to it.
+ */
+const PRIMARY_FORMAT_PRIORITY = [
+  '3mf',
+  'stl',
+  'step',
+  'stp',
+  'obj',
+  '3ds',
+  'fbx',
+  'gltf',
+  'glb',
+  'ply',
+  'png',
+  'jpg',
+  'jpeg',
+  'webp',
+];
+
+function formatPriorityScore(extOrFormat: string): number {
+  const normalised = extOrFormat.toLowerCase().replace(/^\./, '');
+  const i = PRIMARY_FORMAT_PRIORITY.indexOf(normalised);
+  return i === -1 ? PRIMARY_FORMAT_PRIORITY.length : i;
+}
+
+/**
+ * Pick the primary lootFile for thumbnail generation.
+ *
+ * Sort order (ascending):
+ *   1. Format-priority score (3D formats first, images next, others last).
+ *      Uses the `format` column (not path extension) for consistency with
+ *      how the adopter populated the row.
+ *   2. `id` as a stable tiebreaker (so repeat runs produce the same choice).
+ *
+ * Exported for unit testing.
+ */
+export function pickPrimaryFile<T extends { id: string; format: string; path: string }>(
+  files: T[],
+): T | null {
+  if (files.length === 0) return null;
+  const sorted = [...files].sort((a, b) => {
+    const scoreDiff = formatPriorityScore(a.format) - formatPriorityScore(b.format);
+    if (scoreDiff !== 0) return scoreDiff;
+    return a.id.localeCompare(b.id);
+  });
+  return sorted[0] ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,15 +524,32 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
 
   // -------------------------------------------------------------------------
   // rebuildFts
+  //
+  // Atomicity note: the DELETE + re-INSERT pair is wrapped in a
+  // better-sqlite3 synchronous transaction so concurrent search() calls
+  // never observe an empty index mid-rebuild. Readers see either the
+  // pre-rebuild snapshot (if they acquire the read lock before BEGIN) or
+  // the post-rebuild snapshot (after COMMIT) — never an empty state.
+  //
+  // We pre-load all loot + lootFiles rows ASYNCHRONOUSLY (outside the
+  // transaction) and materialise the FTS rows in memory first. The
+  // transaction body is then pure sync SQL, matching better-sqlite3's
+  // transaction contract (which is synchronous and cannot await).
   // -------------------------------------------------------------------------
   async function rebuildFts(): Promise<{ indexed: number }> {
-    // Purge entire FTS index.
-    db().run(sql`DELETE FROM loot_fts`);
+    type PreparedRow = {
+      loot_id: string;
+      title: string;
+      creator: string;
+      description: string;
+      tags: string;
+      formats: string;
+    };
 
-    // Fetch all loot rows in batches of 500.
+    // Pre-load all loot rows in batches (async) and build FTS rows in memory.
     const BATCH_SIZE = 500;
+    const preparedRows: PreparedRow[] = [];
     let offset = 0;
-    let indexed = 0;
 
     while (true) {
       const batch = await db()
@@ -500,23 +584,36 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
 
       for (const lootRow of batch) {
         const files = filesByLoot.get(lootRow.id) ?? [];
-        const row = buildFtsRow(lootRow, files);
-        db().run(
-          sql`INSERT INTO loot_fts (loot_id, title, creator, description, tags, formats)
-              VALUES (${row.loot_id}, ${row.title}, ${row.creator}, ${row.description}, ${row.tags}, ${row.formats})`,
-        );
-        indexed++;
+        preparedRows.push(buildFtsRow(lootRow, files));
       }
 
       if (batch.length < BATCH_SIZE) break;
       offset += BATCH_SIZE;
     }
 
-    return { indexed };
+    // Atomic swap: DELETE + all re-INSERTs inside one transaction.
+    db().transaction((tx) => {
+      tx.run(sql`DELETE FROM loot_fts`);
+      for (const row of preparedRows) {
+        tx.run(
+          sql`INSERT INTO loot_fts (loot_id, title, creator, description, tags, formats)
+              VALUES (${row.loot_id}, ${row.title}, ${row.creator}, ${row.description}, ${row.tags}, ${row.formats})`,
+        );
+      }
+    });
+
+    return { indexed: preparedRows.length };
   }
 
   // -------------------------------------------------------------------------
   // search
+  //
+  // FTS5 MATCH interprets the bound value as a query expression, NOT a plain
+  // string. Malformed user input (e.g. `hello AND`, `"unclosed`, trailing `-`)
+  // throws an SQLITE_ERROR with message "fts5: syntax error near ...".
+  // We catch those errors and return [] so callers can pass raw user input
+  // without a sanitize step. Non-FTS errors (DB corruption, locked, etc.)
+  // still propagate.
   // -------------------------------------------------------------------------
   async function search(
     query: string,
@@ -525,11 +622,25 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
     const limit = options?.limit ?? 50;
     const offset = options?.offset ?? 0;
 
-    const rows = db().all(
-      sql`SELECT loot_id FROM loot_fts WHERE loot_fts MATCH ${query} ORDER BY rank LIMIT ${limit} OFFSET ${offset}`,
-    ) as Array<{ loot_id: string }>;
-
-    return rows.map((r) => r.loot_id);
+    try {
+      const rows = db().all(
+        sql`SELECT loot_id FROM loot_fts WHERE loot_fts MATCH ${query} ORDER BY rank LIMIT ${limit} OFFSET ${offset}`,
+      ) as Array<{ loot_id: string }>;
+      return rows.map((r) => r.loot_id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // FTS5 surfaces parse failures as "fts5: syntax error near ..." OR
+      // (for tokenizer-level issues like unterminated strings in the bound
+      // value) as "unterminated string". Both are user-input errors.
+      if (
+        message.includes('fts5: syntax error') ||
+        message.includes('unterminated string')
+      ) {
+        logger.warn({ query, err: message }, 'indexer: FTS5 syntax error — returning empty results');
+        return [];
+      }
+      throw err;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -538,8 +649,11 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
   async function regenerateThumbnail(lootId: string): Promise<ThumbnailResult> {
     const now = Date.now();
 
-    // 1. Find the primary lootFile (first by id, stable ordering).
-    const files = await db()
+    // 1. Load ALL candidate lootFiles, then pick the best one by format
+    //    priority (3D formats first, images next, others last). Stable
+    //    tiebreaker by id. Fixes the "readme.txt picked over model.3mf"
+    //    bug that would occur when non-renderable files were inserted first.
+    const candidates = await db()
       .select({
         id: schema.lootFiles.id,
         path: schema.lootFiles.path,
@@ -547,11 +661,11 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
         format: schema.lootFiles.format,
       })
       .from(schema.lootFiles)
-      .where(eq(schema.lootFiles.lootId, lootId))
-      .orderBy(asc(schema.lootFiles.id))
-      .limit(1);
+      .where(eq(schema.lootFiles.lootId, lootId));
 
-    if (files.length === 0) {
+    const primaryFile = pickPrimaryFile(candidates);
+
+    if (primaryFile === null) {
       const result: ThumbnailResult = { status: 'failed', error: 'no-files' };
       const nowMs = Date.now();
       db().run(
@@ -566,8 +680,6 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
       );
       return result;
     }
-
-    const primaryFile = files[0]!;
 
     // 2. Resolve stash root path via loot → collection → stashRoot.
     const rootPath = await resolveStashRootPathForLoot(lootId);

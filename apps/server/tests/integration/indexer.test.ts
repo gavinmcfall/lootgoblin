@@ -21,7 +21,10 @@
  *   14. FTS respects updates — re-index after title change; old term gone, new term found.
  *   15. Loot with null optional fields (creator/description/tags/license) doesn't crash.
  *   16. f3dRunner throws → engine catches, DB records status='failed' with surfaced message.
- *   17. Stale thumbnail_path invariant (Fix 2) — after OK then failed retry, path preserved.
+ *   17. Stale thumbnail_path invariant — after OK then failed retry, path preserved.
+ *   18. search — FTS5 syntax errors are caught; malformed queries return [].
+ *   19. rebuildFts — atomic swap: concurrent search never observes empty index.
+ *   20. regenerateThumbnail — primary-file format priority: 3MF beats readme.txt.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -198,26 +201,6 @@ async function build3mfWithThumbnail(thumbnailPng: Buffer): Promise<Buffer> {
   // Embed thumbnail at the spec-standard path.
   zip.file('Metadata/thumbnail.png', thumbnailPng);
   return zip.generateAsync({ type: 'nodebuffer' });
-}
-
-/** Minimal valid PNG: 1x1 red pixel. */
-function minimalPng(): Buffer {
-  // PNG signature + IHDR + IDAT + IEND (hand-crafted 1x1 red pixel PNG)
-  return Buffer.from(
-    '89504e470d0a1a0a' + // PNG signature
-    '0000000d49484452' + // IHDR length + type
-    '00000001' +         // width = 1
-    '00000001' +         // height = 1
-    '08020000' +         // bit depth 8, colour type 2 (RGB), compression, filter, interlace
-    '0090wc3d' +         // CRC (placeholder — tests only need non-zero bytes)
-    '0000000c49444154' + // IDAT length + type
-    '08d76360f8cfc000' + // compressed pixel data
-    '00000200' +         //
-    '01e221bc33' +       // CRC
-    '0000000049454e44' + // IEND length + type
-    'ae426082',          // CRC
-    'hex',
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -907,5 +890,158 @@ describe('regenerateThumbnail — stale thumbnail_path on retry failure (Fix 2)'
 
     // The physical file is NOT destroyed on retry failure.
     expect(fs.existsSync(absThumbFile)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. search — FTS5 syntax errors are caught; empty array returned
+// ---------------------------------------------------------------------------
+
+describe('search — FTS5 syntax tolerance (Fix 1)', () => {
+  it('18. malformed queries return [] instead of throwing', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const collectionId = await seedCollection(ownerId, stashRootId);
+    const lootId = await seedLoot(collectionId, {
+      title: 'Syntax Test Loot',
+      creator: 'Syntaxer',
+    });
+
+    const engine = makeEngine();
+    await engine.indexLoot(lootId);
+
+    // Each of these is a real FTS5 syntax error.
+    const malformed = [
+      'hello AND',          // trailing operator
+      '"unclosed',          // unterminated phrase
+      'trailing-',          // trailing hyphen
+      'AND OR NOT',         // lone operators
+      '(',                  // unclosed paren
+    ];
+
+    for (const query of malformed) {
+      // Should NOT throw.
+      const results = await engine.search(query);
+      expect(results).toEqual([]);
+    }
+
+    // And a well-formed query still works against the same corpus.
+    const good = await engine.search('syntax');
+    expect(good).toContain(lootId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 19. rebuildFts — atomic swap: concurrent search never sees empty index
+// ---------------------------------------------------------------------------
+
+describe('rebuildFts — atomicity (Fix 2)', () => {
+  it('19. concurrent search during rebuild never observes an empty index', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const collectionId = await seedCollection(ownerId, stashRootId);
+
+    // Seed 10 loots with a shared keyword so search always has something
+    // to find, both before and after rebuild.
+    const lootIds: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const id = await seedLoot(collectionId, {
+        title: `AtomicRebuild Loot ${i}`,
+        creator: 'Atomizer',
+        description: 'atomicity keyword',
+      });
+      lootIds.push(id);
+    }
+
+    const engine = makeEngine();
+    // Index all up-front so pre-state is non-empty.
+    for (const id of lootIds) {
+      await engine.indexLoot(id);
+    }
+
+    // Verify pre-state.
+    const pre = await engine.search('atomicity');
+    const preOurs = pre.filter((id) => lootIds.includes(id));
+    expect(preOurs.length).toBe(10);
+
+    // Fire rebuild + many concurrent searches. Every search must return
+    // >= 10 results from our set — NEVER 0 (which would indicate the
+    // searcher observed an in-progress empty index).
+    const searchPromises: Promise<string[]>[] = [];
+    const rebuildPromise = engine.rebuildFts();
+    for (let i = 0; i < 20; i++) {
+      searchPromises.push(engine.search('atomicity'));
+    }
+
+    const [rebuildResult, ...searchResults] = await Promise.all([
+      rebuildPromise,
+      ...searchPromises,
+    ]);
+
+    expect(rebuildResult.indexed).toBeGreaterThanOrEqual(10);
+
+    for (const result of searchResults) {
+      const oursFound = result.filter((id) => lootIds.includes(id)).length;
+      // Every concurrent search must see either the pre- or post-rebuild
+      // state — both have 10 of our loots. A mid-rebuild empty window
+      // would manifest as 0 here.
+      expect(oursFound).toBe(10);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 20. regenerateThumbnail — primary-file format priority (Fix 3)
+// ---------------------------------------------------------------------------
+
+describe('regenerateThumbnail — primary-file format priority (Fix 3)', () => {
+  it('20. picks .3mf even when readme.txt was inserted first (fast-path fires)', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const collectionId = await seedCollection(ownerId, stashRootId);
+    const lootId = await seedLoot(collectionId, {
+      title: 'Priority Test',
+      creator: 'Priorityer',
+    });
+
+    // Write a readme.txt first (would lexicographically sort first by any
+    // path-based ordering AND be inserted first by id). Without Fix 3 the
+    // old ORDER BY id ASC would pick this, F3D would run on a .txt, and
+    // we'd get status='failed'.
+    const readmePath = path.join(scratch, 'readme.txt');
+    await fsp.writeFile(readmePath, 'Not a model.');
+    await seedLootFile(lootId, 'readme.txt', readmePath);
+
+    // Write a 3MF second with an embedded thumbnail — fast-path should fire
+    // if (and only if) Fix 3 picks this file as primary.
+    const threeMfBuffer = await build3mfWithThumbnail(fakePng);
+    const threeMfPath = path.join(scratch, 'model.3mf');
+    await fsp.writeFile(threeMfPath, threeMfBuffer);
+    await seedLootFile(lootId, 'model.3mf', threeMfPath);
+
+    // Use a failing runner — if Fix 3 didn't work and F3D ran on the txt
+    // file, we'd observe status='failed'. The fast-path MUST succeed here,
+    // meaning the runner is never invoked.
+    let runnerInvoked = false;
+    const trackingRunner = async (): Promise<ThumbnailResult> => {
+      runnerInvoked = true;
+      return { status: 'failed', error: 'should-not-be-called' };
+    };
+
+    const engine = makeEngine({ f3dRunner: trackingRunner });
+    const result = await engine.regenerateThumbnail(lootId);
+
+    expect(result.status).toBe('ok');
+    if (result.status === 'ok') {
+      expect(result.source).toBe('3mf-embedded');
+    }
+    // Runner must NOT have been called — the 3MF fast-path short-circuited.
+    expect(runnerInvoked).toBe(false);
+
+    const thumbRow = getThumbnailRow(lootId);
+    expect(thumbRow?.source_kind).toBe('3mf-embedded');
   });
 });

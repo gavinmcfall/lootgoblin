@@ -40,7 +40,7 @@ CREATE TABLE `loot` (
 	`license` text,
 	`source_item_id` text,
 	`content_summary` text,
-	`file_missing` integer DEFAULT false NOT NULL,
+	`file_missing` integer DEFAULT 0 NOT NULL,
 	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	FOREIGN KEY (`collection_id`) REFERENCES `collections`(`id`) ON UPDATE no action ON DELETE cascade

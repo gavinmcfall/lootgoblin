@@ -330,4 +330,33 @@ describe('UNIQUE lootSourceRecords(lootId, sourceType, sourceIdentifier)', () =>
       }),
     ).resolves.toBeDefined();
   });
+
+  it('allows multiple NULL sourceIdentifier rows for the same (lootId, sourceType) — intentional per schema comment', async () => {
+    const userId = await seedUser();
+    const rootId = await seedStashRoot(userId);
+    const collId = await seedCollection(userId, rootId, 'Null Identifier Case');
+    const lootId = await seedLoot(collId);
+
+    await db().insert(lootSourceRecords).values({
+      id: uid(),
+      lootId,
+      sourceType: 'manual',
+      sourceIdentifier: null,
+      sourceUrl: null,
+      capturedAt: new Date(),
+    });
+
+    // Second row with same (lootId, sourceType, NULL) — SQLite treats NULLs as
+    // distinct in UNIQUE indexes, so this is allowed by design.
+    await expect(
+      db().insert(lootSourceRecords).values({
+        id: uid(),
+        lootId,
+        sourceType: 'manual',
+        sourceIdentifier: null,
+        sourceUrl: null,
+        capturedAt: new Date(),
+      }),
+    ).resolves.toBeDefined();
+  });
 });

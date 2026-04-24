@@ -236,7 +236,15 @@ export const lootSourceRecords = sqliteTable(
     sourceType: text('source_type').notNull(),
     /** URL on the source platform (nullable — some sources have no stable URL). */
     sourceUrl: text('source_url'),
-    /** External item ID on the source platform. */
+    /**
+     * External item ID on the source platform. Nullable by design — some capture paths
+     * (manual upload, scraped-without-ID) have no stable identifier.
+     *
+     * NOTE on the UNIQUE index below: SQLite treats NULL values as distinct, so multiple
+     * rows with (lootId, sourceType, NULL) are INTENTIONALLY allowed. Deduplication
+     * via this constraint only applies when sourceIdentifier is non-null. Callers that
+     * need strict dedup should populate this field or dedup in application code.
+     */
     sourceIdentifier: text('source_identifier'),
     /** When this attribution was recorded. */
     capturedAt: ts('captured_at').notNull(),

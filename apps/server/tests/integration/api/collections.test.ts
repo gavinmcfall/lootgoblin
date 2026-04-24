@@ -26,12 +26,22 @@ vi.mock('next/server', () => ({
   },
 }));
 
-const mockGetSession = vi.fn();
-vi.mock('../../../src/auth/helpers', () => ({
-  getSessionOrNull: (...args: unknown[]) => mockGetSession(...args),
-  isValidApiKey: vi.fn().mockResolvedValue(false),
-  isValidApiKeyWithScope: vi.fn().mockResolvedValue({ valid: false, reason: 'missing' }),
+const mockAuthenticate = vi.fn();
+vi.mock('../../../src/auth/request-auth', () => ({
+  authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
 }));
+
+// Helper — the old "session shape" used in existing tests.  Translate to the
+// new AuthenticatedActor shape returned by authenticateRequest.
+function asActor(session: { user: { id: string; role: 'admin' | 'user' } } | null) {
+  if (!session) return null;
+  return { id: session.user.id, role: session.user.role, source: 'session' as const };
+}
+const mockGetSession = {
+  mockResolvedValue: (v: unknown) => {
+    mockAuthenticate.mockResolvedValue(asActor(v as { user: { id: string; role: 'admin' | 'user' } } | null));
+  },
+};
 
 const DB_PATH = '/tmp/lootgoblin-api-t12-collections.db';
 const DB_URL = `file:${DB_PATH}`;
@@ -92,11 +102,33 @@ beforeAll(async () => {
 });
 
 describe('GET /api/v1/collections', () => {
-  it('returns 401 when unauthenticated', async () => {
+  it('returns 401 with error:unauthenticated when no session and no API key', async () => {
     mockGetSession.mockResolvedValue(null);
     const { GET } = await import('../../../src/app/api/v1/collections/route');
     const res = await GET(makeReq('GET'));
     expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'unauthenticated' });
+  });
+
+  it('authenticates via x-api-key header when session is absent', async () => {
+    // Simulate an API-key-authenticated actor (authenticateRequest already
+    // unifies session + api-key internally; we just assert the shared helper
+    // treats an api-key actor the same as a session actor).
+    const userId = await seedUser();
+    const { rootId } = await seedStashRoot(userId);
+    await seedCollection(userId, rootId);
+    mockAuthenticate.mockResolvedValueOnce({ id: `api-key:${uid()}`, role: 'user', source: 'api-key' });
+
+    const req = new Request('http://local/api/v1/collections', {
+      method: 'GET',
+      headers: { 'x-api-key': 'lg_api_fake-test-key' },
+    });
+    const { GET } = await import('../../../src/app/api/v1/collections/route');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(Array.isArray(json.items)).toBe(true);
   });
 
   it('returns list with total + pagination fields', async () => {
@@ -239,6 +271,8 @@ describe('PATCH /api/v1/collections/:id', () => {
       { params: Promise.resolve({ id: colId }) },
     );
     expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'forbidden', reason: expect.any(String) });
   });
 });
 
@@ -302,5 +336,7 @@ describe('DELETE /api/v1/collections/:id', () => {
     const { DELETE } = await import('../../../src/app/api/v1/collections/[id]/route');
     const res = await DELETE(makeReq('DELETE'), { params: Promise.resolve({ id: colId }) });
     expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'forbidden', reason: expect.any(String) });
   });
 });

@@ -12,7 +12,7 @@ import * as fs from 'node:fs/promises';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, schema } from '@/db/client';
-import { getSessionOrNull } from '@/auth/helpers';
+import { authenticateRequest } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { logger } from '@/logger';
 
@@ -22,17 +22,18 @@ const CreateStashRootBody = z.object({
 });
 
 export async function GET(req: Request) {
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+
   const acl = resolveAcl({ user, resource: { kind: 'collection' }, action: 'read' });
-  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   const db = getDb() as any;
   let rows;
-  if (user!.role === 'admin') {
+  if (user.role === 'admin') {
     rows = await db.select().from(schema.stashRoots);
   } else {
-    rows = await db.select().from(schema.stashRoots).where(eq(schema.stashRoots.ownerId, user!.id));
+    rows = await db.select().from(schema.stashRoots).where(eq(schema.stashRoots.ownerId, user.id));
   }
 
   const items = rows.map((r: typeof rows[number]) => ({
@@ -45,10 +46,11 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+
   const acl = resolveAcl({ user, resource: { kind: 'collection' }, action: 'create' });
-  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   let body: unknown;
   try {
@@ -84,7 +86,7 @@ export async function POST(req: Request) {
   const now = new Date();
   await (getDb() as any).insert(schema.stashRoots).values({
     id,
-    ownerId: user!.id,
+    ownerId: user.id,
     name,
     path: rootPath,
     createdAt: now,
@@ -93,7 +95,7 @@ export async function POST(req: Request) {
 
   return NextResponse.json({
     id,
-    ownerId: user!.id,
+    ownerId: user.id,
     name,
     path: rootPath,
     createdAt: now.toISOString(),

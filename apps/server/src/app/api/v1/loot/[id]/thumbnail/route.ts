@@ -14,16 +14,17 @@ import * as path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
-import { getSessionOrNull } from '@/auth/helpers';
+import { authenticateRequest } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { logger } from '@/logger';
 
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   const { id: lootId } = await context.params;
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+
   const acl = resolveAcl({ user, resource: { kind: 'loot', id: lootId }, action: 'read' });
-  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   const db = getDb() as any;
 

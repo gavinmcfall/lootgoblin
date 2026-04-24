@@ -13,12 +13,15 @@
  * FTS5 MATCH syntax errors from malformed user input are caught internally
  * by IndexerEngine.search() and return an empty results array — callers do
  * NOT need to pre-sanitise the query.
+ *
+ * Response envelope: { items, total, limit, offset } — matches all other
+ * list endpoints in /api/v1/*.
  */
 
 import { NextResponse } from 'next/server';
 import { sql } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
-import { getSessionOrNull } from '@/auth/helpers';
+import { authenticateRequest } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { createIndexerEngine } from '@/stash/indexer';
 import type { IndexerEngine } from '@/stash/indexer';
@@ -42,10 +45,11 @@ function serializeLoot(r: Record<string, unknown>) {
 }
 
 export async function GET(req: Request) {
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+
   const acl = resolveAcl({ user, resource: { kind: 'loot' }, action: 'read' });
-  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   const url = new URL(req.url);
   const q = url.searchParams.get('q') ?? '';
@@ -53,14 +57,14 @@ export async function GET(req: Request) {
   const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
 
   if (!q.trim()) {
-    return NextResponse.json({ results: [], total: 0, limit, offset });
+    return NextResponse.json({ items: [], total: 0, limit, offset });
   }
 
   const engine = getIndexerEngine();
   const lootIds = await engine.search(q, { limit, offset });
 
   if (lootIds.length === 0) {
-    return NextResponse.json({ results: [], total: 0, limit, offset });
+    return NextResponse.json({ items: [], total: 0, limit, offset });
   }
 
   // Bulk hydrate loot rows from the returned IDs.
@@ -74,7 +78,7 @@ export async function GET(req: Request) {
   const ordered = lootIds.map((id) => rowById.get(id)).filter((r): r is Record<string, unknown> => r !== undefined);
 
   return NextResponse.json({
-    results: ordered.map(serializeLoot),
+    items: ordered.map(serializeLoot),
     total: ordered.length,
     limit,
     offset,

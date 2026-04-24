@@ -30,12 +30,20 @@ vi.mock('next/server', () => ({
   },
 }));
 
-const mockGetSession = vi.fn();
-vi.mock('../../../src/auth/helpers', () => ({
-  getSessionOrNull: (...args: unknown[]) => mockGetSession(...args),
-  isValidApiKey: vi.fn().mockResolvedValue(false),
-  isValidApiKeyWithScope: vi.fn().mockResolvedValue({ valid: false, reason: 'missing' }),
+const mockAuthenticate = vi.fn();
+vi.mock('../../../src/auth/request-auth', () => ({
+  authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
 }));
+
+function asActor(session: { user: { id: string; role: 'admin' | 'user' } } | null) {
+  if (!session) return null;
+  return { id: session.user.id, role: session.user.role, source: 'session' as const };
+}
+const mockGetSession = {
+  mockResolvedValue: (v: unknown) => {
+    mockAuthenticate.mockResolvedValue(asActor(v as { user: { id: string; role: 'admin' | 'user' } } | null));
+  },
+};
 
 const DB_PATH = '/tmp/lootgoblin-api-t12-search.db';
 const DB_URL = `file:${DB_PATH}`;
@@ -113,11 +121,13 @@ beforeAll(async () => {
 });
 
 describe('GET /api/v1/search', () => {
-  it('returns 401 when unauthenticated', async () => {
+  it('returns 401 with error:unauthenticated when no session and no API key', async () => {
     mockGetSession.mockResolvedValue(null);
     const { GET } = await import('../../../src/app/api/v1/search/route');
     const res = await GET(makeReq('keyboard'));
     expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'unauthenticated' });
   });
 
   it('returns empty results for blank query', async () => {
@@ -128,7 +138,7 @@ describe('GET /api/v1/search', () => {
     const res = await GET(new Request('http://local/api/v1/search?q=', { method: 'GET' }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.results).toEqual([]);
+    expect(json.items).toEqual([]);
     expect(json.total).toBe(0);
   });
 
@@ -140,7 +150,7 @@ describe('GET /api/v1/search', () => {
     const res = await GET(makeReq('xyzzy_does_not_exist_12345'));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.results).toEqual([]);
+    expect(json.items).toEqual([]);
   });
 
   it('returns hydrated loot rows for matching term', async () => {
@@ -155,9 +165,9 @@ describe('GET /api/v1/search', () => {
     const res = await GET(makeReq('topre'));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.results.some((r: { id: string }) => r.id === lootId)).toBe(true);
+    expect(json.items.some((r: { id: string }) => r.id === lootId)).toBe(true);
     // Response items are full Loot rows with ISO timestamps.
-    expect(typeof json.results[0].createdAt).toBe('string');
+    expect(typeof json.items[0].createdAt).toBe('string');
   });
 
   it('pagination: limit + offset parameters respected', async () => {
@@ -176,7 +186,7 @@ describe('GET /api/v1/search', () => {
     const res = await GET(new Request(`http://local/api/v1/search?q=${term}&limit=2&offset=0`, { method: 'GET' }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.results.length).toBeLessThanOrEqual(2);
+    expect(json.items.length).toBeLessThanOrEqual(2);
     expect(json.limit).toBe(2);
     expect(json.offset).toBe(0);
   });
@@ -190,6 +200,6 @@ describe('GET /api/v1/search', () => {
     const res = await GET(makeReq('hello AND'));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.results).toEqual([]);
+    expect(json.items).toEqual([]);
   });
 });

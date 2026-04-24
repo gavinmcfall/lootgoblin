@@ -10,7 +10,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, schema } from '@/db/client';
-import { getSessionOrNull } from '@/auth/helpers';
+import { authenticateRequest } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { logger } from '@/logger';
 
@@ -42,10 +42,11 @@ function serializeFile(r: Record<string, unknown>) {
 
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+
   const acl = resolveAcl({ user, resource: { kind: 'loot', id }, action: 'read' });
-  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   const db = getDb() as any;
   const lootRows = await db.select().from(schema.loot).where(eq(schema.loot.id, id)).limit(1);
@@ -61,8 +62,8 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
 
   const db = getDb() as any;
   // Look up the collection owner to resolve ACL (loot doesn't carry ownerId directly;
@@ -82,7 +83,7 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   const ownerId = collectionRows[0]?.ownerId;
 
   const acl = resolveAcl({ user, resource: { kind: 'loot', id, ownerId }, action: 'update' });
-  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   let body: unknown;
   try {
@@ -110,8 +111,8 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
 
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
 
   const db = getDb() as any;
   const lootRows = await db
@@ -129,7 +130,7 @@ export async function DELETE(req: Request, context: { params: Promise<{ id: stri
   const ownerId = collectionRows[0]?.ownerId;
 
   const acl = resolveAcl({ user, resource: { kind: 'loot', id, ownerId }, action: 'delete' });
-  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   logger.info({ id }, 'loot DELETE: deleting loot (cascade removes files)');
   await db.delete(schema.loot).where(eq(schema.loot.id, id));

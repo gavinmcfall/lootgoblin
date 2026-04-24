@@ -25,12 +25,20 @@ vi.mock('next/server', () => ({
   },
 }));
 
-const mockGetSession = vi.fn();
-vi.mock('../../../src/auth/helpers', () => ({
-  getSessionOrNull: (...args: unknown[]) => mockGetSession(...args),
-  isValidApiKey: vi.fn().mockResolvedValue(false),
-  isValidApiKeyWithScope: vi.fn().mockResolvedValue({ valid: false, reason: 'missing' }),
+const mockAuthenticate = vi.fn();
+vi.mock('../../../src/auth/request-auth', () => ({
+  authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
 }));
+
+function asActor(session: { user: { id: string; role: 'admin' | 'user' } } | null) {
+  if (!session) return null;
+  return { id: session.user.id, role: session.user.role, source: 'session' as const };
+}
+const mockGetSession = {
+  mockResolvedValue: (v: unknown) => {
+    mockAuthenticate.mockResolvedValue(asActor(v as { user: { id: string; role: 'admin' | 'user' } } | null));
+  },
+};
 
 const DB_PATH = '/tmp/lootgoblin-api-t12-loot.db';
 const DB_URL = `file:${DB_PATH}`;
@@ -109,11 +117,31 @@ beforeAll(async () => {
 });
 
 describe('GET /api/v1/loot', () => {
-  it('returns 401 when unauthenticated', async () => {
+  it('returns 401 with error:unauthenticated when no session and no API key', async () => {
     mockGetSession.mockResolvedValue(null);
     const { GET } = await import('../../../src/app/api/v1/loot/route');
     const res = await GET(makeReq('GET'));
     expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'unauthenticated' });
+  });
+
+  it('authenticates via x-api-key header when session is absent', async () => {
+    const userId = await seedUser();
+    const rootId = await seedStashRoot(userId);
+    const colId = await seedCollection(userId, rootId);
+    await seedLoot(colId, 'Api Key Loot');
+    mockAuthenticate.mockResolvedValueOnce({ id: `api-key:${uid()}`, role: 'user', source: 'api-key' });
+
+    const req = new Request('http://local/api/v1/loot', {
+      method: 'GET',
+      headers: { 'x-api-key': 'lg_api_fake-test-key' },
+    });
+    const { GET } = await import('../../../src/app/api/v1/loot/route');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(Array.isArray(json.items)).toBe(true);
   });
 
   it('returns list with pagination fields', async () => {
@@ -250,6 +278,8 @@ describe('PATCH /api/v1/loot/:id', () => {
       { params: Promise.resolve({ id: lootId }) },
     );
     expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'forbidden', reason: expect.any(String) });
   });
 });
 
@@ -284,5 +314,7 @@ describe('DELETE /api/v1/loot/:id', () => {
     const { DELETE } = await import('../../../src/app/api/v1/loot/[id]/route');
     const res = await DELETE(makeReq('DELETE'), { params: Promise.resolve({ id: lootId }) });
     expect(res.status).toBe(403);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'forbidden', reason: expect.any(String) });
   });
 });

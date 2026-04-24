@@ -10,10 +10,10 @@
 
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { eq, sql, count } from 'drizzle-orm';
+import { eq, count } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, schema } from '@/db/client';
-import { getSessionOrNull } from '@/auth/helpers';
+import { authenticateRequest } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 
 const CreateCollectionBody = z.object({
@@ -31,10 +31,11 @@ function serializeCollection(r: Record<string, unknown>) {
 }
 
 export async function GET(req: Request) {
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+
   const acl = resolveAcl({ user, resource: { kind: 'collection' }, action: 'read' });
-  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   const url = new URL(req.url);
   const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '25', 10), 100);
@@ -60,10 +61,11 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const session = await getSessionOrNull(req);
-  const user = session ? { id: session.user.id, role: session.user.role } : null;
+  const user = await authenticateRequest(req);
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+
   const acl = resolveAcl({ user, resource: { kind: 'collection' }, action: 'create' });
-  if (!acl.allowed) return NextResponse.json({ error: 'unauthorized' }, { status: user ? 403 : 401 });
+  if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
 
   let body: unknown;
   try {
@@ -96,7 +98,7 @@ export async function POST(req: Request) {
   try {
     await db.insert(schema.collections).values({
       id,
-      ownerId: user!.id,
+      ownerId: user.id,
       name,
       pathTemplate,
       stashRootId,
@@ -113,7 +115,7 @@ export async function POST(req: Request) {
 
   return NextResponse.json({
     id,
-    ownerId: user!.id,
+    ownerId: user.id,
     name,
     pathTemplate,
     stashRootId,

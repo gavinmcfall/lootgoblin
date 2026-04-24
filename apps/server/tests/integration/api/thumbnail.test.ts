@@ -27,12 +27,20 @@ vi.mock('next/server', () => ({
   },
 }));
 
-const mockGetSession = vi.fn();
-vi.mock('../../../src/auth/helpers', () => ({
-  getSessionOrNull: (...args: unknown[]) => mockGetSession(...args),
-  isValidApiKey: vi.fn().mockResolvedValue(false),
-  isValidApiKeyWithScope: vi.fn().mockResolvedValue({ valid: false, reason: 'missing' }),
+const mockAuthenticate = vi.fn();
+vi.mock('../../../src/auth/request-auth', () => ({
+  authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
 }));
+
+function asActor(session: { user: { id: string; role: 'admin' | 'user' } } | null) {
+  if (!session) return null;
+  return { id: session.user.id, role: session.user.role, source: 'session' as const };
+}
+const mockGetSession = {
+  mockResolvedValue: (v: unknown) => {
+    mockAuthenticate.mockResolvedValue(asActor(v as { user: { id: string; role: 'admin' | 'user' } } | null));
+  },
+};
 
 const DB_PATH = '/tmp/lootgoblin-api-t12-thumbnail.db';
 const DB_URL = `file:${DB_PATH}`;
@@ -97,11 +105,13 @@ beforeAll(async () => {
 });
 
 describe('GET /api/v1/loot/:id/thumbnail', () => {
-  it('returns 401 when unauthenticated', async () => {
+  it('returns 401 with error:unauthenticated when no session and no API key', async () => {
     mockGetSession.mockResolvedValue(null);
     const { GET } = await import('../../../src/app/api/v1/loot/[id]/thumbnail/route');
     const res = await GET(makeReq(uid()), { params: Promise.resolve({ id: uid() }) });
     expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'unauthenticated' });
   });
 
   it('returns 404 with no-thumbnail when loot_thumbnails row has status != ok', async () => {

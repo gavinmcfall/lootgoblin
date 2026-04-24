@@ -139,8 +139,13 @@ type FormatKey = (typeof FORMAT_PRIORITY)[number];
 /**
  * Parse the Retry-After header value into milliseconds.
  * Accepts both integer-seconds form ("120") and HTTP-date form.
+ *
+ * I2: an empty / whitespace-only header MUST return `undefined` so the caller
+ * falls back to exponential backoff. `Number("")` is 0, not NaN, which would
+ * otherwise translate "no value" into "retry immediately".
  */
 function parseRetryAfter(header: string): number | undefined {
+  if (!header.trim()) return undefined;
   const asNumber = Number(header);
   if (!isNaN(asNumber)) return asNumber * 1000;
   const asDate = new Date(header).getTime();
@@ -395,6 +400,7 @@ export function createSketchfabAdapter(options?: SketchfabAdapterOptions): Scave
                     kind: 'failed' as const,
                     reason: 'network-error' as const,
                     details: `sketchfab token refresh fetch failed: ${msg}`,
+                    error: refreshErr,
                   };
                   return;
                 }
@@ -432,6 +438,7 @@ export function createSketchfabAdapter(options?: SketchfabAdapterOptions): Scave
                     kind: 'failed' as const,
                     reason: 'network-error' as const,
                     details: `sketchfab token response parse failed: ${(parseErr as Error).message}`,
+                    error: parseErr,
                   };
                   return;
                 }
@@ -589,6 +596,7 @@ export function createSketchfabAdapter(options?: SketchfabAdapterOptions): Scave
                 kind: 'failed' as const,
                 reason: 'network-error' as const,
                 details: `Sketchfab file download failed: ${msg}`,
+                error: dlErr,
               };
               return;
             }
@@ -699,11 +707,30 @@ export function createSketchfabAdapter(options?: SketchfabAdapterOptions): Scave
             yield { kind: 'completed' as const, item };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
+            // I3: AbortError (or pre-aborted signal) is a transport-layer
+            // interruption — closer in spirit to 'network-error' than the
+            // generic 'unknown' bucket. Common path: context.signal aborts
+            // during the rate-limit `sleep()` in requestJsonWithRetries,
+            // which rejects with an AbortError that bubbles here.
+            const isAbort =
+              (err instanceof Error && err.name === 'AbortError') ||
+              context.signal?.aborted === true;
+            if (isAbort) {
+              logger.warn({ err }, 'sketchfab: aborted');
+              yield {
+                kind: 'failed' as const,
+                reason: 'network-error' as const,
+                details: `sketchfab aborted: ${msg}`,
+                error: err,
+              };
+              return;
+            }
             logger.warn({ err }, 'sketchfab: unexpected error');
             yield {
               kind: 'failed' as const,
               reason: 'unknown' as const,
               details: msg,
+              error: err,
             };
           }
         },
@@ -753,12 +780,17 @@ async function* requestJsonWithRetries(
         kind: 'failed' as const,
         reason: 'network-error' as const,
         details: `Sketchfab ${label} fetch failed: ${msg}`,
+        error: err,
       };
       return undefined;
     }
 
-    if (res.status === 429) {
-      const ra = res.headers.get('retry-after');
+    // Retryable: 429 (rate-limit) and any 5xx (transient server error).
+    // I1: 5xx blips are common on Sketchfab's edge; treat them with the same
+    // backoff machinery as 429. 5xx has no Retry-After (typically) so the
+    // helper falls through to the exponential branch in nextRetry.
+    if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+      const ra = res.status === 429 ? res.headers.get('retry-after') : null;
       const retryAfterMs = ra ? parseRetryAfter(ra) : undefined;
       const decision = nextRetry(
         attempt,
@@ -766,10 +798,15 @@ async function* requestJsonWithRetries(
         retryAfterMs,
       );
       if (!decision.retry) {
+        // Both 429 exhaustion and 5xx exhaustion surface as
+        // 'rate-limit-exhausted' — the user-facing meaning is "we tried and
+        // gave up". Distinguishing 5xx-exhausted from 429-exhausted at the
+        // reason level would only matter to operators reading logs, and the
+        // `details` string already includes the status code for that.
         yield {
           kind: 'failed' as const,
           reason: 'rate-limit-exhausted' as const,
-          details: `Sketchfab ${label} rate-limit after ${attempt} attempts`,
+          details: `Sketchfab ${label} retries exhausted after ${attempt} attempts (last status ${res.status})`,
         };
         return undefined;
       }
@@ -822,6 +859,7 @@ async function* requestJsonWithRetries(
         kind: 'failed' as const,
         reason: 'network-error' as const,
         details: `Sketchfab ${label} JSON parse failed: ${(parseErr as Error).message}`,
+        error: parseErr,
       };
       return undefined;
     }

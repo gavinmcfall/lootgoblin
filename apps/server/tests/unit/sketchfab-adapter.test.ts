@@ -808,4 +808,261 @@ describe('createSketchfabAdapter — HTTP error mapping', () => {
     if (last?.kind !== 'failed') return;
     expect(last.reason).toBe('content-removed');
   });
+
+  // M5: download-endpoint 404 — metadata succeeds, but the second API call
+  // (the /download endpoint) returns 404. Happens when Sketchfab purges a
+  // model between metadata fetch and download.
+  it('test 36: download-endpoint 404 → content-removed', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('content-removed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 37-38: I1 — 5xx retry + exhaustion
+// ---------------------------------------------------------------------------
+
+describe('createSketchfabAdapter — 5xx server errors', () => {
+  it('test 37: 500 once then 200 → completes after one retry', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      .mockResolvedValueOnce(jsonResponse({ glb: { url: 'https://cdn.example/x.glb' } }))
+      .mockResolvedValueOnce(fileResponse('binary'));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch, { maxRetries: 6, retryBaseMs: 0 });
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const rl = events.find((e) => e.kind === 'rate-limited');
+    expect(rl).toBeDefined();
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('completed');
+  });
+
+  it('test 38: six 500s → rate-limit-exhausted with status 500 in details', async () => {
+    const httpFetch = vi.fn().mockResolvedValue(new Response(null, { status: 500 }));
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch, { maxRetries: 6, retryBaseMs: 0 });
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('rate-limit-exhausted');
+    expect(last.details).toMatch(/500/);
+  });
+
+  it('test 39: 503 once then 200 → completes (Service Unavailable also retried)', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      .mockResolvedValueOnce(jsonResponse({ glb: { url: 'https://cdn.example/x.glb' } }))
+      .mockResolvedValueOnce(fileResponse('binary'));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch, { maxRetries: 6, retryBaseMs: 0 });
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('completed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 40: I2 — empty Retry-After header falls back to exponential backoff
+// ---------------------------------------------------------------------------
+
+describe('createSketchfabAdapter — Retry-After parsing', () => {
+  it('test 40: empty Retry-After header → exponential backoff (not 0ms)', async () => {
+    // 429 with empty retry-after header, then success. The rate-limited event
+    // must show a delay derived from exponential backoff (with a non-zero
+    // baseMs configured), proving the empty header did NOT collapse to 0.
+    const emptyRA = new Response(null, { status: 429, headers: { 'retry-after': '' } });
+
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(emptyRA)
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      .mockResolvedValueOnce(jsonResponse({ glb: { url: 'https://cdn.example/x.glb' } }))
+      .mockResolvedValueOnce(fileResponse('binary'));
+
+    const stagingDir = await makeStagingDir();
+    // baseMs=100 → first attempt's exponential delay is 100ms before jitter.
+    // jitter range is [(1-0.3)*100, (1+0.3)*100] = [70, 130].
+    // If empty header had been parsed as "0 seconds", the jitter input would
+    // be 0 and the resulting delay would be exactly 0 — assertion below
+    // catches that bug.
+    const adapter = makeAdapter(httpFetch, { maxRetries: 6, retryBaseMs: 100 });
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const rl = events.find((e) => e.kind === 'rate-limited');
+    expect(rl).toBeDefined();
+    if (rl?.kind !== 'rate-limited') return;
+    expect(rl.retryAfterMs).toBeGreaterThan(0);
+    expect(rl.retryAfterMs).toBeGreaterThanOrEqual(70);
+    expect(rl.retryAfterMs).toBeLessThanOrEqual(130);
+
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('completed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 41: M6 — HTTP-date Retry-After is honoured
+// ---------------------------------------------------------------------------
+
+describe('createSketchfabAdapter — HTTP-date Retry-After', () => {
+  it('test 41: HTTP-date Retry-After is parsed and respected', async () => {
+    // Stub Date.now() to make the delta deterministic. The header points
+    // 2 seconds into the future relative to the stubbed clock.
+    const FAKE_NOW = new Date('2026-01-01T12:00:00.000Z').getTime();
+    const httpDate = new Date(FAKE_NOW + 2_000).toUTCString();
+
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(FAKE_NOW);
+
+    try {
+      const httpFetch = vi.fn()
+        .mockResolvedValueOnce(rateLimitedResponse(httpDate))
+        .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+        .mockResolvedValueOnce(jsonResponse({ glb: { url: 'https://cdn.example/x.glb' } }))
+        .mockResolvedValueOnce(fileResponse('binary'));
+
+      const stagingDir = await makeStagingDir();
+      const adapter = makeAdapter(httpFetch, { maxRetries: 6, retryBaseMs: 0 });
+      const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+      const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+      const rl = events.find((e) => e.kind === 'rate-limited');
+      expect(rl).toBeDefined();
+      if (rl?.kind !== 'rate-limited') return;
+      // 2000ms ± 30% jitter → [1400, 2600].
+      expect(rl.retryAfterMs).toBeGreaterThanOrEqual(1400);
+      expect(rl.retryAfterMs).toBeLessThanOrEqual(2600);
+
+      const last = events[events.length - 1];
+      expect(last?.kind).toBe('completed');
+    } finally {
+      dateSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 42-43: I3 — abort during sleep maps to network-error
+// ---------------------------------------------------------------------------
+
+describe('createSketchfabAdapter — abort during retry sleep', () => {
+  it('test 42: abort fires during rate-limit sleep → failed reason=network-error', async () => {
+    // 429 first, then a controller.abort() trips the sleep() in the helper.
+    // The AbortError propagates to the outer catch and must map to
+    // 'network-error' (per I3) rather than 'unknown'.
+    const controller = new AbortController();
+
+    const httpFetch = vi.fn()
+      // First call returns 429 with a Retry-After long enough that the
+      // signal will fire well before the sleep completes.
+      .mockImplementationOnce(async () => rateLimitedResponse('60'))
+      .mockImplementation(async () => {
+        throw new Error('should not have been called — aborted before retry');
+      });
+
+    const stagingDir = await makeStagingDir();
+    // baseMs irrelevant here — we use a server-mandated 60s Retry-After so
+    // the helper enters a long sleep regardless of base.
+    const adapter = makeAdapter(httpFetch, { maxRetries: 6 });
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds(), signal: controller.signal });
+
+    // Schedule abort just after the rate-limited event has been yielded.
+    setTimeout(() => controller.abort(), 10);
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('network-error');
+    expect(last.details).toMatch(/abort/i);
+    // M8: outer catch populates the error field on the failed event.
+    expect(last.error).toBeDefined();
+  });
+
+  it('test 43: pre-aborted signal still maps to network-error (not unknown)', async () => {
+    // A pre-aborted signal causes the very first fetch to reject with
+    // AbortError. That hits the helper's network-error branch directly
+    // (not the outer catch) — but the test confirms the categorization.
+    const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const httpFetch = vi.fn().mockRejectedValue(abortErr);
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds(), signal: controller.signal });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('network-error');
+    expect(last.error).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 44: M8 — `error` field consistently populated across failure paths
+// ---------------------------------------------------------------------------
+
+describe('createSketchfabAdapter — error field on failed events', () => {
+  it('test 44: token refresh fetch error populates error field', async () => {
+    const refreshErr = new Error('connect ECONNREFUSED');
+    const httpFetch = vi.fn().mockRejectedValueOnce(refreshErr);
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({
+      stagingDir,
+      credentials: oauthCreds({ expiresAt: Date.now() - 1000 }), // forces refresh
+    });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('network-error');
+    expect(last.error).toBe(refreshErr);
+  });
+
+  it('test 45: download-endpoint fetch error populates error field', async () => {
+    const dlErr = new Error('connection reset');
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      .mockResolvedValueOnce(jsonResponse({ glb: { url: 'https://cdn.example/x.glb' } }))
+      .mockRejectedValueOnce(dlErr);
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(MODEL_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('network-error');
+    expect(last.error).toBe(dlErr);
+  });
 });

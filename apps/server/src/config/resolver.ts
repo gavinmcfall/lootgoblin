@@ -367,6 +367,14 @@ export class ConfigResolver {
   }
 
   /**
+   * Returns all keys that are currently awaiting wizard input.
+   * Empty array if resolve() has not been called or no keys are pending.
+   */
+  getPendingWizardKeys(): string[] {
+    return [...this.pendingWizardKeys];
+  }
+
+  /**
    * Returns provenance for a key. Requires resolve() to have been called.
    */
   getProvenance(key: string): ProvenanceEntry {

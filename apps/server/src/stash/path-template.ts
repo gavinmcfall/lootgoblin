@@ -264,22 +264,34 @@ export function validateTemplate(
   targetOS: TargetOS,
 ): Exclude<ResolveVerdict, { ok: true }> | null {
   for (const segment of parsed.segments) {
+    // Reserved-name is a whole-segment property. Only check it when the segment
+    // is a single pure-literal part (e.g. `CON/{title}`). For mixed segments
+    // like `CON{ext}` the final assembled value (`CONsomething`) may not be
+    // reserved — so defer that check to resolveTemplate where the real segment
+    // string is known. Otherwise validate and resolve would disagree.
+    const firstPart = segment[0];
+    if (
+      targetOS === 'windows' &&
+      segment.length === 1 &&
+      firstPart &&
+      firstPart.kind === 'literal' &&
+      isWindowsReserved(firstPart.value)
+    ) {
+      return {
+        ok: false,
+        reason: 'reserved-name',
+        details: `Literal segment "${firstPart.value}" is a Windows reserved name`,
+      };
+    }
+
     for (const part of segment) {
       if (part.kind === 'literal') {
-        // Check forbidden chars in literal
+        // Check forbidden chars in literal — char-level property, safe per-part.
         if (FORBIDDEN_CHARS[targetOS].test(part.value)) {
           return {
             ok: false,
             reason: 'forbidden-character',
             details: `Literal segment "${part.value}" contains a character forbidden on ${targetOS}`,
-          };
-        }
-        // Check Windows reserved names
-        if (targetOS === 'windows' && isWindowsReserved(part.value)) {
-          return {
-            ok: false,
-            reason: 'reserved-name',
-            details: `Literal segment "${part.value}" is a Windows reserved name`,
           };
         }
       } else {
@@ -396,12 +408,18 @@ export function resolveTemplate(parsed: ParsedTemplate, input: ResolveInput): Re
   // Assemble final path (forward slashes, no leading/trailing slash)
   const path = resolvedSegments.join('/');
 
-  // Check total path length
-  if (path.length > MAX_TOTAL_PATH[targetOS]) {
+  // Check total path length.
+  // Unit depends on target OS:
+  //   - linux (PATH_MAX = 4096) and macOS (typical 1024) measure bytes (UTF-8).
+  //   - windows (MAX_PATH = 260) measures UTF-16 code units.
+  // String.prototype.length gives UTF-16 code units, so it's correct only for
+  // windows. linux + macos need TextEncoder byte length.
+  const pathLength = targetOS === 'windows' ? path.length : utf8ByteLength(path);
+  if (pathLength > MAX_TOTAL_PATH[targetOS]) {
     return {
       ok: false,
       reason: 'path-too-long',
-      details: `Resolved path length ${path.length} exceeds ${MAX_TOTAL_PATH[targetOS]} for ${targetOS}`,
+      details: `Resolved path length ${pathLength} exceeds ${MAX_TOTAL_PATH[targetOS]} for ${targetOS}`,
     };
   }
 

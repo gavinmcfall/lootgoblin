@@ -301,6 +301,40 @@ describe('resolveTemplate — resolution', () => {
     expect(result).toMatchObject({ ok: false, reason: 'path-too-long' });
   });
 
+  it('returns path-too-long on linux when UTF-8 bytes exceed 4096 even though .length is well under', () => {
+    // Build a template with 17 field segments. Populate each with 85 CJK chars.
+    // Each CJK char = 3 UTF-8 bytes, 1 UTF-16 code unit.
+    //   per-segment bytes = 85 * 3 = 255 (exactly at MAX_SEGMENT_BYTES, check is `>` so passes)
+    //   per-segment .length = 85
+    //   total bytes = 17 * 255 + 16 separators = 4351 > 4096 → path-too-long
+    //   total .length = 17 * 85 + 16 = 1461 (well under any limit)
+    // This would falsely pass under a UTF-16-code-unit check on linux.
+    const fields = Array.from({ length: 17 }, (_, i) => `{f${i}}`).join('/');
+    const pt = parseTemplate(fields);
+    const metadata: Record<string, string> = {};
+    for (let i = 0; i < 17; i++) {
+      metadata[`f${i}`] = '你'.repeat(85);
+    }
+    const result = resolveTemplate(pt, { metadata, targetOS: 'linux' });
+    expect(result).toMatchObject({ ok: false, reason: 'path-too-long' });
+  });
+
+  it('validateTemplate does not flag CON{ext} as reserved-name on windows (mixed segment)', () => {
+    // The literal part is "CON" but the assembled segment "CON<ext>" won't be
+    // reserved once ext is resolved. Validate must NOT flag this statically.
+    const pt = parseTemplate('CON{ext}');
+    expect(validateTemplate(pt, 'windows')).toBeNull();
+  });
+
+  it('resolves CON{ext} with ext="something" on windows → CONsomething (not reserved)', () => {
+    const pt = parseTemplate('CON{ext}');
+    const result = resolveTemplate(pt, {
+      metadata: { ext: 'something' },
+      targetOS: 'windows',
+    });
+    expect(result).toEqual({ ok: true, path: 'CONsomething' });
+  });
+
   it('coerces array tags via join before slug: {tags|slug} with tags: ["3d","model"] → "3d-model"', () => {
     const pt = parseTemplate('{tags|slug}');
     const result = resolveTemplate(pt, {

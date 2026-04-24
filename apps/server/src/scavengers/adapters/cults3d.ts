@@ -67,21 +67,10 @@ const DEFAULT_MAX_RETRIES = 6;
  */
 const CULTS3D_HOSTS = new Set(['cults3d.com', 'www.cults3d.com']);
 
-/**
- * Cults3D locale prefix segments that appear before `/3d-model/` in their URLs.
- * e.g. /en/3d-model/{slug}, /fr/3d-model/{slug}, etc.
- */
-const LOCALE_SEGMENTS = new Set([
-  'en',
-  'fr',
-  'de',
-  'es',
-  'it',
-  'pt',
-  'ja',
-  'nl',
-  'ru',
-]);
+// Cults3D URLs use locale prefixes (/en/3d-model/, /fr/3d-model/, etc.).
+// `extractSlugFromUrl` doesn't enumerate them — it locates the '3d-model'
+// landmark segment via `indexOf` and reads the next segment as the slug.
+// This handles every current locale plus future additions without a list.
 
 // ---------------------------------------------------------------------------
 // GraphQL query
@@ -365,16 +354,30 @@ export function createCults3dAdapter(options?: Cults3dAdapterOptions): Scavenger
             };
 
             if (Array.isArray(gqlResponse.errors) && gqlResponse.errors.length > 0) {
+              // GraphQL application-layer error (validation, schema mismatch,
+              // server logic). NOT a TCP/DNS-level failure — types.ts reserves
+              // 'network-error' for transport-level issues. Use 'unknown' so
+              // downstream retry policies don't treat this as a retryable
+              // network blip.
               yield {
                 kind: 'failed' as const,
-                reason: 'network-error' as const,
-                details: JSON.stringify(gqlResponse.errors),
+                reason: 'unknown' as const,
+                details: `Cults3D GraphQL errors: ${JSON.stringify(gqlResponse.errors)}`,
               };
               return;
             }
 
             const creation = gqlResponse.data?.creation;
             if (creation === null || creation === undefined) {
+              // Cults3D returns data.creation = null for BOTH:
+              //   (a) truly deleted/nonexistent items ('content-removed')
+              //   (b) private items the credentials cannot access ('auth-required'
+              //       conceptually)
+              // The API does not discriminate between these cases at this
+              // layer. We map to 'content-removed' by convention; operators
+              // investigating stuck ingests should verify credentials before
+              // assuming the item is gone. A private-items API probe is NOT
+              // done here.
               yield {
                 kind: 'failed' as const,
                 reason: 'content-removed' as const,
@@ -510,12 +513,19 @@ export function createCults3dAdapter(options?: Cults3dAdapterOptions): Scavenger
                   );
                   await streamPipeline(nodeReadable, createWriteStream(destPath));
                 } catch (streamErr) {
+                  // Remove the partial file — don't leave a truncated artifact
+                  // in stagingDir. The pipeline's outer cleanup would also
+                  // remove the dir on failure, but that's defence-in-depth;
+                  // an adapter should not leave corrupt files behind even for
+                  // one tick.
+                  await fsp.unlink(destPath).catch(() => {});
                   const msg =
                     streamErr instanceof Error ? streamErr.message : String(streamErr);
                   yield {
                     kind: 'failed' as const,
                     reason: 'network-error' as const,
-                    details: `Cults3D file stream failed for ${finalName}: ${msg}`,
+                    details: `Cults3D download stream error for ${finalName}: ${msg}`,
+                    error: streamErr,
                   };
                   return;
                 }

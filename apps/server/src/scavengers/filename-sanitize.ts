@@ -47,9 +47,43 @@ export function sanitizeFilename(raw: string): string | null {
 
   if (cleaned.length === 0) return null;
 
-  // Truncate to 255 bytes (UTF-8 aware).
-  // Buffer.slice drops incomplete multibyte sequences silently — intentional.
-  const truncated = Buffer.from(cleaned).slice(0, 255).toString('utf8');
+  // Filesystems typically cap filenames at 255 bytes. Truncate with UTF-8-
+  // awareness: Buffer.slice + toString('utf8') inserts U+FFFD for incomplete
+  // multibyte sequences, which can push the re-encoded string beyond 255
+  // bytes. Step back over any partial sequence so the result is valid UTF-8
+  // AND ≤ 255 bytes.
+  const truncated = truncateToBytes(cleaned, 255);
 
   return truncated.length > 0 ? truncated : null;
+}
+
+/**
+ * Truncate a string to at most `maxBytes` bytes when encoded as UTF-8,
+ * without producing an invalid encoding or replacement chars (U+FFFD).
+ *
+ * Approach: encode → if already short enough, return; else clip the byte
+ * buffer at `maxBytes`, then walk back over any partial codepoint:
+ *   - continuation bytes:  0b10xxxxxx  (0x80–0xBF)
+ *   - leading byte alone:  0b11xxxxxx  (0xC0–0xFF) without enough following continuations
+ *
+ * Naive `Buffer.slice(0, maxBytes).toString('utf8')` looks safe but is NOT —
+ * Node replaces a partial codepoint with U+FFFD (3 bytes), so a clip that
+ * lands mid-emoji at byte 253 produces a 256-byte output. This helper
+ * removes the partial bytes BEFORE re-encoding so the byte cap is real.
+ */
+function truncateToBytes(s: string, maxBytes: number): string {
+  const encoded = Buffer.from(s, 'utf8');
+  if (encoded.length <= maxBytes) return s;
+
+  let end = maxBytes;
+
+  // Step back over continuation bytes (0b10xxxxxx).
+  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end--;
+
+  // If we landed on a leading byte of a multibyte sequence (0b11xxxxxx),
+  // step back one more — that codepoint is incomplete because we just
+  // dropped its continuation bytes above.
+  if (end > 0 && (encoded[end]! & 0xc0) === 0xc0) end--;
+
+  return encoded.slice(0, end).toString('utf8');
 }

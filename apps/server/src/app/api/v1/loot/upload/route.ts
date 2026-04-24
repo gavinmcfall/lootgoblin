@@ -30,8 +30,22 @@ import { authenticateRequest, INVALID_API_KEY } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { getDb, schema } from '@/db/client';
 import { eq } from 'drizzle-orm';
-import { createDefaultRegistry, createIngestPipeline, type IngestOutcome } from '@/scavengers';
+import {
+  createDefaultRegistry,
+  createIngestPipeline,
+  sanitizeFilename,
+  type IngestOutcome,
+} from '@/scavengers';
 import { logger } from '@/logger';
+
+/**
+ * Backwards-compatible export for integration tests that import this name
+ * from the route file. The implementation lives in `@/scavengers/filename-sanitize`
+ * so that URL-driven adapters (cults3d, makerworld, printables, …) and the
+ * upload route share a single source of truth — UTF-8-aware byte-cap, percent-
+ * decode-before-split, etc. See V2-003-T5 code-review fix 1.
+ */
+export const sanitizeUploadFilename = sanitizeFilename;
 
 // ---------------------------------------------------------------------------
 // Validation schema
@@ -187,7 +201,7 @@ export async function POST(req: NextRequest) {
   const seen = new Map<string, number>();
   try {
     for (const file of files) {
-      const base = sanitizeUploadFilename(file.name) ?? `upload-${randomUUID()}.bin`;
+      const base = sanitizeFilename(file.name) ?? `upload-${randomUUID()}.bin`;
       const count = seen.get(base) ?? 0;
       seen.set(base, count + 1);
 
@@ -257,63 +271,3 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(outcome, { status: 202 });
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Sanitize an upload filename to prevent path traversal, null bytes, and
- * control characters.
- *
- * Returns null when the input is empty or results in an empty string after
- * sanitization (caller should substitute a safe fallback name).
- *
- * Rules:
- *   - URL-decode the input first so that percent-encoded separators
- *     (e.g. `..%2F..%2Fpasswd`) are caught by the path-traversal strip.
- *   - Strip everything up to and including the last path separator (/ or \)
- *     to prevent directory traversal.
- *   - Remove null bytes (\0) and ASCII control characters (0x01–0x1F).
- *   - Strip leading dots (prevents hidden-file creation).
- *   - Truncate to 255 bytes (filesystem limit on most platforms).
- */
-export function sanitizeUploadFilename(raw: string): string | null {
-  if (!raw) return null;
-
-  // Decode percent-encoded separators BEFORE splitting, so encoded traversal
-  // (e.g. `..%2F..%2Fpasswd`) is caught the same as literal traversal.
-  // Latent hazard otherwise: any downstream consumer that URL-decodes
-  // filenames (Content-Disposition header, UI link render) would see an
-  // active traversal sequence even though our local filesystem writes are
-  // safe (POSIX filesystems treat %2F as a literal character).
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(raw);
-  } catch {
-    // Malformed percent-encoding (e.g. `file%2.txt`) — fall back to the raw
-    // input. The remaining strip rules still apply.
-    decoded = raw;
-  }
-
-  // Strip path traversal: take only the basename component.
-  const base = decoded.split(/[/\\]/).pop();
-  if (!base) return null;
-
-  // Remove null bytes and ASCII control characters (U+0000–U+001F).
-  const noControl = base.replace(/[\x00-\x1F]/g, '');
-
-  // Strip leading dots (prevents hidden files like .env, ..evil).
-  const cleaned = noControl.replace(/^\.+/, '');
-
-  if (cleaned.length === 0) return null;
-
-  // Truncate to 255 bytes (UTF-8 aware).
-  //
-  // Buffer.slice drops incomplete multibyte sequences silently — intentional.
-  // This is safer than TextDecoder({fatal:true}) which would throw on
-  // truncation, or string.slice(0, 255) which counts UTF-16 code units not
-  // UTF-8 bytes (our actual filesystem limit on most platforms is 255 bytes).
-  const truncated = Buffer.from(cleaned).slice(0, 255).toString('utf8');
-
-  return truncated.length > 0 ? truncated : null;
-}

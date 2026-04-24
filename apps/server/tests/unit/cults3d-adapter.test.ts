@@ -473,7 +473,7 @@ describe('createCults3dAdapter — rate-limiting', () => {
 // ---------------------------------------------------------------------------
 
 describe('createCults3dAdapter — GraphQL response parsing', () => {
-  it('test 17: GraphQL response {errors:[...]} → failed, reason=network-error', async () => {
+  it('test 17: GraphQL response {errors:[...]} → failed, reason=unknown', async () => {
     const httpFetch = vi
       .fn()
       .mockResolvedValueOnce(makeGqlErrorResponse([{ message: 'Field not found' }]));
@@ -491,7 +491,11 @@ describe('createCults3dAdapter — GraphQL response parsing', () => {
     const last = events[events.length - 1];
     expect(last?.kind).toBe('failed');
     if (last?.kind !== 'failed') return;
-    expect(last.reason).toBe('network-error');
+    // GraphQL application-layer errors are NOT TCP/DNS-level — types.ts reserves
+    // 'network-error' for transport-level issues. T5 code-review fix 3 mapped
+    // this to 'unknown' so retry policies don't treat permanent GraphQL
+    // validation errors as retryable network blips.
+    expect(last.reason).toBe('unknown');
     expect(last.details).toMatch(/Field not found/);
   });
 

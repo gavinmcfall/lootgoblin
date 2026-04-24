@@ -960,3 +960,273 @@ describe('execute with empty lootIds', () => {
     expect(spyLedger.calls).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 13. Multi-file Loot — mixed extensions, all files move with correct per-file
+//     extension preservation (Fix 3 verification). Proves the execute loop
+//     uses `path.extname(lf.path)` per-file, not primary-file extension for all.
+// ---------------------------------------------------------------------------
+
+describe('execute move-to-collection — multi-file Loot with mixed extensions', () => {
+  it('preserves each file\'s own extension at the new template-resolved path', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const sourceCollectionId = await seedCollection(ownerId, stashRootId, '{title|slug}');
+    const targetCollectionId = await seedCollection(
+      ownerId,
+      stashRootId,
+      '{creator|slug}/{title|slug}',
+    );
+
+    // One Loot with three files, each with a different extension.
+    const lootId = await seedLoot(sourceCollectionId, { title: 'Multi File Model', creator: 'crafter' });
+
+    const relStl = 'multi-file-model.stl';
+    const relPng = 'multi-file-model.png';
+    const relPdf = 'multi-file-model.pdf';
+    const absStl = path.join(scratch, relStl);
+    const absPng = path.join(scratch, relPng);
+    const absPdf = path.join(scratch, relPdf);
+    await writeFile(absStl, 'mesh bytes');
+    await writeFile(absPng, 'image bytes');
+    await writeFile(absPdf, 'pdf bytes');
+
+    const lfStlId = await seedLootFile(lootId, relStl, absStl);
+    const lfPngId = await seedLootFile(lootId, relPng, absPng);
+    const lfPdfId = await seedLootFile(lootId, relPdf, absPdf);
+
+    const spyLedger = makeSpyLedger();
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      ledgerEmitter: spyLedger,
+      aclCheck: async () => true,
+    });
+
+    const report = await engine.execute({
+      action: { kind: 'move-to-collection', targetCollectionId },
+      lootIds: [lootId],
+      ownerId,
+    });
+
+    expect(report.applied).toContain(lootId);
+    expect(report.failed).toHaveLength(0);
+
+    // Each file should land at its own extension
+    const newStlRel = 'crafter/multi-file-model.stl';
+    const newPngRel = 'crafter/multi-file-model.png';
+    const newPdfRel = 'crafter/multi-file-model.pdf';
+
+    const stlRow = await db().select().from(schema.lootFiles).where(eq(schema.lootFiles.id, lfStlId));
+    expect(stlRow[0].path).toBe(newStlRel);
+    const pngRow = await db().select().from(schema.lootFiles).where(eq(schema.lootFiles.id, lfPngId));
+    expect(pngRow[0].path).toBe(newPngRel);
+    const pdfRow = await db().select().from(schema.lootFiles).where(eq(schema.lootFiles.id, lfPdfId));
+    expect(pdfRow[0].path).toBe(newPdfRel);
+
+    // Physical files present at destination, source unlinked
+    expect(await fileExists(path.join(scratch, newStlRel))).toBe(true);
+    expect(await fileExists(path.join(scratch, newPngRel))).toBe(true);
+    expect(await fileExists(path.join(scratch, newPdfRel))).toBe(true);
+    expect(await fileExists(absStl)).toBe(false);
+    expect(await fileExists(absPng)).toBe(false);
+    expect(await fileExists(absPdf)).toBe(false);
+
+    // Loot pointed at target collection
+    const lootRow = await db().select().from(schema.loot).where(eq(schema.loot.id, lootId));
+    expect(lootRow[0].collectionId).toBe(targetCollectionId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Multi-file Loot mid-loop failure (Fix 1) — atomicity invariant.
+//     3-file Loot, force file 2's linkOrCopy to fail (destination pre-exists),
+//     assert:
+//       - At least one file moved successfully.
+//       - loot.collectionId flipped to target (committed by FIRST file's hook).
+//       - File 2's path is unchanged in DB, file 1's path IS updated.
+//       - Operation recorded in `failed[]` with a partial-move error.
+// ---------------------------------------------------------------------------
+
+describe('execute move-to-collection — multi-file mid-loop failure', () => {
+  it('commits collectionId atomically with first file, records partial failure', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const sourceCollectionId = await seedCollection(ownerId, stashRootId, '{title|slug}');
+    const targetCollectionId = await seedCollection(
+      ownerId,
+      stashRootId,
+      '{creator|slug}/{title|slug}',
+    );
+
+    const lootId = await seedLoot(sourceCollectionId, {
+      title: 'Atomicity Test',
+      creator: 'atomic',
+    });
+
+    // Three files with DISTINCT extensions so each file resolves to a
+    // unique target path under the template `{creator|slug}/{title|slug}`.
+    // File 2 is sabotaged by pre-creating its destination — T3 returns
+    // failed/destination-exists without running the hook.
+    const rel1 = 'atomicity-test-a.stl';
+    const rel2 = 'atomicity-test-b.png';
+    const rel3 = 'atomicity-test-c.pdf';
+    const abs1 = path.join(scratch, rel1);
+    const abs2 = path.join(scratch, rel2);
+    const abs3 = path.join(scratch, rel3);
+    await writeFile(abs1, 'file1');
+    await writeFile(abs2, 'file2');
+    await writeFile(abs3, 'file3');
+
+    const lf1Id = await seedLootFile(lootId, rel1, abs1);
+    const lf2Id = await seedLootFile(lootId, rel2, abs2);
+    const lf3Id = await seedLootFile(lootId, rel3, abs3);
+
+    // Pre-create file 2's expected destination — forces linkOrCopy to return
+    // `destination-exists`. DB state for that file stays untouched.
+    const blockedDstRel = 'atomic/atomicity-test.png';
+    const blockedDstAbs = path.join(scratch, blockedDstRel);
+    await writeFile(blockedDstAbs, 'pre-existing blocker');
+
+    const spyLedger = makeSpyLedger();
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      ledgerEmitter: spyLedger,
+      aclCheck: async () => true,
+    });
+
+    const report = await engine.execute({
+      action: { kind: 'move-to-collection', targetCollectionId },
+      lootIds: [lootId],
+      ownerId,
+    });
+
+    // Files 1 and 3 move successfully; File 2 fails. The loot is recorded
+    // as failed (partial) even though some files moved.
+    expect(report.failed.some((f) => f.lootId === lootId)).toBe(true);
+    expect(report.failed[0].error).toMatch(/collectionId updated but check file paths/);
+
+    // INVARIANT: loot.collectionId was committed by the FIRST successful
+    // file's hook, so it now reflects the target — NOT the source.
+    const lootRow = await db().select().from(schema.loot).where(eq(schema.loot.id, lootId));
+    expect(lootRow[0].collectionId).toBe(targetCollectionId);
+
+    // File 1 path updated (moved successfully via first hook)
+    const lf1Row = await db().select().from(schema.lootFiles).where(eq(schema.lootFiles.id, lf1Id));
+    expect(lf1Row[0].path).toBe('atomic/atomicity-test.stl');
+
+    // File 2 path unchanged (linkOrCopy failed before the hook ran)
+    const lf2Row = await db().select().from(schema.lootFiles).where(eq(schema.lootFiles.id, lf2Id));
+    expect(lf2Row[0].path).toBe(rel2);
+
+    // File 3 path updated (moved successfully after file 2's failure; loop continued)
+    const lf3Row = await db().select().from(schema.lootFiles).where(eq(schema.lootFiles.id, lf3Id));
+    expect(lf3Row[0].path).toBe('atomic/atomicity-test.pdf');
+
+    // Ledger event still emitted exactly once
+    expect(spyLedger.calls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. Same-path no-op (Fix 4) — two Collections in the same stashRoot with
+//     identical templates. Moving a Loot from A to B resolves to the same
+//     absolute path, so no file mutation happens but collectionId flips.
+// ---------------------------------------------------------------------------
+
+describe('execute move-to-collection — same-path no-op', () => {
+  it('updates collectionId without touching the filesystem when paths match', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    // Two collections, same stashRoot, IDENTICAL pathTemplate
+    const collectionA = await seedCollection(ownerId, stashRootId, '{title|slug}', 'A');
+    const collectionB = await seedCollection(ownerId, stashRootId, '{title|slug}', 'B');
+
+    const lootId = await seedLoot(collectionA, { title: 'No Op Loot' });
+    const relPath = 'no-op-loot.stl';
+    const absPath = path.join(scratch, relPath);
+    await writeFile(absPath, 'no-op content');
+
+    // Inode before — must remain identical after (no file mutation)
+    const inoBefore = fs.statSync(absPath).ino;
+
+    const lfId = await seedLootFile(lootId, relPath, absPath);
+
+    const spyLedger = makeSpyLedger();
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      ledgerEmitter: spyLedger,
+      aclCheck: async () => true,
+    });
+
+    const report = await engine.execute({
+      action: { kind: 'move-to-collection', targetCollectionId: collectionB },
+      lootIds: [lootId],
+      ownerId,
+    });
+
+    expect(report.applied).toContain(lootId);
+
+    // File still there at the SAME path with the SAME inode (no mutation)
+    expect(await fileExists(absPath)).toBe(true);
+    expect(fs.statSync(absPath).ino).toBe(inoBefore);
+
+    // DB: loot.collectionId flipped to B
+    const lootRow = await db().select().from(schema.loot).where(eq(schema.loot.id, lootId));
+    expect(lootRow[0].collectionId).toBe(collectionB);
+
+    // DB: lootFiles.path unchanged
+    const lfRow = await db().select().from(schema.lootFiles).where(eq(schema.lootFiles.id, lfId));
+    expect(lfRow[0].path).toBe(relPath);
+
+    expect(spyLedger.calls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. change-template stamps loot.updatedAt (Fix 2)
+// ---------------------------------------------------------------------------
+
+describe('execute change-template — stamps loot.updatedAt', () => {
+  it('bumps loot.updatedAt when at least one file moved under the new template', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const collectionId = await seedCollection(ownerId, stashRootId, '{title|slug}');
+
+    const lootId = await seedLoot(collectionId, { title: 'Stamp Me', creator: 'timekeeper' });
+    const relPath = 'stamp-me.stl';
+    const absPath = path.join(scratch, relPath);
+    await writeFile(absPath);
+    await seedLootFile(lootId, relPath, absPath);
+
+    // Capture updatedAt BEFORE the change
+    const beforeRow = await db().select().from(schema.loot).where(eq(schema.loot.id, lootId));
+    const beforeUpdatedAt = beforeRow[0].updatedAt;
+    expect(beforeUpdatedAt).toBeDefined();
+
+    // Wait a few ms so the new timestamp is strictly greater (sqlite timestamp_ms precision)
+    await new Promise((r) => setTimeout(r, 10));
+
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      aclCheck: async () => true,
+    });
+
+    const report = await engine.execute({
+      action: { kind: 'change-template', newTemplate: '{creator|slug}/{title|slug}' },
+      lootIds: [lootId],
+      ownerId,
+    });
+
+    expect(report.applied).toContain(lootId);
+
+    // Capture updatedAt AFTER — should be strictly greater
+    const afterRow = await db().select().from(schema.loot).where(eq(schema.loot.id, lootId));
+    const afterUpdatedAt = afterRow[0].updatedAt;
+    expect(afterUpdatedAt).toBeDefined();
+    expect(afterUpdatedAt!.getTime()).toBeGreaterThan(beforeUpdatedAt!.getTime());
+  });
+});

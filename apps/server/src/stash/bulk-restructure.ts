@@ -935,9 +935,27 @@ export function createBulkRestructureEngine(
       // source path equals the absolute destination path (same stashRoot AND
       // re-resolved template produces the same relative path as the lootFile
       // already has).
+      //
+      // Multi-file atomicity (Fix 1 from code review): `loot.collectionId`
+      // MUST flip to the target BEFORE any file's path is persisted, so a
+      // mid-loop failure doesn't leave `collectionId` pointing at the source
+      // while some lootFiles already live under the target's stashRoot. We
+      // can't wrap the whole operation in a `db.transaction(...)` because
+      // better-sqlite3 transaction callbacks are synchronous but T3's
+      // `linkOrCopy` hook is async (fs.promises + stream pipeline). The
+      // workaround: piggyback the `loot.collectionId` UPDATE onto the FIRST
+      // successful file's hook, so it commits atomically with that first
+      // lootFiles.path update. Subsequent files' hooks only touch their own
+      // path. Any mid-loop failure leaves `collectionId = target`, which
+      // matches reality (some files are at destination) and is easy to
+      // detect + clean up via the drift-reconciler. This is strictly better
+      // than the previous ordering (collectionId set AFTER the loop), which
+      // produced an "all-or-nothing" illusion that silently violated the
+      // invariant when file 2 of 3 failed.
       let anyFileMoved = false;
       let anyFileFailed = false;
       let anyFileChanged = false; // true if at least one file's absolute path differs
+      let collectionIdCommitted = false;
 
       for (const lf of lootFiles) {
         const ext = path.extname(lf.path);
@@ -954,6 +972,8 @@ export function createBulkRestructureEngine(
 
         anyFileChanged = true;
 
+        const shouldCommitCollectionId = !collectionIdCommitted;
+
         const moveResult = await linkOrCopy({
           source: absSrcPath,
           destination: absDstPath,
@@ -967,6 +987,16 @@ export function createBulkRestructureEngine(
               .update(schema.lootFiles)
               .set({ path: newRelativePath })
               .where(eq(schema.lootFiles.id, lf.id));
+
+            // Atomic-with-first-file pattern: flip collectionId inside the
+            // hook for the first successful move. If this throws, T3 rolls
+            // back the destination and leaves source + DB intact.
+            if (shouldCommitCollectionId) {
+              await db()
+                .update(schema.loot)
+                .set({ collectionId: targetCollectionId, updatedAt: new Date() })
+                .where(eq(schema.loot.id, lootId));
+            }
           },
         });
 
@@ -979,6 +1009,10 @@ export function createBulkRestructureEngine(
           // Continue with other files
         } else {
           anyFileMoved = true;
+          if (shouldCommitCollectionId) {
+            // Hook succeeded — collectionId is now persisted on target
+            collectionIdCommitted = true;
+          }
         }
       }
 
@@ -1000,20 +1034,23 @@ export function createBulkRestructureEngine(
       }
 
       if (anyFileFailed && !anyFileMoved) {
+        // No file succeeded → collectionId was never committed (first-hook
+        // pattern). The Loot is still in the source Collection. Record the
+        // failure and return.
         failed.push({ lootId, error: 'All file moves failed during move-to-collection' });
         return;
       }
 
-      // Update Loot.collectionId regardless of partial file failures
-      // (partial is better than leaving the record pointing at the source collection
-      // when some files are already at the destination)
-      await db()
-        .update(schema.loot)
-        .set({ collectionId: targetCollectionId, updatedAt: new Date() })
-        .where(eq(schema.loot.id, lootId));
+      // At this point at least one file moved successfully, and (by the
+      // first-hook pattern) `collectionId` has already been flipped to the
+      // target in the same transaction as that first file's path update.
+      // No post-loop `UPDATE loot SET collectionId` is required.
 
       if (anyFileFailed) {
-        // Partial move — record as failed so operator knows to fix orphaned files
+        // Partial move — record as failed so operator knows to fix orphaned files.
+        // collectionId already reflects the target (from the first successful
+        // file's hook), so the DB and FS states are consistent with a
+        // partial-move scenario and the drift-reconciler can flag unmoved files.
         failed.push({
           lootId,
           error: 'Some files failed to move during move-to-collection; collectionId updated but check file paths',
@@ -1026,7 +1063,7 @@ export function createBulkRestructureEngine(
         );
       }
     } catch (err) {
-      failed.push({ lootId, error: String((err as Error).message ?? err) });
+      failed.push({ lootId, error: err instanceof Error ? err.message : String(err) });
       logger.error({ lootId, err }, 'bulk-restructure: unhandled error during move-to-collection');
     }
   }
@@ -1149,6 +1186,17 @@ export function createBulkRestructureEngine(
         }
       }
 
+      // Stamp loot.updatedAt whenever at least one file actually moved so
+      // downstream consumers (indexer, UI listings ordered by updatedAt) see
+      // the change. Only skipping when no file moved avoids false-positive
+      // "modified" signals for all-unchanged plans.
+      if (anyMoved) {
+        await db()
+          .update(schema.loot)
+          .set({ updatedAt: new Date() })
+          .where(eq(schema.loot.id, lootId));
+      }
+
       if (anyFailed && !anyMoved) {
         failed.push({ lootId, error: 'All file moves failed during change-template' });
       } else if (anyFailed) {
@@ -1164,7 +1212,7 @@ export function createBulkRestructureEngine(
         );
       }
     } catch (err) {
-      failed.push({ lootId, error: String((err as Error).message ?? err) });
+      failed.push({ lootId, error: err instanceof Error ? err.message : String(err) });
       logger.error({ lootId, err }, 'bulk-restructure: unhandled error during change-template');
     }
   }

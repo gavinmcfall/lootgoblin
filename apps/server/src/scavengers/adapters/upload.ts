@@ -62,6 +62,9 @@ export function createUploadAdapter(): ScavengerAdapter {
     fetch(context: FetchContext, target: FetchTarget): AsyncIterable<ScavengerEvent> {
       return {
         [Symbol.asyncIterator]: async function* () {
+          // Hoisted so the catch block can clean up even if we throw after
+          // reading `target.payload` but before entering the per-file loop.
+          let tempDirForCleanup: string | null = null;
           try {
             // ── 1. Validate target kind ──────────────────────────────────────
             if (target.kind !== 'raw') {
@@ -99,6 +102,7 @@ export function createUploadAdapter(): ScavengerAdapter {
             }
 
             const { tempDir, metadata } = payload;
+            tempDirForCleanup = tempDir;
 
             // Verify tempDir exists and is a directory.
             try {
@@ -198,6 +202,18 @@ export function createUploadAdapter(): ScavengerAdapter {
             // Catch-all — surface as failed event rather than letting the
             // async generator throw (which would propagate as an unhandled
             // rejection from the pipeline's for-await loop).
+            //
+            // Clean up tempDir on this path too — it may contain partially-
+            // moved files if a per-file rename failed mid-loop. The happy
+            // path and empty-dir path already clean up inline; this mirrors
+            // the same invariant for the error path.
+            if (tempDirForCleanup !== null) {
+              await fsp
+                .rm(tempDirForCleanup, { recursive: true, force: true })
+                .catch(() => {
+                  /* best-effort */
+                });
+            }
             yield {
               kind: 'failed' as const,
               reason: 'unknown' as const,

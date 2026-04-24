@@ -283,5 +283,31 @@ describe('createUploadAdapter', () => {
       const stagedFiles = await fsp.readdir(stagingDir);
       expect(stagedFiles).toContain('file.obj');
     });
+
+    it('cleans up tempDir on non-EXDEV rename failure (error path must not leak tempDir)', async () => {
+      const adapter = createUploadAdapter();
+      const tempDir = await makeTempDir();
+      const stagingDir = await makeStagingDir();
+      await fsp.writeFile(path.join(tempDir, 'file.obj'), 'obj content');
+
+      // Force rename to fail by removing write permission on the staging dir.
+      // fs.rename into a non-writable dir returns EACCES (non-EXDEV), which
+      // triggers the adapter's outer catch — the branch we need to exercise.
+      const originalMode = (await fsp.stat(stagingDir)).mode;
+      await fsp.chmod(stagingDir, 0o500); // r-x for owner, no write
+
+      try {
+        const events = await collectEvents(adapter, makeCtx(stagingDir), makeRawTarget(tempDir));
+        const final = events[events.length - 1];
+        expect(final?.kind).toBe('failed');
+
+        // Regression guard: the error path MUST clean up tempDir.
+        // Before the fix, tempDir leaked when a non-EXDEV rename error surfaced.
+        await expect(fsp.access(tempDir)).rejects.toThrow();
+      } finally {
+        // Restore so afterEach cleanup can remove stagingDir
+        await fsp.chmod(stagingDir, originalMode).catch(() => {});
+      }
+    });
   });
 });

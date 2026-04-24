@@ -2,8 +2,7 @@
  * Scavengers module barrel.
  *
  * Re-exports all public types and utilities from the scavengers layer.
- * Future task modules (T4-T10 adapters) also live under this directory
- * and should be added to this barrel as they land.
+ * Adapters are registered in createDefaultRegistry (wired below).
  */
 
 export type {
@@ -34,3 +33,34 @@ export { sniffFormat, DEFAULT_ACCEPTED_FORMATS } from './format-sniff';
 // Link resolver — T3.
 export type { LinkResolution, LinkContext, LinkResolver } from './link-resolver';
 export { createLinkResolver } from './link-resolver';
+
+// Adapters — T4+.
+export type { UploadRawPayload } from './adapters/upload';
+export { createUploadAdapter } from './adapters/upload';
+
+// ---------------------------------------------------------------------------
+// Default registry factory — T4+
+//
+// Registers all known adapters in a single process-level registry instance.
+// URL-driven adapters (T5-T8: cults3d, makerworld, printables, sketchfab,
+// google-drive) will be added here as each task lands.
+// ---------------------------------------------------------------------------
+
+import { createRegistry } from './registry';
+import { createUploadAdapter } from './adapters/upload';
+import type { ScavengerRegistry } from './registry';
+
+/**
+ * Create a ScavengerRegistry pre-populated with all currently implemented
+ * adapters. Routes and instrumentation should call this once and share the
+ * instance (or use a module-level singleton).
+ *
+ * T5-T8 will register cults3d, makerworld, printables, sketchfab, google-drive
+ * as each adapter task completes.
+ */
+export function createDefaultRegistry(): ScavengerRegistry {
+  const registry = createRegistry();
+  registry.register(createUploadAdapter());
+  // T5-T8 will add: cults3d, makerworld, printables, sketchfab, google-drive
+  return registry;
+}

@@ -25,7 +25,7 @@ import * as path from 'node:path';
 
 import { logger } from '../logger';
 import { getDb, schema } from '../db/client';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, notInArray } from 'drizzle-orm';
 
 import {
   parseTemplate,
@@ -88,7 +88,7 @@ export type BulkReport = {
   applied: string[];                                  // lootIds successfully applied
   skipped: Array<{ lootId: string; reason: string }>; // non-ready verdicts at apply time
   failed: Array<{ lootId: string; error: string }>;   // ready but threw during apply
-  ledgerEventId: string;                              // id of the single bulk ledger event
+  ledgerEventId: string;                              // id of the single bulk ledger event; '' when lootIds was empty (no bulk event emitted for audit no-op)
 };
 
 export type BulkLedgerEmitter = {
@@ -561,6 +561,37 @@ export function createBulkRestructureEngine(
       filesByLootId.set(f.lootId, arr);
     }
 
+    // Load paths of lootFiles in the SAME collections that are NOT in the bulk set.
+    // These represent "non-moving" loot whose current paths a proposed path could
+    // collide with (mirrors T9's preview collision semantics).
+    const bulkCollectionIds = Array.from(new Set(allLootRows.map((l) => l.collectionId)));
+    const nonMovingPaths = new Set<string>();
+    if (bulkCollectionIds.length > 0 && existingLootIds.length > 0) {
+      for (let i = 0; i < bulkCollectionIds.length; i += BATCH) {
+        const collectionBatch = bulkCollectionIds.slice(i, i + BATCH);
+        // For each collection chunk, find loots NOT in the bulk set and fetch their files
+        const nonMovingLootRows = await db()
+          .select({ id: schema.loot.id })
+          .from(schema.loot)
+          .where(
+            and(
+              inArray(schema.loot.collectionId, collectionBatch),
+              notInArray(schema.loot.id, existingLootIds),
+            ),
+          );
+        const nonMovingLootIds = nonMovingLootRows.map((r) => r.id);
+        if (nonMovingLootIds.length === 0) continue;
+        for (let j = 0; j < nonMovingLootIds.length; j += BATCH) {
+          const idBatch = nonMovingLootIds.slice(j, j + BATCH);
+          const pathRows = await db()
+            .select({ path: schema.lootFiles.path })
+            .from(schema.lootFiles)
+            .where(inArray(schema.lootFiles.lootId, idBatch));
+          for (const r of pathRows) nonMovingPaths.add(r.path);
+        }
+      }
+    }
+
     // proposed path → [lootId] for self-collision detection
     const proposedPathToLootIds = new Map<string, string[]>();
     type ReadyCandidate = { lootId: string; proposedPath: string };
@@ -646,9 +677,24 @@ export function createBulkRestructureEngine(
       readyCandidates.push({ lootId, proposedPath });
     }
 
-    // Collision detection: among ready candidates
+    // Collision detection: among ready candidates + against non-moving loot paths
     for (const candidate of readyCandidates) {
       const { lootId, proposedPath } = candidate;
+
+      // Check collision against non-moving loot in same collection(s)
+      // (mirrors T9's preview semantics — a proposed path that hits a current
+      // path of a loot NOT in the bulk set is a collision)
+      if (nonMovingPaths.has(proposedPath)) {
+        verdicts.push({
+          kind: 'collision',
+          lootId,
+          proposedPath,
+          conflictingLootIds: [], // non-moving loot IDs aren't resolved back here
+        });
+        continue;
+      }
+
+      // Check self-collision among the bulk set
       const samePath = proposedPathToLootIds.get(proposedPath) ?? [];
       if (samePath.length > 1) {
         const conflictingLootIds = samePath.filter((id) => id !== lootId);
@@ -851,7 +897,7 @@ export function createBulkRestructureEngine(
         return;
       }
 
-      const samePath = sourceCollection.stashRootId === targetCollection.stashRootId;
+      const sameStashRoot = sourceCollection.stashRootId === targetCollection.stashRootId;
 
       // Parse target path template
       let targetParsed: ReturnType<typeof parseTemplate>;
@@ -882,52 +928,40 @@ export function createBulkRestructureEngine(
         .from(schema.lootFiles)
         .where(eq(schema.lootFiles.lootId, lootId));
 
-      if (samePath) {
-        // Same stashRoot — DB pointer update only; no physical file move needed
-        // We still re-template the path for naming consistency
-        for (const lf of lootFiles) {
-          const ext = path.extname(lf.path);
-          const newPath = `${resolveResult.path}${ext}`;
-          await db()
-            .update(schema.lootFiles)
-            .set({ path: newPath })
-            .where(eq(schema.lootFiles.id, lf.id));
-        }
-
-        // Update Loot.collectionId
-        await db()
-          .update(schema.loot)
-          .set({ collectionId: targetCollectionId, updatedAt: new Date() })
-          .where(eq(schema.loot.id, lootId));
-
-        applied.push(lootId);
-        logger.info(
-          { lootId, fromCollection: lootRow.collectionId, toCollection: targetCollectionId, samePath },
-          'bulk-restructure: move-to-collection applied (same stash root)',
-        );
-        return;
-      }
-
-      // Cross-stashRoot — physical file move via T3 linkOrCopy, then DB update
-      // Move each file; if ANY file move fails, we record failure but update the
-      // loot.collectionId anyway (partial move) since some files may have moved.
-      // This mirrors T9's "continue on per-file failure" approach.
+      // Per-file move loop. ADR-009: every relocation goes through linkOrCopy,
+      // regardless of same-vs-cross stashRoot. T3 tries hardlink first (zero
+      // bytes for same-fs) and falls back to byte-copy only on EXDEV.
+      // The only case where NO file mutation is needed is when the absolute
+      // source path equals the absolute destination path (same stashRoot AND
+      // re-resolved template produces the same relative path as the lootFile
+      // already has).
       let anyFileMoved = false;
       let anyFileFailed = false;
+      let anyFileChanged = false; // true if at least one file's absolute path differs
 
       for (const lf of lootFiles) {
         const ext = path.extname(lf.path);
         const newRelativePath = `${resolveResult.path}${ext}`;
-        const source = path.join(sourceStashRoot.path, lf.path);
-        const destination = path.join(targetStashRoot.path, newRelativePath);
+        const absSrcPath = path.join(sourceStashRoot.path, lf.path);
+        const absDstPath = path.join(targetStashRoot.path, newRelativePath);
+
+        if (absSrcPath === absDstPath) {
+          // No-op at the file level: same absolute path. Nothing to move.
+          // The lootFile.path record already matches; only the owning
+          // loot.collectionId may need to change (handled after the loop).
+          continue;
+        }
+
+        anyFileChanged = true;
 
         const moveResult = await linkOrCopy({
-          source,
-          destination,
+          source: absSrcPath,
+          destination: absDstPath,
           cleanupPolicy: 'immediate',
-          // Force copy for cross-stashRoot moves (T3 handles EXDEV natively,
-          // but we explicitly signal cross-device to skip the hardlink attempt).
-          _forceExdev: !samePath,
+          // Do NOT force EXDEV — let T3 attempt hardlink first. For same-fs
+          // (including same-stashRoot on a single device) this is zero-byte.
+          // For cross-fs (different mounts/devices), T3 catches EXDEV and
+          // falls back to byte-copy + hash verification.
           onAfterDestinationVerified: async () => {
             await db()
               .update(schema.lootFiles)
@@ -938,8 +972,8 @@ export function createBulkRestructureEngine(
 
         if (moveResult.status === 'failed') {
           logger.warn(
-            { lootId, lootFileId: lf.id, source, destination, reason: moveResult.reason },
-            'bulk-restructure: file move failed during cross-stash move',
+            { lootId, lootFileId: lf.id, source: absSrcPath, destination: absDstPath, reason: moveResult.reason },
+            'bulk-restructure: file move failed during move-to-collection',
           );
           anyFileFailed = true;
           // Continue with other files
@@ -948,8 +982,25 @@ export function createBulkRestructureEngine(
         }
       }
 
+      // If no file's absolute path changed but we still need to move collectionId
+      // (same stashRoot + template resolves to current path), that's a pure
+      // DB-only collection pointer swap — safe because no file is orphaned.
+      if (!anyFileChanged) {
+        await db()
+          .update(schema.loot)
+          .set({ collectionId: targetCollectionId, updatedAt: new Date() })
+          .where(eq(schema.loot.id, lootId));
+
+        applied.push(lootId);
+        logger.info(
+          { lootId, fromCollection: lootRow.collectionId, toCollection: targetCollectionId, sameStashRoot },
+          'bulk-restructure: move-to-collection applied (no file paths changed)',
+        );
+        return;
+      }
+
       if (anyFileFailed && !anyFileMoved) {
-        failed.push({ lootId, error: 'All file moves failed during cross-stash move' });
+        failed.push({ lootId, error: 'All file moves failed during move-to-collection' });
         return;
       }
 
@@ -965,13 +1016,13 @@ export function createBulkRestructureEngine(
         // Partial move — record as failed so operator knows to fix orphaned files
         failed.push({
           lootId,
-          error: 'Some files failed to move during cross-stash move; collectionId updated but check file paths',
+          error: 'Some files failed to move during move-to-collection; collectionId updated but check file paths',
         });
       } else {
         applied.push(lootId);
         logger.info(
-          { lootId, fromCollection: lootRow.collectionId, toCollection: targetCollectionId, samePath },
-          'bulk-restructure: move-to-collection applied (cross stash root)',
+          { lootId, fromCollection: lootRow.collectionId, toCollection: targetCollectionId, sameStashRoot },
+          'bulk-restructure: move-to-collection applied',
         );
       }
     } catch (err) {

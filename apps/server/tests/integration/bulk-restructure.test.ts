@@ -409,11 +409,75 @@ describe('preview change-template — mixed verdicts', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4b. Preview change-template — collision against a NON-MOVING loot in the
+//     same Collection (the bulk set doesn't include every loot). Mirrors T9's
+//     preview semantics so the user doesn't accidentally clobber an existing
+//     file at a proposed path.
+// ---------------------------------------------------------------------------
+
+describe('preview change-template — collision with non-moving loot', () => {
+  it('classifies a candidate as collision when its proposed path equals a non-moving loot current path', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    // Current collection template keeps files by title-slug only
+    const collectionId = await seedCollection(ownerId, stashRootId, '{title|slug}');
+
+    // Three loots in the SAME collection:
+    //   A — in bulk set; proposed new-template path = "taken/a.stl"
+    //   B — in bulk set; proposed new-template path = "solo/b.stl" (no conflict)
+    //   C — NOT in bulk set; already lives at "taken/a.stl" (non-moving)
+    // The new template "{creator|slug}/{title|slug}" will make A try to land
+    // on C's existing path — must flag as collision.
+    const lootIdA = await seedLoot(collectionId, { title: 'A', creator: 'taken' });
+    const lootIdB = await seedLoot(collectionId, { title: 'B', creator: 'solo' });
+    const lootIdC = await seedLoot(collectionId, { title: 'Unrelated', creator: 'irrelevant' });
+
+    const absA = path.join(scratch, 'a.stl');
+    const absB = path.join(scratch, 'b.stl');
+    // C already sits where A wants to go
+    const absC = path.join(scratch, 'taken', 'a.stl');
+    await writeFile(absA);
+    await writeFile(absB);
+    await writeFile(absC);
+
+    await seedLootFile(lootIdA, 'a.stl', absA);
+    await seedLootFile(lootIdB, 'b.stl', absB);
+    await seedLootFile(lootIdC, 'taken/a.stl', absC);
+
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      aclCheck: async () => true,
+    });
+
+    // Only A and B are in the bulk set. C is a non-moving loot whose current
+    // path collides with A's proposed path.
+    const preview = await engine.preview({
+      action: { kind: 'change-template', newTemplate: '{creator|slug}/{title|slug}' },
+      lootIds: [lootIdA, lootIdB],
+      ownerId,
+    });
+
+    expect(preview.summary.collision).toBe(1);
+    expect(preview.summary.ready).toBe(1);
+
+    const verdictA = preview.verdicts.find((v) => v.lootId === lootIdA);
+    expect(verdictA?.kind).toBe('collision');
+    if (verdictA?.kind === 'collision') {
+      expect(verdictA.proposedPath).toBe('taken/a.stl');
+    }
+
+    const verdictB = preview.verdicts.find((v) => v.lootId === lootIdB);
+    expect(verdictB?.kind).toBe('ready');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5. Execute move-to-collection same-stashRoot
 // ---------------------------------------------------------------------------
 
 describe('execute move-to-collection — same stash root', () => {
-  it('updates DB pointers and emits 1 ledger event', async () => {
+  it('physically relocates files via hardlink + updates DB + emits 1 ledger event', async () => {
     const scratch = await makeScratchDir();
     const ownerId = await seedUser();
     const stashRootId = await seedStashRoot(ownerId, scratch);
@@ -431,6 +495,11 @@ describe('execute move-to-collection — same stash root', () => {
     const absPath2 = path.join(scratch, 'widget-beta.stl');
     await writeFile(absPath1);
     await writeFile(absPath2);
+
+    // Capture inode of source files BEFORE the move — we'll use this to prove
+    // that the destination is a hardlink (same inode) rather than a fresh copy.
+    const srcIno1 = fs.statSync(absPath1).ino;
+    const srcIno2 = fs.statSync(absPath2).ino;
 
     const lfId1 = await seedLootFile(lootId1, 'widget-alpha.stl', absPath1);
     const lfId2 = await seedLootFile(lootId2, 'widget-beta.stl', absPath2);
@@ -462,6 +531,19 @@ describe('execute move-to-collection — same stash root', () => {
 
     const lf2Rows = await db().select().from(schema.lootFiles).where(eq(schema.lootFiles.id, lfId2));
     expect(lf2Rows[0].path).toBe('maker2/widget-beta.stl');
+
+    // ADR-009: source unlinked, destination exists. No orphans.
+    const newAbs1 = path.join(scratch, 'maker1', 'widget-alpha.stl');
+    const newAbs2 = path.join(scratch, 'maker2', 'widget-beta.stl');
+    expect(await fileExists(absPath1)).toBe(false);
+    expect(await fileExists(absPath2)).toBe(false);
+    expect(await fileExists(newAbs1)).toBe(true);
+    expect(await fileExists(newAbs2)).toBe(true);
+
+    // Hardlink path: destination inode equals captured source inode. This
+    // proves T3 took the cheap fs.link branch, not the byte-copy branch.
+    expect(fs.statSync(newAbs1).ino).toBe(srcIno1);
+    expect(fs.statSync(newAbs2).ino).toBe(srcIno2);
 
     // ONE ledger event total
     expect(spyLedger.calls).toHaveLength(1);

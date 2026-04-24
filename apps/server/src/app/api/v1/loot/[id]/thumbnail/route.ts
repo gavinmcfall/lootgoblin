@@ -6,6 +6,15 @@
  *
  * Sets Content-Type: image/png and Cache-Control: public, max-age=3600.
  * Reads file bytes synchronously at request time (thumbnails are small).
+ *
+ * Security: the `thumbnail_path` column in loot_thumbnails is written by
+ * the indexer (T11) as a relative path beneath the stash root.  We treat it
+ * as UNTRUSTED input anyway — a DB compromise, a bug in T11, or a
+ * mis-written manual INSERT must not allow path traversal to read arbitrary
+ * files (e.g. `../../etc/passwd`).  The resolve-and-contain guard below
+ * rejects any path that escapes the stash root with a plain no-thumbnail
+ * 404 (no difference leaked to the client whether the path was invalid or
+ * merely absent).
  */
 
 import { NextResponse } from 'next/server';
@@ -14,14 +23,15 @@ import * as path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';
-import { authenticateRequest } from '@/auth/request-auth';
+import { authenticateRequest, unauthenticatedResponse } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { logger } from '@/logger';
 
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   const { id: lootId } = await context.params;
-  const user = await authenticateRequest(req);
-  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  const authOutcome = await authenticateRequest(req);
+  if (authOutcome === null || typeof authOutcome === 'symbol') return unauthenticatedResponse(authOutcome);
+  const user = authOutcome;
 
   const acl = resolveAcl({ user, resource: { kind: 'loot', id: lootId }, action: 'read' });
   if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
@@ -70,9 +80,22 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
   }
 
   const stashRootPath = rootRows[0].path;
-  const absolutePath = path.isAbsolute(thumbnailRelativePath)
-    ? thumbnailRelativePath
-    : path.join(stashRootPath, thumbnailRelativePath);
+
+  // Path-traversal guard.  `path.resolve` collapses any `..` segments, then
+  // we require the result to be at or under the stash root.  An absolute
+  // `thumbnailRelativePath` produced by a bug or malicious DB write is
+  // treated the same as a traversal attempt — resolve() on an absolute
+  // second arg ignores the first arg, so it will NOT match `rootAbs` and
+  // the guard will reject it.
+  const rootAbs = path.resolve(stashRootPath);
+  const absolutePath = path.resolve(rootAbs, thumbnailRelativePath);
+  if (absolutePath !== rootAbs && !absolutePath.startsWith(rootAbs + path.sep)) {
+    logger.warn(
+      { lootId, thumbnailRelativePath, absolutePath, rootAbs },
+      'thumbnail GET: resolved path escapes stash root — rejecting',
+    );
+    return NextResponse.json({ error: 'no-thumbnail' }, { status: 404 });
+  }
 
   let bytes: Buffer;
   try {

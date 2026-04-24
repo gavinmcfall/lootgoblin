@@ -26,9 +26,13 @@ vi.mock('next/server', () => ({
 }));
 
 const mockAuthenticate = vi.fn();
-vi.mock('../../../src/auth/request-auth', () => ({
-  authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
-}));
+vi.mock('../../../src/auth/request-auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/auth/request-auth')>();
+  return {
+    ...actual,
+    authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
+  };
+});
 
 function asActor(session: { user: { id: string; role: 'admin' | 'user' } } | null) {
   if (!session) return null;

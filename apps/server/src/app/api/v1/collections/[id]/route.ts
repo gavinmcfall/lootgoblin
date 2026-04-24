@@ -10,7 +10,7 @@ import { NextResponse } from 'next/server';
 import { eq, count } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, schema } from '@/db/client';
-import { authenticateRequest } from '@/auth/request-auth';
+import { authenticateRequest, unauthenticatedResponse } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { logger } from '@/logger';
 
@@ -31,8 +31,9 @@ function serializeCollection(r: Record<string, unknown>) {
 
 export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const user = await authenticateRequest(req);
-  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  const authOutcome = await authenticateRequest(req);
+  if (authOutcome === null || typeof authOutcome === 'symbol') return unauthenticatedResponse(authOutcome);
+  const user = authOutcome;
 
   const acl = resolveAcl({ user, resource: { kind: 'collection', id }, action: 'read' });
   if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
@@ -46,8 +47,9 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
 
 export async function PATCH(req: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const user = await authenticateRequest(req);
-  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  const authOutcome = await authenticateRequest(req);
+  if (authOutcome === null || typeof authOutcome === 'symbol') return unauthenticatedResponse(authOutcome);
+  const user = authOutcome;
 
   const db = getDb() as any;
   const existing = await db
@@ -91,8 +93,9 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
 
 export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const user = await authenticateRequest(req);
-  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  const authOutcome = await authenticateRequest(req);
+  if (authOutcome === null || typeof authOutcome === 'symbol') return unauthenticatedResponse(authOutcome);
+  const user = authOutcome;
 
   const db = getDb() as any;
   const existing = await db

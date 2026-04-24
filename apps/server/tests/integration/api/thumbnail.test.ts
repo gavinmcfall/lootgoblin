@@ -28,9 +28,13 @@ vi.mock('next/server', () => ({
 }));
 
 const mockAuthenticate = vi.fn();
-vi.mock('../../../src/auth/request-auth', () => ({
-  authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
-}));
+vi.mock('../../../src/auth/request-auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/auth/request-auth')>();
+  return {
+    ...actual,
+    authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
+  };
+});
 
 function asActor(session: { user: { id: string; role: 'admin' | 'user' } } | null) {
   if (!session) return null;
@@ -197,6 +201,72 @@ describe('GET /api/v1/loot/:id/thumbnail', () => {
           VALUES (${lootId}, 'ok', ${thumbRelPath}, 'f3d-cli', ${now}, ${now})`,
     );
     // NOTE: we deliberately do NOT create the file on disk.
+
+    mockGetSession.mockResolvedValue(makeSession(userId));
+    const { GET } = await import('../../../src/app/api/v1/loot/[id]/thumbnail/route');
+    const res = await GET(makeReq(lootId), { params: Promise.resolve({ id: lootId }) });
+    expect(res.status).toBe(404);
+    const json = await res.json();
+    expect(json.error).toBe('no-thumbnail');
+  });
+
+  it('rejects path-traversal attempts and does not read escape targets', async () => {
+    // Set up a loot whose loot_thumbnails row has been poisoned with a
+    // traversal path.  Simulates a DB compromise / T11 bug / manual bad
+    // INSERT.  The route MUST refuse to read the target (even if it happens
+    // to exist) and respond with a plain no-thumbnail 404.
+    const userId = await seedUser();
+    const rootPath = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-thumb-escape-'));
+    const rootId = await seedStashRoot(userId, rootPath);
+    const colId = await seedCollection(userId, rootId);
+    const lootId = await seedLoot(colId);
+
+    // Create a REAL file OUTSIDE the stash root — if the guard is broken,
+    // the route would read this and succeed with 200 bytes.
+    const outsideDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-thumb-escape-target-'));
+    const outsideFile = path.join(outsideDir, 'secret.png');
+    const secretBytes = Buffer.from([0xDE, 0xAD, 0xBE, 0xEF]);
+    await fsp.writeFile(outsideFile, secretBytes);
+
+    // Compute a relative traversal payload that resolves to outsideFile.
+    const traversalPayload = path.relative(rootPath, outsideFile);
+    // Sanity check: the payload actually starts with '..' so it IS escaping.
+    expect(traversalPayload.startsWith('..')).toBe(true);
+
+    // Insert the poisoned row.
+    const now = Date.now();
+    db().run(
+      sql`INSERT INTO loot_thumbnails (loot_id, status, thumbnail_path, source_kind, generated_at, updated_at)
+          VALUES (${lootId}, 'ok', ${traversalPayload}, 'f3d-cli', ${now}, ${now})`,
+    );
+
+    mockGetSession.mockResolvedValue(makeSession(userId));
+    const { GET } = await import('../../../src/app/api/v1/loot/[id]/thumbnail/route');
+    const res = await GET(makeReq(lootId), { params: Promise.resolve({ id: lootId }) });
+    expect(res.status).toBe(404);
+    const json = await res.json();
+    expect(json.error).toBe('no-thumbnail');
+    // Response body must NOT contain the secret bytes — the 404 is JSON.
+    expect(res.headers.get('Content-Type')).not.toBe('image/png');
+  });
+
+  it('rejects absolute path_thumbnail values (treated as traversal)', async () => {
+    // If thumbnail_path is absolute, path.resolve(root, absolute) returns
+    // the absolute path.  Guard must reject it unless it happens to be
+    // inside the stash root.  We test the unambiguously-outside case.
+    const userId = await seedUser();
+    const rootPath = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-thumb-abs-'));
+    const rootId = await seedStashRoot(userId, rootPath);
+    const colId = await seedCollection(userId, rootId);
+    const lootId = await seedLoot(colId);
+
+    // /etc/passwd exists on the test runner (Linux WSL) — good target:
+    // guaranteed-to-exist file that MUST NOT be read.
+    const now = Date.now();
+    db().run(
+      sql`INSERT INTO loot_thumbnails (loot_id, status, thumbnail_path, source_kind, generated_at, updated_at)
+          VALUES (${lootId}, 'ok', '/etc/passwd', 'f3d-cli', ${now}, ${now})`,
+    );
 
     mockGetSession.mockResolvedValue(makeSession(userId));
     const { GET } = await import('../../../src/app/api/v1/loot/[id]/thumbnail/route');

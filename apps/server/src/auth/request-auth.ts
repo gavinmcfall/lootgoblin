@@ -27,8 +27,8 @@
  *   power.  A future V2-00X task can add owner tracking and lift this.
  */
 
-import { getSessionOrNull } from './helpers';
-import { isValidApiKeyWithScope } from './helpers';
+import { NextResponse } from 'next/server';
+import { getSessionOrNull, isValidApiKeyWithScope } from './helpers';
 import type { NextRequest } from 'next/server';
 
 export interface AuthenticatedActor {
@@ -39,15 +39,37 @@ export interface AuthenticatedActor {
 }
 
 /**
+ * Sentinel value returned by authenticateRequest when the caller PRESENTED
+ * an x-api-key header but the key was invalid/expired/wrong-scope.  This is
+ * semantically different from "no credentials presented at all" (null):
+ *
+ *   null              → client never authenticated. UI should prompt login.
+ *   INVALID_API_KEY   → client tried an API key and it was rejected. Client
+ *                       should rotate/renew the key, not re-login.
+ *
+ * Route handlers pattern-match on this to emit 401 with a distinguishing
+ * `reason: 'invalid-api-key'` field in the body, guiding the client to the
+ * correct recovery flow.
+ */
+export const INVALID_API_KEY = Symbol('invalid-api-key');
+
+/**
  * Authenticates the incoming request via session OR API key.
  *
- * Returns the resolved actor on success, or null if neither path yields a
- * valid identity.  Does NOT perform ACL checks — callers must still call
- * `resolveAcl(...)` with the returned actor.
+ * Returns:
+ *   AuthenticatedActor — session cookie OR valid programmatic API key.
+ *   INVALID_API_KEY    — x-api-key header was present but the key is
+ *                        invalid / expired / wrong-scope.  Distinguishable
+ *                        from the "no credentials" path so clients can
+ *                        route to key rotation rather than re-login.
+ *   null               — no credentials of any kind were presented.
+ *
+ * Does NOT perform ACL checks — callers must still call `resolveAcl(...)`
+ * with the returned actor.
  */
 export async function authenticateRequest(
   req: Request | NextRequest,
-): Promise<AuthenticatedActor | null> {
+): Promise<AuthenticatedActor | null | typeof INVALID_API_KEY> {
   // 1. Try BetterAuth session first — covers browser navigation + XHR.
   const session = await getSessionOrNull(req);
   if (session?.user) {
@@ -74,7 +96,33 @@ export async function authenticateRequest(
         source: 'api-key',
       };
     }
+    // Header present but validation failed — signal the distinct invalid-key
+    // state so the caller emits a key-rotation-oriented error body.
+    return INVALID_API_KEY;
   }
 
   return null;
+}
+
+/**
+ * Translate a non-actor `authenticateRequest` outcome into the canonical 401
+ * response shape.  Routes use this to avoid repeating the same two-branch
+ * pattern in every handler.
+ *
+ *   null              → { error: 'unauthenticated' }
+ *   INVALID_API_KEY   → { error: 'unauthenticated', reason: 'invalid-api-key' }
+ *
+ * Pass the result of `authenticateRequest` only when it is NOT a live actor
+ * (i.e. after the success branch returned early).
+ */
+export function unauthenticatedResponse(
+  outcome: null | typeof INVALID_API_KEY,
+): NextResponse {
+  if (outcome === INVALID_API_KEY) {
+    return NextResponse.json(
+      { error: 'unauthenticated', reason: 'invalid-api-key' },
+      { status: 401 },
+    );
+  }
+  return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
 }

@@ -28,9 +28,13 @@ vi.mock('next/server', () => ({
 
 // ── Auth mock ─────────────────────────────────────────────────────────────────
 const mockAuthenticate = vi.fn();
-vi.mock('../../../src/auth/request-auth', () => ({
-  authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
-}));
+vi.mock('../../../src/auth/request-auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/auth/request-auth')>();
+  return {
+    ...actual,
+    authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
+  };
+});
 
 function asActor(session: { user: { id: string; role: 'admin' | 'user' } } | null) {
   if (!session) return null;
@@ -149,6 +153,53 @@ describe('POST /api/v1/stash-roots', () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.error).toBe('invalid-body');
+  });
+
+  it('returns 422 with informative reason for broken-symlink path (fs.stat throws)', async () => {
+    // Create a symlink pointing at a deleted target.  fs.access may succeed
+    // on some kernels (it checks the link itself) while fs.stat throws
+    // ENOENT following the link.  Both checks MUST be inside the same
+    // try/catch so the endpoint returns 422 `path-not-accessible` rather
+    // than propagating the throw as an unhandled 500.
+    const userId = await seedUser();
+    const scratchDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-sr-symlink-'));
+    const deletedTarget = path.join(scratchDir, 'deleted-target');
+    const brokenLink = path.join(scratchDir, 'broken-link');
+    await fsp.mkdir(deletedTarget);
+    await fsp.symlink(deletedTarget, brokenLink);
+    await fsp.rmdir(deletedTarget); // now brokenLink dangles
+
+    mockGetSession.mockResolvedValue(makeSession(userId));
+    const { POST } = await import('../../../src/app/api/v1/stash-roots/route');
+    const res = await POST(makeReq('POST', 'http://local/api/v1/stash-roots', { name: 'Broken', path: brokenLink }));
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json.error).toBe('path-not-accessible');
+    // Reason should be informative (include something about the failure).
+    expect(typeof json.reason).toBe('string');
+    expect(json.reason.length).toBeGreaterThan(0);
+  });
+
+  it('paginates list results — limit + offset + total respect COUNT', async () => {
+    // Seed 3 stash roots; page size 2 should yield 2 items with total=3.
+    const userId = await seedUser();
+    const t1 = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-sr-page1-'));
+    const t2 = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-sr-page2-'));
+    const t3 = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-sr-page3-'));
+    await seedStashRoot(userId, t1, 'P1');
+    await seedStashRoot(userId, t2, 'P2');
+    await seedStashRoot(userId, t3, 'P3');
+    mockGetSession.mockResolvedValue(makeSession(userId));
+
+    const { GET } = await import('../../../src/app/api/v1/stash-roots/route');
+    const res = await GET(makeReq('GET', 'http://local/api/v1/stash-roots?limit=2&offset=0'));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.items.length).toBe(2);
+    expect(json.limit).toBe(2);
+    expect(json.offset).toBe(0);
+    // total MUST reflect the full matching set, not the page length.
+    expect(json.total).toBeGreaterThanOrEqual(3);
   });
 });
 

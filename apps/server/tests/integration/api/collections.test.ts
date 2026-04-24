@@ -27,9 +27,13 @@ vi.mock('next/server', () => ({
 }));
 
 const mockAuthenticate = vi.fn();
-vi.mock('../../../src/auth/request-auth', () => ({
-  authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
-}));
+vi.mock('../../../src/auth/request-auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/auth/request-auth')>();
+  return {
+    ...actual,
+    authenticateRequest: (...args: unknown[]) => mockAuthenticate(...args),
+  };
+});
 
 // Helper — the old "session shape" used in existing tests.  Translate to the
 // new AuthenticatedActor shape returned by authenticateRequest.
@@ -109,6 +113,25 @@ describe('GET /api/v1/collections', () => {
     expect(res.status).toBe(401);
     const json = await res.json();
     expect(json).toMatchObject({ error: 'unauthenticated' });
+    // No reason field when no credentials were presented — that field is
+    // reserved for distinguishing failure modes.
+    expect(json.reason).toBeUndefined();
+  });
+
+  it('returns 401 with reason:invalid-api-key when x-api-key is present but invalid', async () => {
+    // Load the real INVALID_API_KEY sentinel and return it from the mock.
+    const { INVALID_API_KEY } = await import('../../../src/auth/request-auth');
+    mockAuthenticate.mockResolvedValueOnce(INVALID_API_KEY);
+
+    const req = new Request('http://local/api/v1/collections', {
+      method: 'GET',
+      headers: { 'x-api-key': 'lg_api_bogus-key-value' },
+    });
+    const { GET } = await import('../../../src/app/api/v1/collections/route');
+    const res = await GET(req);
+    expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'unauthenticated', reason: 'invalid-api-key' });
   });
 
   it('authenticates via x-api-key header when session is absent', async () => {

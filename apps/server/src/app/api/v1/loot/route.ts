@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, count } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, schema } from '@/db/client';
-import { authenticateRequest } from '@/auth/request-auth';
+import { authenticateRequest, unauthenticatedResponse } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 
 const CreateLootBody = z.object({
@@ -32,8 +32,9 @@ function serializeLoot(r: Record<string, unknown>) {
 }
 
 export async function GET(req: Request) {
-  const user = await authenticateRequest(req);
-  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  const authOutcome = await authenticateRequest(req);
+  if (authOutcome === null || typeof authOutcome === 'symbol') return unauthenticatedResponse(authOutcome);
+  const user = authOutcome;
 
   const acl = resolveAcl({ user, resource: { kind: 'loot' }, action: 'read' });
   if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });
@@ -67,8 +68,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const user = await authenticateRequest(req);
-  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  const authOutcome = await authenticateRequest(req);
+  if (authOutcome === null || typeof authOutcome === 'symbol') return unauthenticatedResponse(authOutcome);
+  const user = authOutcome;
 
   const acl = resolveAcl({ user, resource: { kind: 'loot' }, action: 'create' });
   if (!acl.allowed) return NextResponse.json({ error: 'forbidden', reason: acl.reason }, { status: 403 });

@@ -232,6 +232,37 @@ describe('LinkResolver.resolve() — edge cases', () => {
     const r = unknown(resolver.resolve('not-a-url'));
     expect(r.rawUrl).toBe('not-a-url');
   });
+
+  // Fix 1 — credentials embedded in userinfo must be stripped from normalizedUrl
+  it('URL with embedded credentials — normalizedUrl strips user:pass@', () => {
+    const r = known(resolver.resolve('https://user:secret@mega.nz/folder/abc#key'));
+    expect(r.sourceId).toBe('mega');
+    expect(r.normalizedUrl).not.toContain('user:');
+    expect(r.normalizedUrl).not.toContain(':secret');
+    expect(r.normalizedUrl).not.toContain('@mega.nz');
+  });
+
+  // Fix 2 — MMF real URL shape embeds numeric id as trailing suffix on the slug
+  it('MMF URL with slug-numericId suffix — id is the trailing numeric', () => {
+    const r = known(resolver.resolve('https://www.myminifactory.com/object/cool-castle-123456'));
+    expect(r.sourceId).toBe('mymini-factory');
+    expect(r.context?.kind).toBe('file');
+    expect(r.context?.id).toBe('123456');
+  });
+
+  // Fix 3 — Patreon creator-campaign URL is a container (kind=folder), id=creator handle
+  it('Patreon campaign URL (/alice) — kind=folder, id=creator handle', () => {
+    const r = known(resolver.resolve('https://www.patreon.com/alice'));
+    expect(r.sourceId).toBe('patreon');
+    expect(r.context?.kind).toBe('folder');
+    expect(r.context?.id).toBe('alice');
+  });
+
+  // Fix 4 — mail.google.com is no longer falsely claimed by the GDrive matcher
+  it('Non-GDrive google.com host (mail.google.com) — kind=unknown', () => {
+    const r = unknown(resolver.resolve('https://mail.google.com/mail/u/0/#inbox/abc'));
+    expect(r.rawUrl).toBe('https://mail.google.com/mail/u/0/#inbox/abc');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -298,5 +329,14 @@ describe('LinkResolver.scan()', () => {
     const knowns = results as Extract<LinkResolution, { kind: 'known' }>[];
     expect(knowns[0].sourceId).toBe('cults3d');
     expect(knowns[1].sourceId).toBe('thingiverse');
+  });
+
+  // Fix 6 — dedup across tracking-param variants (utm_source differs, canonical URL is same)
+  it('dedupes URLs that differ only in tracking params', () => {
+    const results = resolver.scan(
+      'Check https://cults3d.com/en/3d-model/foo?utm_source=twitter and https://cults3d.com/en/3d-model/foo?utm_source=email',
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0].kind).toBe('known');
   });
 });

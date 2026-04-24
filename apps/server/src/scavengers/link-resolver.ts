@@ -107,6 +107,11 @@ function normalizeUrl(raw: string): string | null {
   // Lowercase hostname.
   parsed.hostname = parsed.hostname.toLowerCase();
 
+  // Strip embedded userinfo credentials — `new URL('https://user:pass@host').toString()`
+  // preserves `user:pass@`, which would leak into logs, Set keys, and downstream storage.
+  parsed.username = '';
+  parsed.password = '';
+
   // Strip tracking params.
   for (const key of [...parsed.searchParams.keys()]) {
     if (TRACKING_PARAMS.has(key)) {
@@ -136,6 +141,19 @@ function pathSegment(segments: string[], index: number): string | undefined {
 // ── Google Drive ────────────────────────────────────────────────────────────
 
 /**
+ * Explicit allowlist — only these hosts host GDrive-family resources with the
+ * `/d/{id}` + `/folders/{id}` + `/open?id=` URL shapes. Using
+ * `endsWith('.google.com')` would falsely claim `mail.google.com`,
+ * `maps.google.com`, etc.
+ */
+const GDRIVE_HOSTS = new Set([
+  'drive.google.com',
+  'docs.google.com',
+  'sheets.google.com',
+  'slides.google.com',
+]);
+
+/**
  * Matches any drive.google.com or docs.google.com URL and extracts context.
  *
  * Shapes handled:
@@ -147,7 +165,7 @@ function pathSegment(segments: string[], index: number): string | undefined {
  */
 function matchGoogleDrive(parsed: URL): MatchResult {
   const host = parsed.hostname.toLowerCase();
-  if (!host.endsWith('.google.com')) return null;
+  if (!GDRIVE_HOSTS.has(host)) return null;
 
   const parts = parsed.pathname.split('/').filter(Boolean);
 
@@ -237,14 +255,17 @@ function matchMyMiniFactory(parsed: URL): MatchResult {
 
   const parts = parsed.pathname.split('/').filter(Boolean);
 
-  // /object/…/{numericId}
+  // /object/{slug-numericId}  — real MMF URLs embed the numeric id as a trailing
+  // suffix on the slug (e.g. /object/cool-castle-123456). Mirror the Printables
+  // + MakerWorld pattern: extract the trailing numeric suffix when present.
   if (parts[0] === 'object') {
     const last = parts[parts.length - 1];
-    if (last && /^\d+$/.test(last)) {
-      return { sourceId: 'mymini-factory', context: { kind: 'file', id: last } };
-    }
-    // Slug-only (no trailing numeric id)
     if (last) {
+      const idMatch = last.match(/-(\d+)$/);
+      if (idMatch && idMatch[1]) {
+        return { sourceId: 'mymini-factory', context: { kind: 'file', id: idMatch[1] } };
+      }
+      // Fallback: no trailing numeric suffix — use the whole segment as id.
       return { sourceId: 'mymini-factory', context: { kind: 'file', id: last } };
     }
   }
@@ -300,7 +321,7 @@ function matchThingiverse(parsed: URL): MatchResult {
 
   for (const seg of parts) {
     const m = seg.match(/^thing:(\d+)$/);
-    if (m) {
+    if (m && m[1]) {
       return { sourceId: 'thingiverse', context: { kind: 'file', id: m[1] } };
     }
   }
@@ -328,7 +349,7 @@ function matchPrintables(parsed: URL): MatchResult {
     if (seg) {
       // Segment may be "{numericId}-{slug}" or just "{numericId}"
       const m = seg.match(/^(\d+)/);
-      if (m) {
+      if (m && m[1]) {
         return { sourceId: 'printables', context: { kind: 'file', id: m[1] } };
       }
     }
@@ -355,7 +376,7 @@ function matchMakerWorld(parsed: URL): MatchResult {
     const seg = pathSegment(parts, modelsIdx + 1);
     if (seg) {
       const m = seg.match(/^(\d+)/);
-      if (m) {
+      if (m && m[1]) {
         return { sourceId: 'makerworld', context: { kind: 'file', id: m[1] } };
       }
     }
@@ -415,15 +436,16 @@ function matchPatreon(parsed: URL): MatchResult {
     const seg = parts[1];
     // Try to extract trailing numeric id from "{slug}-{id}" or just "{id}"
     const m = seg.match(/-(\d+)$/) ?? seg.match(/^(\d+)$/);
-    if (m) {
+    if (m && m[1]) {
       return { sourceId: 'patreon', context: { kind: 'file', id: m[1] } };
     }
     return { sourceId: 'patreon', context: { kind: 'file', id: seg } };
   }
 
-  // /{creator} — campaign page
-  if (parts.length === 1) {
-    return { sourceId: 'patreon', context: { kind: 'file' } };
+  // /{creator} — campaign page. A creator campaign is a container (not a file),
+  // so return kind='folder' and use the creator handle as the id.
+  if (parts.length === 1 && parts[0]) {
+    return { sourceId: 'patreon', context: { kind: 'folder', id: parts[0] } };
   }
 
   return null;

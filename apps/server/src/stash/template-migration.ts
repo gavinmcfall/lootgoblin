@@ -16,7 +16,12 @@ import { logger } from '../logger';
 import { getDb, schema } from '../db/client';
 import { eq, and, inArray } from 'drizzle-orm';
 
-import { parseTemplate, validateTemplate, resolveTemplate } from './path-template';
+import {
+  parseTemplate,
+  validateTemplate,
+  resolveTemplate,
+  type ResolveVerdict,
+} from './path-template';
 import { linkOrCopy } from './filesystem-adapter';
 
 // ---------------------------------------------------------------------------
@@ -100,7 +105,7 @@ export interface TemplateMigrationEngine {
 function createNoOpLedgerEmitter(): LedgerEmitter {
   return {
     async emitMigration(event) {
-      logger.info(
+      logger.debug(
         {
           collectionId: event.collectionId,
           lootId: event.lootId,
@@ -118,7 +123,7 @@ function createNoOpLedgerEmitter(): LedgerEmitter {
 function createNoOpReferenceUpdater(): ReferenceUpdater {
   return {
     async updatePathReferences(oldPath, newPath, lootId) {
-      logger.info(
+      logger.debug(
         { oldPath, newPath, lootId },
         'template-migration: reference updater stub — would update path references',
       );
@@ -150,11 +155,12 @@ export function classifyVerdict(
   lootId: string,
   lootFileId: string,
   currentPath: string,
-  resolveVerdict: { ok: boolean; path?: string; reason?: string },
+  resolveVerdict: ResolveVerdict,
   proposedPathWithExt: string | null,
 ): Exclude<MigrationVerdict, { kind: 'collision' }> {
   if (!resolveVerdict.ok) {
-    const reason = resolveVerdict.reason as string;
+    // resolveVerdict.reason is now narrowed to ResolveReason — no casts needed.
+    const reason = resolveVerdict.reason;
 
     // template-incompatible reasons
     if (reason === 'missing-field' || reason === 'empty-segment') {
@@ -163,7 +169,7 @@ export function classifyVerdict(
         lootId,
         lootFileId,
         currentPath,
-        reason: reason as 'missing-field' | 'empty-segment',
+        reason,
       };
     }
 
@@ -173,7 +179,7 @@ export function classifyVerdict(
       lootId,
       lootFileId,
       currentPath,
-      reason: reason as 'forbidden-character' | 'reserved-name' | 'path-too-long' | 'segment-too-long' | 'unknown-transform',
+      reason,
     };
   }
 
@@ -244,7 +250,8 @@ export function createTemplateMigrationEngine(
       );
     }
 
-    const staticValidation = validateTemplate(parsed, 'linux');
+    // TODO: derive from stashRoot.platform when that column is added
+    const staticValidation = validateTemplate(parsed, 'linux' as const);
     if (staticValidation !== null) {
       throw new Error(
         `Proposed template "${proposedTemplate}" fails static validation: ${staticValidation.reason} — ${staticValidation.details}`,
@@ -296,7 +303,8 @@ export function createTemplateMigrationEngine(
       const metadata = buildLootMetadata(lootRow);
 
       // Resolve proposed template
-      const resolveResult = resolveTemplate(parsed, { metadata, targetOS: 'linux' });
+      // TODO: derive from stashRoot.platform when that column is added
+      const resolveResult = resolveTemplate(parsed, { metadata, targetOS: 'linux' as const });
 
       // Compute proposed path with extension
       const ext = path.extname(lootFile.path);
@@ -511,7 +519,8 @@ export function createTemplateMigrationEngine(
 
       // Re-resolve at apply time (robust against Loot metadata changes between preview and execute)
       const metadata = buildLootMetadata(lootRow);
-      const resolveResult = resolveTemplate(parsed, { metadata, targetOS: 'linux' });
+      // TODO: derive from stashRoot.platform when that column is added
+      const resolveResult = resolveTemplate(parsed, { metadata, targetOS: 'linux' as const });
 
       if (!resolveResult.ok) {
         report.filesSkipped.push({
@@ -572,10 +581,17 @@ export function createTemplateMigrationEngine(
       });
 
       if (moveResult.status === 'failed') {
+        // NOTE: source-cleanup-failed is a PARTIAL success for migration: the DB row
+        // reflects the new path (hook ran, UPDATE committed) and the destination exists.
+        // Only the source unlink failed — the file now exists at both old and new paths.
+        // We report this as `filesFailed` so an operator can manually remove the
+        // orphaned source file; the DB does NOT need fixing.
         const errorMessage =
           moveResult.reason === 'db-commit-failed'
             ? `DB update failed (destination rolled back): ${String((moveResult.error as Error | undefined)?.message ?? 'unknown')}`
-            : `${moveResult.reason}: ${moveResult.details}`;
+            : moveResult.reason === 'source-cleanup-failed'
+              ? `${moveResult.reason}: ${moveResult.details} — DB updated to new path; source file still exists at ${oldPath} and must be removed manually`
+              : `${moveResult.reason}: ${moveResult.details}`;
 
         logger.warn(
           {
@@ -603,7 +619,11 @@ export function createTemplateMigrationEngine(
       );
     }
 
-    // Update collections.pathTemplate only if any file migrated successfully
+    // Update the stored template to the new convention even when some files failed
+    // migration. Rationale: the template reflects the user's chosen organization going
+    // forward; failed files retain their old paths and are surfaced in `filesFailed`
+    // for manual retry. An all-or-nothing approach would strand successful migrations
+    // if a single file's move hit a transient error.
     if (report.filesMigrated > 0) {
       await db()
         .update(schema.collections)

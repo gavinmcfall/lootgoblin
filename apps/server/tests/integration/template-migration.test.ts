@@ -19,7 +19,7 @@
  *   12. Execute handles Loot metadata changed between preview and execute (re-resolve at apply time)
  */
 
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import * as fsp from 'node:fs/promises';
 import * as fs from 'node:fs';
 import * as path from 'node:path';

@@ -38,6 +38,12 @@ export { createLinkResolver } from './link-resolver';
 export type { UploadRawPayload } from './adapters/upload';
 export { createUploadAdapter } from './adapters/upload';
 
+export type { Cults3dCredentials, Cults3dAdapterOptions } from './adapters/cults3d';
+export { createCults3dAdapter } from './adapters/cults3d';
+
+// Shared filename sanitizer — used by URL-driven adapters (T5+).
+export { sanitizeFilename } from './filename-sanitize';
+
 // ---------------------------------------------------------------------------
 // Default registry factory — T4+
 //
@@ -48,6 +54,7 @@ export { createUploadAdapter } from './adapters/upload';
 
 import { createRegistry } from './registry';
 import { createUploadAdapter } from './adapters/upload';
+import { createCults3dAdapter } from './adapters/cults3d';
 import type { ScavengerRegistry } from './registry';
 
 /**
@@ -55,12 +62,13 @@ import type { ScavengerRegistry } from './registry';
  * adapters. Routes and instrumentation should call this once and share the
  * instance (or use a module-level singleton).
  *
- * T5-T8 will register cults3d, makerworld, printables, sketchfab, google-drive
+ * T6-T8 will register makerworld, printables, sketchfab, google-drive
  * as each adapter task completes.
  */
 export function createDefaultRegistry(): ScavengerRegistry {
   const registry = createRegistry();
   registry.register(createUploadAdapter());
-  // T5-T8 will add: cults3d, makerworld, printables, sketchfab, google-drive
+  registry.register(createCults3dAdapter());
+  // T6-T8 will add: makerworld, printables, sketchfab, google-drive
   return registry;
 }

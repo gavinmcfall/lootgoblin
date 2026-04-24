@@ -13,6 +13,12 @@ CREATE TABLE `loot_thumbnails` (
 --> statement-breakpoint
 CREATE INDEX `loot_thumbnails_status_idx` ON `loot_thumbnails` (`status`);
 --> statement-breakpoint
+-- NOTE: FTS5 is created in default (content-stored) mode, NOT contentless
+-- (content=''). SQLite's contentless FTS5 mode discards UNINDEXED column
+-- values — retrieving loot_id via `SELECT loot_id FROM loot_fts WHERE
+-- loot_fts MATCH ?` would return NULL. Default mode is required for the
+-- indexer's search() query pattern. Disk overhead is accepted as a
+-- documented trade-off; see indexer.ts search() for the query shape.
 CREATE VIRTUAL TABLE `loot_fts` USING fts5(
 	loot_id UNINDEXED,
 	title,

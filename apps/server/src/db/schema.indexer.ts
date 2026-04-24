@@ -11,6 +11,11 @@
  *
  * Status values:  'pending' | 'ok' | 'failed'
  * source_kind:    'f3d-cli' | '3mf-embedded' | null (when pending/failed)
+ *
+ * IMPORTANT DB invariant — thumbnail_path may be NON-NULL when status is
+ * 'failed'. This represents a prior successful thumbnail whose retry failed;
+ * the file is intentionally preserved on disk (non-destructive retry).
+ * Consumers wanting only usable thumbnails MUST filter WHERE status = 'ok'.
  */
 
 import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
@@ -44,7 +49,12 @@ export const lootThumbnails = sqliteTable(
       .references(() => loot.id, { onDelete: 'cascade' }),
     /**
      * Relative path from stashRoot.path to the PNG sidecar.
-     * NULL when status is 'pending' or 'failed'.
+     *
+     * NULL on initial 'pending' or if no thumbnail has ever been generated.
+     * MAY BE NON-NULL when status is 'failed' — this represents a previously
+     * successful thumbnail whose latest retry failed; the file is preserved
+     * on disk. Callers wanting only usable thumbnails MUST also check
+     * `status = 'ok'`. See module JSDoc in indexer.ts for rationale.
      */
     thumbnailPath: text('thumbnail_path'),
     /**

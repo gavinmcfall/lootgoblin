@@ -21,6 +21,23 @@
  *
  * Drizzle FTS5 note: Drizzle's sqlite-core doesn't model VIRTUAL TABLEs.
  * All loot_fts access uses raw `db.all(sql\`...\`)` / `db.run(sql\`...\`)`.
+ *
+ * ---------------------------------------------------------------------------
+ * DB invariant: stale thumbnail_path on failed retries (by design)
+ * ---------------------------------------------------------------------------
+ *
+ * When a previously-successful thumbnail's regeneration fails (e.g. a retry
+ * after the underlying file changed), we intentionally PRESERVE the existing
+ * thumbnail PNG on disk — it is still a usable image. However, the loot_thumbnails
+ * row updates status='failed' and leaves `thumbnail_path` NON-NULL (pointing at
+ * the previously-successful file).
+ *
+ * Consequence: `thumbnail_path IS NOT NULL` does NOT imply `status = 'ok'`.
+ * Consumers wanting only usable thumbnails MUST filter `WHERE status = 'ok'`.
+ *
+ * Rationale: the physical file is the truth; the DB tracks the most recent
+ * generation *outcome*. We document the stale pointer rather than destroy a
+ * working image on retry failure.
  */
 
 import * as fs from 'node:fs/promises';
@@ -162,11 +179,25 @@ function defaultF3dRunner(f3dPath: string) {
       source,
     ];
 
+    // Timeout implemented via AbortController for consistency with the rest
+    // of the codebase (and to make the "user cancelled" extension point
+    // obvious — a future caller could pass an external AbortSignal here).
+    const abortCtrl = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      abortCtrl.abort();
+    }, timeoutSec * 1000);
+
     return new Promise((resolve) => {
       let proc: ReturnType<typeof spawn>;
       try {
-        proc = spawn(f3dPath, cliArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+        proc = spawn(f3dPath, cliArgs, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          signal: abortCtrl.signal,
+        });
       } catch (err: unknown) {
+        clearTimeout(timer);
         // ENOENT = f3d not found on PATH
         const code = (err as NodeJS.ErrnoException).code;
         resolve({
@@ -179,13 +210,19 @@ function defaultF3dRunner(f3dPath: string) {
       const stderrChunks: Buffer[] = [];
       proc.stderr?.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
-      const timer = setTimeout(() => {
-        proc.kill('SIGKILL');
-        resolve({ status: 'failed', error: 'f3d-timeout' });
-      }, timeoutSec * 1000);
-
       proc.on('error', (err: NodeJS.ErrnoException) => {
         clearTimeout(timer);
+        if (timedOut) {
+          resolve({ status: 'failed', error: 'f3d-timeout' });
+          return;
+        }
+        // AbortController.abort() raises ERR_ABORT_ERR via the 'error' event;
+        // if it fires without timedOut set, it was an external abort (future
+        // extension point) — surface it as a cancellation.
+        if (err.name === 'AbortError') {
+          resolve({ status: 'failed', error: 'f3d-aborted' });
+          return;
+        }
         const code = err.code;
         resolve({
           status: 'failed',
@@ -195,6 +232,10 @@ function defaultF3dRunner(f3dPath: string) {
 
       proc.on('close', (exitCode) => {
         clearTimeout(timer);
+        if (timedOut) {
+          resolve({ status: 'failed', error: 'f3d-timeout' });
+          return;
+        }
         if (exitCode === 0) {
           resolve({ status: 'ok', path: destination, source: 'f3d-cli' });
         } else {
@@ -329,29 +370,88 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
   }
 
   // -------------------------------------------------------------------------
+  // Internal: resolve the absolute stash root path for a given Loot.
+  // Walks loot → collection → stashRoot. Returns null if any row is missing
+  // (e.g. loot was deleted or collection was reassigned).
+  // -------------------------------------------------------------------------
+  async function resolveStashRootPathForLoot(lootId: string): Promise<string | null> {
+    const lootRows = await db()
+      .select({ collectionId: schema.loot.collectionId })
+      .from(schema.loot)
+      .where(eq(schema.loot.id, lootId))
+      .limit(1);
+    if (lootRows.length === 0) return null;
+
+    const collectionRows = await db()
+      .select({ stashRootId: schema.collections.stashRootId })
+      .from(schema.collections)
+      .where(eq(schema.collections.id, lootRows[0]!.collectionId))
+      .limit(1);
+    if (collectionRows.length === 0) return null;
+
+    const stashRootRows = await db()
+      .select({ path: schema.stashRoots.path })
+      .from(schema.stashRoots)
+      .where(eq(schema.stashRoots.id, collectionRows[0]!.stashRootId))
+      .limit(1);
+    if (stashRootRows.length === 0) return null;
+
+    return stashRootRows[0]!.path;
+  }
+
+  // -------------------------------------------------------------------------
   // removeLoot
+  //
+  // Order-of-operations note: we resolve the stash root path via joins BEFORE
+  // deleting the loot rows, because the loot row may already be deleted by
+  // the caller in some flows (cascade has fired). If the loot is gone we
+  // can't resolve its stash root — the thumbnail sidecar will leak. This is
+  // logged (not silently ignored) so ops can clean up if it ever happens.
   // -------------------------------------------------------------------------
   async function removeLoot(lootId: string): Promise<void> {
-    // 1. Remove from FTS.
-    db().run(sql`DELETE FROM loot_fts WHERE loot_id = ${lootId}`);
-
-    // 2. Find existing thumbnail path for cleanup.
+    // 1. Find existing thumbnail relative-path for cleanup. thumbnail_path
+    //    is stored RELATIVE to the stash root (e.g. 'thumbnails/abc-123.png')
+    //    so we must resolve it to an absolute path before calling fs.unlink,
+    //    otherwise Node resolves it against process.cwd() and the unlink
+    //    fails with ENOENT — leaking the sidecar file on disk forever.
     const rows = db().all(
       sql`SELECT thumbnail_path FROM loot_thumbnails WHERE loot_id = ${lootId}`,
     ) as Array<{ thumbnail_path: string | null }>;
+    const thumbnailRelativePath = rows[0]?.thumbnail_path ?? null;
 
-    const thumbnailPath = rows[0]?.thumbnail_path ?? null;
+    // 2. Resolve the stash root path (must happen BEFORE we delete the loot
+    //    row below; a later delete + cascade would remove the collection FK
+    //    lookup target).
+    const stashRootPath = thumbnailRelativePath
+      ? await resolveStashRootPathForLoot(lootId)
+      : null;
 
-    // 3. Delete thumbnail sidecar file (best-effort).
-    if (thumbnailPath) {
-      try {
-        await fs.unlink(thumbnailPath);
-      } catch (err) {
-        logger.warn({ lootId, thumbnailPath, err }, 'indexer: failed to unlink thumbnail sidecar');
+    // 3. Remove from FTS.
+    db().run(sql`DELETE FROM loot_fts WHERE loot_id = ${lootId}`);
+
+    // 4. Delete thumbnail sidecar file (best-effort).
+    if (thumbnailRelativePath) {
+      if (stashRootPath) {
+        const absolutePath = path.isAbsolute(thumbnailRelativePath)
+          ? thumbnailRelativePath
+          : path.join(stashRootPath, thumbnailRelativePath);
+        try {
+          await fs.unlink(absolutePath);
+        } catch (err) {
+          logger.warn(
+            { lootId, absolutePath, err },
+            'indexer: failed to unlink thumbnail sidecar',
+          );
+        }
+      } else {
+        logger.warn(
+          { lootId, thumbnailRelativePath },
+          'indexer: cannot resolve stash root for thumbnail cleanup — sidecar will leak on disk',
+        );
       }
     }
 
-    // 4. Remove loot_thumbnails row.
+    // 5. Remove loot_thumbnails row.
     db().run(sql`DELETE FROM loot_thumbnails WHERE loot_id = ${lootId}`);
   }
 
@@ -469,41 +569,11 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
 
     const primaryFile = files[0]!;
 
-    // 2. Resolve stash root for this loot (via collection).
-    const lootRows = await db()
-      .select({ collectionId: schema.loot.collectionId })
-      .from(schema.loot)
-      .where(eq(schema.loot.id, lootId))
-      .limit(1);
-
-    if (lootRows.length === 0) {
-      const result: ThumbnailResult = { status: 'failed', error: 'no-loot' };
-      return result;
+    // 2. Resolve stash root path via loot → collection → stashRoot.
+    const rootPath = await resolveStashRootPathForLoot(lootId);
+    if (rootPath === null) {
+      return { status: 'failed', error: 'no-stash-root' };
     }
-
-    const collectionRows = await db()
-      .select({ stashRootId: schema.collections.stashRootId })
-      .from(schema.collections)
-      .where(eq(schema.collections.id, lootRows[0]!.collectionId))
-      .limit(1);
-
-    if (collectionRows.length === 0) {
-      const result: ThumbnailResult = { status: 'failed', error: 'no-collection' };
-      return result;
-    }
-
-    const stashRootRows = await db()
-      .select({ path: schema.stashRoots.path })
-      .from(schema.stashRoots)
-      .where(eq(schema.stashRoots.id, collectionRows[0]!.stashRootId))
-      .limit(1);
-
-    if (stashRootRows.length === 0) {
-      const result: ThumbnailResult = { status: 'failed', error: 'no-stash-root' };
-      return result;
-    }
-
-    const rootPath = stashRootRows[0]!.path;
     const absoluteSource = path.join(rootPath, primaryFile.path);
     const thumbnailsDir = path.join(rootPath, 'thumbnails');
     const thumbnailFilename = `${lootId}.png`;
@@ -582,7 +652,15 @@ export function createIndexerEngine(options?: IndexerOptions): IndexerEngine {
       return result;
     }
 
-    // Failure: do NOT delete an existing thumbnail file (non-destructive on retry).
+    // Failure: do NOT delete an existing thumbnail file (non-destructive on
+    // retry). The INSERT branch (first-ever failure for this loot) writes
+    // thumbnail_path = NULL. The ON CONFLICT DO UPDATE branch intentionally
+    // does NOT touch thumbnail_path — if a prior success left a non-null
+    // pointer, we leave it alone so the file on disk remains discoverable.
+    // This creates a documented invariant violation: status='failed' with
+    // thumbnail_path!=NULL means "retry failed, previous thumbnail preserved".
+    // Consumers MUST filter WHERE status='ok' if they want only usable
+    // thumbnails. See module JSDoc for full rationale.
     const failureError = runnerResult.error;
     const nowMs = Date.now();
     db().run(

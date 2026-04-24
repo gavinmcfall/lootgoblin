@@ -10,10 +10,13 @@
  *   4.  buildFtsRow — tags array joined with spaces.
  *   5.  buildFtsRow — empty files → empty formats.
  *   6.  buildFtsRow — multiple files of same format → deduplicated in formats.
- *   7.  F3D runner injection: f3dRunner that throws → caught, returned as failed.
- *   8.  F3D runner injection: f3dRunner returning failed → propagated.
- *   9.  F3D runner injection: f3dRunner returning ok → propagated.
  *   10. buildFtsRow — loot with no tags (null) → empty tags string.
+ *
+ * F3D runner behavior (throw / failed / not-found / ok) is tested at
+ * integration level only — see tests/integration/indexer.test.ts. The unit
+ * tests that previously covered them (7, 8, 9) only asserted factory
+ * constructability, not runtime mapping; they were consolidated into
+ * integration tests 8, 9, 16.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -112,50 +115,17 @@ describe('buildFtsRow', () => {
 });
 
 // ---------------------------------------------------------------------------
-// F3D runner injection
+// F3D runner behavior — all exercised at integration level
 // ---------------------------------------------------------------------------
-
-import { createIndexerEngine } from '../../src/stash/indexer';
-import type { ThumbnailResult } from '../../src/stash/indexer';
-
-describe('f3dRunner injection (no DB needed — tested via option only)', () => {
-  it('7. f3dRunner that throws is caught and returned as failed result', async () => {
-    const engine = createIndexerEngine({
-      dbUrl: 'file::memory:',
-      f3dRunner: async () => {
-        throw new Error('subprocess exploded');
-      },
-    });
-    // We can't call regenerateThumbnail without a DB seeded with loot rows,
-    // but we can verify that the runner option is accepted without error
-    // and that the type contract is satisfied. The full behaviour is tested
-    // in integration tests.
-    expect(engine).toBeDefined();
-    expect(typeof engine.regenerateThumbnail).toBe('function');
-  });
-
-  it('8. f3dRunner returning failed propagates the error', async () => {
-    const failRunner = async (): Promise<ThumbnailResult> => ({
-      status: 'failed',
-      error: 'f3d-not-found',
-    });
-    const engine = createIndexerEngine({
-      dbUrl: 'file::memory:',
-      f3dRunner: failRunner,
-    });
-    expect(engine).toBeDefined();
-  });
-
-  it('9. f3dRunner returning ok propagates success', async () => {
-    const okRunner = async (): Promise<ThumbnailResult> => ({
-      status: 'ok',
-      path: '/tmp/fake/loot-x.png',
-      source: 'f3d-cli',
-    });
-    const engine = createIndexerEngine({
-      dbUrl: 'file::memory:',
-      f3dRunner: okRunner,
-    });
-    expect(engine).toBeDefined();
-  });
-});
+//
+// Unit tests for f3dRunner throw/timeout/not-found handling were removed in
+// favour of integration coverage: regenerateThumbnail() pulls together DB I/O
+// + filesystem I/O + runner invocation, so exercising it in isolation
+// (without a real DB) would only type-check the factory — not observe the
+// runtime mapping from runner outputs to DB rows.
+//
+// See tests/integration/indexer.test.ts for:
+//   - Test 8:  f3dRunner returning { status: 'failed', error: '...' }
+//   - Test 9:  f3dRunner returning { status: 'failed', error: 'f3d-not-found' }
+//   - Test 16: f3dRunner that throws → engine catches + records as failed
+//   - Test 17: stale thumbnail_path preserved on retry failure (Fix 2 invariant)

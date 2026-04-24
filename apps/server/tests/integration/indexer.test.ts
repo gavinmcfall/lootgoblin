@@ -20,6 +20,8 @@
  *   13. search on empty corpus returns empty array.
  *   14. FTS respects updates — re-index after title change; old term gone, new term found.
  *   15. Loot with null optional fields (creator/description/tags/license) doesn't crash.
+ *   16. f3dRunner throws → engine catches, DB records status='failed' with surfaced message.
+ *   17. Stale thumbnail_path invariant (Fix 2) — after OK then failed retry, path preserved.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -406,27 +408,29 @@ describe('search — pagination', () => {
 // ---------------------------------------------------------------------------
 
 describe('removeLoot', () => {
-  it('4. removes FTS row, thumbnail file, and loot_thumbnails row', async () => {
+  it('4. removes FTS row, thumbnail file (via relative-path resolution), and loot_thumbnails row', async () => {
     const scratch = await makeScratchDir();
     const ownerId = await seedUser();
     const stashRootId = await seedStashRoot(ownerId, scratch);
     const collectionId = await seedCollection(ownerId, stashRootId);
     const lootId = await seedLoot(collectionId, { title: 'To Remove', creator: 'Test' });
 
-    // Manually create a fake thumbnail file and row so removeLoot can unlink it.
+    // Create the thumbnail sidecar file on disk under the stash root.
     const thumbnailsDir = path.join(scratch, 'thumbnails');
     await fsp.mkdir(thumbnailsDir, { recursive: true });
     const thumbnailFile = path.join(thumbnailsDir, `${lootId}.png`);
     await fsp.writeFile(thumbnailFile, Buffer.alloc(8, 0));
-    const relPath = `thumbnails/${lootId}.png`;
 
-    // Insert the loot_thumbnails row with the absolute path in thumbnail_path
-    // (the engine stores relative path; removeLoot reads it and resolves with
-    // stash root — but for this test we store the absolute path directly
-    // to exercise the unlink code path).
+    // Store the RELATIVE path in the DB — this matches what the engine
+    // writes on successful generation. Previously this test stored an
+    // absolute path and masked a real bug: removeLoot called fs.unlink on
+    // the raw DB value, which only succeeded because it was absolute.
+    // With a relative path, fs.unlink would resolve it against process.cwd()
+    // and fail silently — leaving the sidecar leaked on disk.
+    const relativePath = `thumbnails/${lootId}.png`;
     db().run(
       sql`INSERT OR REPLACE INTO loot_thumbnails (loot_id, status, thumbnail_path, updated_at)
-          VALUES (${lootId}, 'ok', ${thumbnailFile}, ${Date.now()})`,
+          VALUES (${lootId}, 'ok', ${relativePath}, ${Date.now()})`,
     );
 
     // Insert an FTS row.
@@ -441,7 +445,8 @@ describe('removeLoot', () => {
     // FTS row gone.
     expect(countFtsRows(lootId)).toBe(0);
 
-    // thumbnail file unlinked.
+    // thumbnail file unlinked — this asserts removeLoot correctly resolved
+    // the relative path against the stash root before calling fs.unlink.
     expect(fs.existsSync(thumbnailFile)).toBe(false);
 
     // loot_thumbnails row gone.
@@ -801,5 +806,106 @@ describe('indexLoot — null optional fields', () => {
 
     // FTS row should be present.
     expect(countFtsRows(lootId)).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. f3dRunner throws → engine catches and records status='failed'
+// ---------------------------------------------------------------------------
+
+describe('regenerateThumbnail — runner throws', () => {
+  it('16. f3dRunner that throws is caught; DB row records failure with surfaced message', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const collectionId = await seedCollection(ownerId, stashRootId);
+    const lootId = await seedLoot(collectionId, { title: 'Runner Throws', creator: 'Thrower' });
+
+    const stlPath = path.join(scratch, 'model.stl');
+    await fsp.writeFile(stlPath, Buffer.alloc(84));
+    await seedLootFile(lootId, 'model.stl', stlPath);
+
+    const throwingRunner = async (): Promise<ThumbnailResult> => {
+      throw new Error('subprocess exploded');
+    };
+
+    const engine = makeEngine({ f3dRunner: throwingRunner });
+    const result = await engine.regenerateThumbnail(lootId);
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') {
+      // Error is normalised to f3d-runner-threw prefix.
+      expect(result.error).toContain('f3d-runner-threw');
+      expect(result.error).toContain('subprocess exploded');
+    }
+
+    const thumbRow = getThumbnailRow(lootId);
+    expect(thumbRow?.status).toBe('failed');
+    expect(thumbRow?.error).toContain('f3d-runner-threw');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. Stale thumbnail_path invariant — retry failure preserves prior pointer + file
+// ---------------------------------------------------------------------------
+
+describe('regenerateThumbnail — stale thumbnail_path on retry failure (Fix 2)', () => {
+  it('17. after successful then failed retry: status=failed, thumbnail_path NON-NULL (stale), file still on disk', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const collectionId = await seedCollection(ownerId, stashRootId);
+    const lootId = await seedLoot(collectionId, {
+      title: 'Stale Path Loot',
+      creator: 'StaleTest',
+    });
+
+    // Use a .stl file so we go through the F3D slow-path both times.
+    const stlPath = path.join(scratch, 'model.stl');
+    await fsp.writeFile(stlPath, Buffer.alloc(84));
+    await seedLootFile(lootId, 'model.stl', stlPath);
+
+    // First pass: successful runner that writes a PNG.
+    const okRunner = async (args: {
+      source: string;
+      destination: string;
+      size: number;
+      timeoutSec: number;
+    }): Promise<ThumbnailResult> => {
+      await fsp.mkdir(path.dirname(args.destination), { recursive: true });
+      await fsp.writeFile(args.destination, fakePng);
+      return { status: 'ok', path: args.destination, source: 'f3d-cli' };
+    };
+    const successEngine = makeEngine({ f3dRunner: okRunner });
+    const firstResult = await successEngine.regenerateThumbnail(lootId);
+    expect(firstResult.status).toBe('ok');
+
+    // Capture the thumbnail_path + absolute file location.
+    const firstRow = getThumbnailRow(lootId);
+    expect(firstRow?.status).toBe('ok');
+    expect(firstRow?.thumbnail_path).not.toBeNull();
+    const expectedRelPath = `thumbnails/${lootId}.png`;
+    expect(firstRow?.thumbnail_path).toBe(expectedRelPath);
+    const absThumbFile = path.join(scratch, expectedRelPath);
+    expect(fs.existsSync(absThumbFile)).toBe(true);
+
+    // Second pass: failing runner simulating a retry after source change.
+    const failRunner = async (): Promise<ThumbnailResult> => ({
+      status: 'failed',
+      error: 'f3d-retry-failure',
+    });
+    const retryEngine = makeEngine({ f3dRunner: failRunner });
+    const retryResult = await retryEngine.regenerateThumbnail(lootId);
+    expect(retryResult.status).toBe('failed');
+
+    // DB invariant: status='failed', error populated, thumbnail_path UNCHANGED
+    // (stale pointer preserved so the on-disk file remains discoverable).
+    const retryRow = getThumbnailRow(lootId);
+    expect(retryRow?.status).toBe('failed');
+    expect(retryRow?.error).toBe('f3d-retry-failure');
+    expect(retryRow?.thumbnail_path).toBe(expectedRelPath);
+
+    // The physical file is NOT destroyed on retry failure.
+    expect(fs.existsSync(absThumbFile)).toBe(true);
   });
 });

@@ -107,6 +107,12 @@ export async function sniffFormat(filePath: string): Promise<string | null> {
 
   // PK ZIP header (50 4B 03 04): could be 3MF or generic ZIP.
   // Distinguish via file extension — 3MF is a ZIP with a specific structure.
+  //
+  // NOTE: `model.3mf.zip` would resolve as `'zip'` not `'3mf'` (path.extname
+  // returns only the final extension). This is the correct outcome — such a
+  // file is not a valid 3MF package — but operators may be confused if they
+  // double-extension on purpose. A stricter check would unzip and look for
+  // `[Content_Types].xml`; v2 does not do this.
   if (bufStartsWith(buf, [0x50, 0x4b, 0x03, 0x04])) {
     const ext = path.extname(filePath).slice(1).toLowerCase();
     return ext === '3mf' ? '3mf' : 'zip';

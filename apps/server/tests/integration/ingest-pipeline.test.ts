@@ -15,6 +15,9 @@
  *   8.  Placement failure: mocked applySingleCandidate → quarantined (placement-failed).
  *   9.  Staging cleanup: staging dir is removed on every path.
  *   10. AbortSignal propagation: pre-aborted signal → adapter can terminate quickly.
+ *   11. Iterator sync-throw: adapter.fetch throws before first yield → pipeline catches, job=failed, staging cleaned.
+ *   12. Empty files: adapter emits completed with files=[] → quarantined (validation-failed).
+ *   13. Rate-limit ceiling: adapter yields rate-limited > maxAttempts → pipeline terminates with rate-limit-exhausted.
  */
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
@@ -567,5 +570,140 @@ describe('IngestPipeline', () => {
     expect(outcome.status).toBe('failed');
     if (outcome.status !== 'failed') return;
     expect(outcome.details).toContain('aborted');
+  });
+
+  // ── 11. Iterator sync-throw: adapter throws inside fetch() ─────────────────
+  it('11. iterator sync-throw: pipeline catches, job=failed, staging cleaned, no unhandled rejection', async () => {
+    const ownerId = await seedUser();
+    const stashPath = await fsp.mkdtemp(path.join(os.tmpdir(), 'lootgoblin-stash-'));
+    const { collectionId } = await seedStashAndCollection(ownerId, stashPath);
+    const stagingRoot = await makeStagingRoot();
+
+    // Track unhandled rejections during this test.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (err: unknown) => unhandled.push(err);
+    process.on('unhandledRejection', onUnhandled);
+
+    let capturedStagingDir = '';
+    // Adapter whose fetch() throws synchronously mid-iteration (throwing the
+    // first time the consumer awaits a yielded value). Using an async
+    // generator that throws before yielding is the closest approximation of
+    // an adapter that blows up before emitting anything.
+    const adapter: ScavengerAdapter = {
+      id: 'upload',
+      supports: () => false,
+      fetch: (ctx) => {
+        capturedStagingDir = ctx.stagingDir;
+        return {
+          [Symbol.asyncIterator]: async function* () {
+            throw new Error('boom — adapter exploded before yielding');
+            // unreachable, but satisfies generator shape
+            // eslint-disable-next-line no-unreachable
+            yield { kind: 'failed', reason: 'unknown', details: '' } as ScavengerEvent;
+          },
+        };
+      },
+    };
+
+    const pipeline = createIngestPipeline({ ownerId, collectionId, stagingRoot, dbUrl: DB_URL });
+    const outcome = await pipeline.run({ adapter, target: { kind: 'raw', payload: {} } });
+
+    expect(outcome.status).toBe('failed');
+    if (outcome.status !== 'failed') return;
+    expect(outcome.reason).toBe('unknown');
+    expect(outcome.details).toContain('boom');
+
+    // Job row status
+    const jobs = await db()
+      .select()
+      .from(schema.ingestJobs)
+      .where(require('drizzle-orm').eq(schema.ingestJobs.id, outcome.jobId));
+    expect(jobs[0]?.status).toBe('failed');
+    expect(jobs[0]?.failureDetails).toContain('boom');
+
+    // Staging cleaned
+    expect(fs.existsSync(capturedStagingDir)).toBe(false);
+
+    // No unhandled rejections
+    process.off('unhandledRejection', onUnhandled);
+    expect(unhandled, `unexpected unhandled rejections: ${JSON.stringify(unhandled)}`).toEqual([]);
+  });
+
+  // ── 12. Empty files: adapter emits completed with files=[] ─────────────────
+  it('12. empty files: adapter emits completed with empty files array → quarantined (validation-failed)', async () => {
+    const ownerId = await seedUser();
+    const stashPath = await fsp.mkdtemp(path.join(os.tmpdir(), 'lootgoblin-stash-'));
+    const { collectionId } = await seedStashAndCollection(ownerId, stashPath);
+    const stagingRoot = await makeStagingRoot();
+
+    const adapter = makeFakeAdapter('cults3d', () => ({
+      [Symbol.asyncIterator]: async function* () {
+        yield {
+          kind: 'completed',
+          item: {
+            sourceId: 'cults3d' as const,
+            sourceItemId: 'empty-item',
+            title: 'Empty',
+            files: [],
+          },
+        } as ScavengerEvent;
+      },
+    }));
+
+    const pipeline = createIngestPipeline({ ownerId, collectionId, stagingRoot, dbUrl: DB_URL });
+    const outcome = await pipeline.run({ adapter, target: { kind: 'source-item-id', sourceItemId: 'empty-item' } });
+
+    expect(outcome.status).toBe('quarantined');
+    if (outcome.status !== 'quarantined') return;
+    expect(outcome.reason).toBe('validation-failed');
+
+    const jobs = await db()
+      .select()
+      .from(schema.ingestJobs)
+      .where(require('drizzle-orm').eq(schema.ingestJobs.id, outcome.jobId));
+    expect(jobs[0]?.status).toBe('quarantined');
+    expect(jobs[0]?.quarantineItemId).toBeTruthy();
+    expect(jobs[0]?.failureDetails).toContain('empty files');
+  });
+
+  // ── 13. Rate-limit ceiling: adapter loops rate-limited > maxAttempts ──────
+  it('13. rate-limit ceiling: > maxAttempts rate-limited events → failed with rate-limit-exhausted', async () => {
+    const ownerId = await seedUser();
+    const stashPath = await fsp.mkdtemp(path.join(os.tmpdir(), 'lootgoblin-stash-'));
+    const { collectionId } = await seedStashAndCollection(ownerId, stashPath);
+    const stagingRoot = await makeStagingRoot();
+
+    const adapter = makeFakeAdapter('makerworld', () => ({
+      [Symbol.asyncIterator]: async function* () {
+        // Emit 12 rate-limited events; with maxAttempts=10 in test config,
+        // the 11th should trip the ceiling.
+        for (let i = 1; i <= 12; i++) {
+          yield { kind: 'rate-limited', retryAfterMs: 0, attempt: i } as ScavengerEvent;
+        }
+        // Never reach here, but safe-terminate with failed.
+        yield { kind: 'failed', reason: 'unknown', details: 'should not reach' } as ScavengerEvent;
+      },
+    }));
+
+    const pipeline = createIngestPipeline({
+      ownerId,
+      collectionId,
+      stagingRoot,
+      maxAttempts: 10,
+      dbUrl: DB_URL,
+    });
+    const outcome = await pipeline.run({ adapter, target: { kind: 'source-item-id', sourceItemId: 'rl' } });
+
+    expect(outcome.status).toBe('failed');
+    if (outcome.status !== 'failed') return;
+    expect(outcome.reason).toBe('rate-limit-exhausted');
+    expect(outcome.details).toContain('10');
+
+    const jobs = await db()
+      .select()
+      .from(schema.ingestJobs)
+      .where(require('drizzle-orm').eq(schema.ingestJobs.id, outcome.jobId));
+    expect(jobs[0]?.status).toBe('failed');
+    expect(jobs[0]?.failureReason).toBe('rate-limit-exhausted');
   });
 });

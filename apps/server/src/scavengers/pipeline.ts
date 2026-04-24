@@ -66,6 +66,12 @@ export type IngestOptions = {
   maxFileSize?: number;
   /** Accepted formats (lowercase, no dot). Defaults to DEFAULT_ACCEPTED_FORMATS. */
   acceptedFormats?: string[];
+  /**
+   * Pipeline-level ceiling on `rate-limited` events before giving up.
+   * Defense against a misbehaving adapter that emits `rate-limited` forever.
+   * Default 50.
+   */
+  maxAttempts?: number;
   /** Injected DB clock for deterministic tests. Defaults to () => new Date(). */
   now?: () => Date;
   /** Where to stage adapter-downloaded files. Defaults to /tmp/lootgoblin-ingest/. */
@@ -90,6 +96,7 @@ export interface IngestPipeline {
 
 const DEFAULT_MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
 const DEFAULT_STAGING_ROOT = '/tmp/lootgoblin-ingest';
+const DEFAULT_MAX_ATTEMPTS = 50;
 
 export function createIngestPipeline(options: IngestOptions): IngestPipeline {
   const {
@@ -97,6 +104,7 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
     collectionId,
     maxFileSize = DEFAULT_MAX_FILE_SIZE,
     acceptedFormats = DEFAULT_ACCEPTED_FORMATS as string[],
+    maxAttempts = DEFAULT_MAX_ATTEMPTS,
     now = () => new Date(),
     stagingRoot = DEFAULT_STAGING_ROOT,
     dbUrl,
@@ -129,11 +137,12 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
         updatedAt: createdAt,
       });
 
-      // ── 2. Create staging dir ─────────────────────────────────────────────
+      // ── 2. Create staging dir (inside try so mkdir failures are caught) ───
       const stagingDir = path.join(stagingRoot, jobId);
-      await fsp.mkdir(stagingDir, { recursive: true });
 
       try {
+        await fsp.mkdir(stagingDir, { recursive: true });
+
         // ── 3. Update job → fetching ────────────────────────────────────────
         await safeUpdateJob(db, jobId, { status: 'fetching', updatedAt: now() });
 
@@ -156,6 +165,21 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
             );
           } else if (evt.kind === 'rate-limited') {
             attempt = evt.attempt;
+            // Pipeline-level ceiling: defense against an adapter that loops
+            // forever emitting rate-limited events. The adapter's own
+            // rate-limit helper has a per-attempt ceiling; this is the
+            // belt-and-braces safeguard at the pipeline layer.
+            if (attempt > maxAttempts) {
+              const details = `Exceeded ${maxAttempts} rate-limited events — adapter loop detected`;
+              await safeUpdateJob(db, jobId, {
+                status: 'failed',
+                failureReason: 'rate-limit-exhausted',
+                failureDetails: details,
+                attempt,
+                updatedAt: now(),
+              });
+              return { status: 'failed', jobId, reason: 'rate-limit-exhausted', details };
+            }
             logger.info(
               { jobId, retryAfterMs: evt.retryAfterMs, attempt: evt.attempt },
               'ingest: rate-limited — adapter backing off',
@@ -196,6 +220,34 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
 
         // ── 5. Post-completion validation ────────────────────────────────────
         const item = completedItem;
+
+        // Guard against a misbehaving adapter that emits `completed` with zero
+        // files. Without this, the validation loop is a no-op and the dedup
+        // step below computes a sentinel "null hash" that would dedup against
+        // prior zero-file items sharing the same sentinel.
+        if (item.files.length === 0) {
+          const details = 'Adapter emitted completed with empty files array';
+          const qi = await safeCreateQuarantineItem(
+            db,
+            collectionId,
+            stagingDir,
+            'validation-failed',
+            details,
+            now(),
+          );
+          await safeUpdateJob(db, jobId, {
+            status: 'quarantined',
+            quarantineItemId: qi ?? null,
+            failureDetails: details,
+            updatedAt: now(),
+          });
+          return {
+            status: 'quarantined',
+            jobId,
+            quarantineItemId: qi ?? '',
+            reason: 'validation-failed',
+          };
+        }
 
         for (const file of item.files) {
           // Size check
@@ -244,6 +296,14 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
           }
         }
 
+        // Dedup uses the FIRST staged file's hash as the primary key. For
+        // multi-file Loots, adapters must emit files in a stable order (primary
+        // 3D model first, auxiliaries after) so re-ingest hits the dedup path.
+        // If files arrive in a different order on re-ingest, the source-identifier
+        // dedup below is the fallback safety net — this is why adapters MUST emit
+        // a stable sourceItemId. The `?? '0'.repeat(64)` fallback is defensive
+        // only; the zero-files case is quarantined above so we always have
+        // at least one real hash here.
         const primaryHash = fileHashes[0] ?? '0'.repeat(64);
 
         // Dedup by hash: look for an existing lootFile with matching hash.
@@ -375,6 +435,21 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
         await safeUpdateJob(db, jobId, { status: 'completed', lootId: newLootId, updatedAt: now() });
 
         return { status: 'placed', jobId, lootId: newLootId, deduped: false };
+      } catch (err) {
+        // Adapter iterator sync-threw, mid-iteration threw, mkdir failed, or
+        // any other unhandled error inside the pipeline run. Mark the job
+        // failed so it doesn't stay in `fetching` / `placing` forever, and
+        // return a structured outcome instead of propagating an unhandled
+        // rejection to the caller.
+        const details = err instanceof Error ? err.message : String(err);
+        logger.warn({ jobId, err }, 'ingest: pipeline run threw — marking job failed');
+        await safeUpdateJob(db, jobId, {
+          status: 'failed',
+          failureReason: 'unknown',
+          failureDetails: details,
+          updatedAt: now(),
+        });
+        return { status: 'failed', jobId, reason: 'unknown', details };
       } finally {
         // ── 8. Staging cleanup ────────────────────────────────────────────────
         try {

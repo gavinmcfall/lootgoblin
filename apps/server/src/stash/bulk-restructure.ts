@@ -36,6 +36,7 @@ import {
 import { classifyVerdict } from './template-migration';
 import { linkOrCopy } from './filesystem-adapter';
 import { resolveAcl } from '../acl/resolver';
+import { persistLedgerEvent } from './ledger';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -128,23 +129,38 @@ export interface BulkRestructureEngine {
 // Default stubs
 // ---------------------------------------------------------------------------
 
-function createNoOpLedgerEmitter(): BulkLedgerEmitter {
+function createDefaultLedgerEmitter(dbUrl?: string): BulkLedgerEmitter {
   return {
     async emitBulk(event) {
-      const eventId = `bulk-stub-${Date.now()}`;
-      logger.debug(
-        {
-          action: event.action,
-          actorOwnerId: event.actorOwnerId,
-          applied: event.manifest.applied.length,
-          skipped: event.manifest.skipped.length,
-          failed: event.manifest.failed.length,
-          timestamp: event.timestamp,
-          eventId,
-        },
-        'bulk-restructure: ledger emitter stub — would emit bulk event',
-      );
-      return { eventId };
+      try {
+        // For move-to-collection the canonical resource is the target collection.
+        // For change-template there is no single collection (the action is multi-collection),
+        // so we use the actor as the resource id — it's still a valid, non-empty identifier.
+        const resourceId =
+          event.action.kind === 'move-to-collection'
+            ? event.action.targetCollectionId
+            : event.actorOwnerId;
+        const result = await persistLedgerEvent(
+          {
+            kind: `bulk.${event.action.kind}`,
+            actorId: event.actorOwnerId,
+            resourceType: 'collection',
+            resourceId,
+            payload: {
+              action: event.action,
+              manifest: event.manifest,
+              timestamp: event.timestamp.toISOString(),
+            },
+          },
+          dbUrl,
+        );
+        // persistLedgerEvent returns { eventId: null } on failure — map to sentinel.
+        return { eventId: result.eventId ?? '' };
+      } catch (err) {
+        // Defense-in-depth: persistLedgerEvent itself never throws, but guard anyway.
+        logger.warn({ err }, 'bulk-restructure: ledger persist wrapper caught — primary op unaffected');
+        return { eventId: '' };
+      }
     },
   };
 }
@@ -176,7 +192,7 @@ function buildLootMetadata(lootRow: typeof schema.loot.$inferSelect): Record<str
 export function createBulkRestructureEngine(
   options: BulkRestructureOptions = {},
 ): BulkRestructureEngine {
-  const ledgerEmitter = options.ledgerEmitter ?? createNoOpLedgerEmitter();
+  const ledgerEmitter = options.ledgerEmitter ?? createDefaultLedgerEmitter(options.dbUrl);
   const dbUrl = options.dbUrl;
 
   type DB = ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;

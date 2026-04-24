@@ -14,6 +14,7 @@ import * as path from 'node:path';
 
 import { logger } from '../logger';
 import { getDb, schema } from '../db/client';
+import { persistLedgerEvent } from './ledger';
 import { eq, and, inArray } from 'drizzle-orm';
 
 import {
@@ -102,20 +103,29 @@ export interface TemplateMigrationEngine {
 // Default stubs
 // ---------------------------------------------------------------------------
 
-function createNoOpLedgerEmitter(): LedgerEmitter {
+function createDefaultLedgerEmitter(dbUrl?: string): LedgerEmitter {
   return {
     async emitMigration(event) {
-      logger.debug(
-        {
-          collectionId: event.collectionId,
-          lootId: event.lootId,
-          lootFileId: event.lootFileId,
-          oldPath: event.oldPath,
-          newPath: event.newPath,
-          timestamp: event.timestamp,
-        },
-        'template-migration: ledger emitter stub — would emit migration event',
-      );
+      try {
+        await persistLedgerEvent(
+          {
+            kind: 'migration.execute',
+            resourceType: 'loot',
+            resourceId: event.lootId,
+            payload: {
+              lootFileId: event.lootFileId,
+              collectionId: event.collectionId,
+              oldPath: event.oldPath,
+              newPath: event.newPath,
+              timestamp: event.timestamp.toISOString(),
+            },
+          },
+          dbUrl,
+        );
+      } catch (err) {
+        // Defense-in-depth: persistLedgerEvent itself never throws, but guard anyway.
+        logger.warn({ err, event }, 'template-migration: ledger persist wrapper caught — primary op unaffected');
+      }
     },
   };
 }
@@ -209,7 +219,7 @@ export function classifyVerdict(
 export function createTemplateMigrationEngine(
   options: TemplateMigrationOptions = {},
 ): TemplateMigrationEngine {
-  const ledgerEmitter = options.ledgerEmitter ?? createNoOpLedgerEmitter();
+  const ledgerEmitter = options.ledgerEmitter ?? createDefaultLedgerEmitter(options.dbUrl);
   const referenceUpdater = options.referenceUpdater ?? createNoOpReferenceUpdater();
   const dbUrl = options.dbUrl;
 
@@ -565,15 +575,20 @@ export function createTemplateMigrationEngine(
             .set({ path: newPath })
             .where(eq(schema.lootFiles.id, lootFileId));
 
-          // Emit ledger event (stub for now)
-          await ledgerEmitter.emitMigration({
-            collectionId,
-            lootId,
-            lootFileId,
-            oldPath,
-            newPath,
-            timestamp: executedAt,
-          });
+          // Emit ledger event — FIRE-AND-CONTINUE.
+          // Ledger failure must NOT abort the primary op (DB update already committed above).
+          try {
+            await ledgerEmitter.emitMigration({
+              collectionId,
+              lootId,
+              lootFileId,
+              oldPath,
+              newPath,
+              timestamp: executedAt,
+            });
+          } catch (ledgerErr) {
+            logger.warn({ ledgerErr, lootId, lootFileId }, 'template-migration: ledger emit failed — primary op unaffected');
+          }
 
           // Update path references (stub for now)
           await referenceUpdater.updatePathReferences(oldPath, newPath, lootId);

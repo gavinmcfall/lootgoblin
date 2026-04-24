@@ -478,5 +478,9 @@ describe('linkOrCopy — source-cleanup-failed', () => {
 
     // Destination should exist (was successfully created before the unlink failure)
     await expect(fs.promises.access(dst)).resolves.toBeUndefined();
+
+    // Source MUST still exist — the unlink that would have removed it is what failed.
+    // This is the critical postcondition: a failed cleanup never destroys user data.
+    await expect(fs.promises.access(src)).resolves.toBeUndefined();
   });
 });

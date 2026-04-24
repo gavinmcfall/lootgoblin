@@ -25,6 +25,9 @@
  *   10. Multiple subscribers — both receive; unsubscribe removes only one
  *   11. Debounce — rapid writes produce a SINGLE add event
  *   12. Stop is idempotent — calling stop() twice throws no error
+ *   13. Pre-ready chokidar error rejects start() (no deadlock)
+ *   14. start() after stop() throws synchronously
+ *   15. Listener isolation — throwing subscriber does not block siblings
  */
 
 import {
@@ -38,6 +41,7 @@ import {
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { FSWatcher } from 'chokidar';
 import { createFileWatcher } from '../../src/stash/file-watcher';
 import type { FileWatcher, WatcherEvent } from '../../src/stash/file-watcher';
 
@@ -526,5 +530,158 @@ describe('FileWatcher — stop is idempotent', () => {
 
     // Second stop — must not throw
     await expect(w.stop()).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 13: Pre-ready error rejects start() (no deadlock)
+// ---------------------------------------------------------------------------
+
+describe('FileWatcher — pre-ready chokidar error', () => {
+  it(
+    'rejects start() when chokidar errors before ready fires (no indefinite hang)',
+    async () => {
+      // chokidar v4 is tolerant of many filesystem-level problems (non-existent
+      // paths silently emit 'ready'), so we can't reliably trigger a pre-ready
+      // error with real inputs. Use the `_watchFactory` test seam to inject a
+      // minimal fake FSWatcher that fires 'error' instead of 'ready'.
+      const fakeError = new Error('simulated chokidar startup failure');
+
+      const fakeWatchFactory = () => {
+        const handlers = new Map<string, Array<(arg: unknown) => void>>();
+        const fake = {
+          on(event: string, handler: (arg: unknown) => void) {
+            const list = handlers.get(event) ?? [];
+            list.push(handler);
+            handlers.set(event, list);
+            // As soon as the 'error' handler is registered, fire the error
+            // asynchronously (on the microtask queue) so the caller has
+            // finished wiring handlers before we emit.
+            if (event === 'error') {
+              queueMicrotask(() => {
+                for (const h of list) h(fakeError);
+              });
+            }
+            return fake;
+          },
+          close: async () => {
+            handlers.clear();
+          },
+        };
+        // The watcher only uses .on() and .close() from FSWatcher; other
+        // members are not reached. Unsafe cast narrows to the declared type.
+        return fake as unknown as FSWatcher;
+      };
+
+      const w = createFileWatcher({
+        paths: [scratch],
+        stabilityThresholdMs: STABILITY_MS,
+        pollIntervalMs: POLL_MS,
+        emitInitialAdds: true,
+        _watchFactory: fakeWatchFactory,
+      });
+      watcherUnderTest = w;
+
+      const errorEvents: WatcherEvent[] = [];
+      w.onEvent((e) => {
+        if (e.kind === 'error') errorEvents.push(e);
+      });
+
+      // start() MUST reject — the fix ensures the inner reject() fires when
+      // chokidar errors before 'ready'. Without the fix, this hangs until the
+      // test-level timeout kills the run.
+      await expect(w.start()).rejects.toThrow(
+        /simulated chokidar startup failure/,
+      );
+
+      // ready() must also reject so separate ready() awaiters unblock.
+      await expect(w.ready()).rejects.toThrow(
+        /simulated chokidar startup failure/,
+      );
+
+      // The error must also have been delivered to subscribers.
+      expect(errorEvents).toHaveLength(1);
+      if (errorEvents[0]?.kind === 'error') {
+        expect(errorEvents[0].error).toBe(fakeError);
+      }
+    },
+    // Test-level timeout: if the fix is missing, hanging `start()` hits this
+    // budget instead of the vitest global default, keeping CI output tidy.
+    3000,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test 14: start() after stop() throws synchronously
+// ---------------------------------------------------------------------------
+
+describe('FileWatcher — start after stop', () => {
+  it('throws synchronously when start() is called after stop()', async () => {
+    const w = makeWatcher([scratch]);
+
+    await w.start();
+    await w.ready();
+    await w.stop();
+
+    // Clear the afterEach teardown reference — we've already stopped this one,
+    // and creating a fresh one would fight the test. (makeWatcher registered
+    // it, but stop() is idempotent so the teardown is safe either way.)
+
+    // Must throw synchronously (not return a rejected promise) so callers
+    // that forget to await still see the error.
+    expect(() => w.start()).toThrow(/cannot be restarted/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 15: Listener isolation — throwing subscriber must not block siblings
+// ---------------------------------------------------------------------------
+
+describe('FileWatcher — listener isolation', () => {
+  it('a throwing subscriber does not prevent sibling subscribers from receiving events', async () => {
+    const w = makeWatcher([scratch], { emitInitialAdds: false });
+
+    const eventsReceivedByGoodListener: WatcherEvent[] = [];
+
+    // Track any unhandled rejections / uncaught exceptions for the duration
+    // of the test. The try/catch inside emit() should swallow the throw, so
+    // none should appear.
+    const uncaughtErrors: unknown[] = [];
+    const handler = (err: unknown) => uncaughtErrors.push(err);
+    process.on('uncaughtException', handler);
+    process.on('unhandledRejection', handler);
+
+    try {
+      // Subscriber A throws on every event
+      w.onEvent(() => {
+        throw new Error('subscriber A always throws');
+      });
+      // Subscriber B records events normally
+      w.onEvent((e) => {
+        eventsReceivedByGoodListener.push(e);
+      });
+
+      await w.start();
+      await w.ready();
+
+      const filePath = path.join(scratch, 'isolation-test.txt');
+      await writeFile(filePath, 'hello\n');
+
+      // B must still receive the add event despite A throwing.
+      await vi.waitFor(
+        () => {
+          expect(eventsReceivedByGoodListener).toContainEqual(
+            expect.objectContaining({ kind: 'add', path: filePath }),
+          );
+        },
+        { timeout: WAIT_TIMEOUT_MS },
+      );
+
+      // No exceptions should have leaked from the emit() boundary.
+      expect(uncaughtErrors).toHaveLength(0);
+    } finally {
+      process.off('uncaughtException', handler);
+      process.off('unhandledRejection', handler);
+    }
   });
 });

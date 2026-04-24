@@ -45,15 +45,18 @@ export type FileWatcherOptions = {
   /**
    * Patterns to ignore. Uses chokidar's matcher types.
    *
-   * **chokidar v4 behavioral note:** String values are **exact-path matches**,
-   * not globs. For pattern-based ignores (e.g. all `.DS_Store` files) use a
-   * `RegExp` or a function `(path: string) => boolean`. Example:
-   *   - `[/\.DS_Store$/]`  — ignore all .DS_Store files
-   *   - `[/\/(\.git)(\/|$)/]` — ignore .git directories
+   * **IMPORTANT:** In chokidar v4, string entries are **exact-path matches**
+   * (NOT globs). For pattern-based ignores, use a `RegExp` or a predicate
+   * function `(path: string) => boolean`.
+   *
+   * Examples:
+   *   - `[/\.DS_Store$/]`                 — ignore all .DS_Store files
+   *   - `[/\/(\.git)(\/|$)/]`             — ignore .git directories
+   *   - `[(path) => path.endsWith('.tmp')]` — ignore any file ending in .tmp
    *
    * Defaults to an empty list (nothing ignored).
    */
-  ignored?: Array<string | RegExp>;
+  ignored?: Array<string | RegExp | ((path: string) => boolean)>;
   /**
    * Max milliseconds to wait after the last modification before emitting
    * an add/change event. Uses chokidar's awaitWriteFinish.stabilityThreshold.
@@ -73,6 +76,14 @@ export type FileWatcherOptions = {
    * Inbox Triage (T8) sets this false after initial triage.
    */
   emitInitialAdds?: boolean;
+  /**
+   * @internal test-only — inject a fake chokidar factory to simulate startup
+   * errors, missing ready events, etc. Production code must not set this.
+   */
+  _watchFactory?: (
+    paths: string[],
+    options: ChokidarOptions,
+  ) => FSWatcher;
 };
 
 /** Watcher instance — a lightweight handle around a chokidar FSWatcher. */
@@ -81,7 +92,17 @@ export interface FileWatcher {
    * Start the underlying chokidar watcher. Returns when chokidar is running
    * (i.e. the 'ready' event has fired for the initial scan).
    *
-   * Calling start() a second time is a no-op (idempotent).
+   * Calling start() a second time (while the watcher is already running) is a
+   * no-op (idempotent).
+   *
+   * **Not callable after stop() — throws.** Create a new instance if you need
+   * to restart (e.g. after a filesystem outage). The rejection surfaces the
+   * dead state to callers instead of silently returning a resolved promise on
+   * a watcher that will never emit.
+   *
+   * Rejects if chokidar errors before the initial scan completes (e.g.
+   * watching a non-existent path). Callers should handle rejection and
+   * discard the instance.
    */
   start(): Promise<void>;
   /**
@@ -120,6 +141,7 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
     stabilityThresholdMs = 2000,
     pollIntervalMs = 100,
     emitInitialAdds = true,
+    _watchFactory = chokidarWatch,
   } = options;
 
   /** Set of active event listeners. */
@@ -139,19 +161,40 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
     readyReject = rej;
   });
 
-  /** Dispatch an event to all current listeners. */
+  /**
+   * Tracks whether chokidar's initial `'ready'` event has fired. Used by the
+   * error handler to decide whether an error should reject the start/ready
+   * promises (pre-ready) or just emit to listeners (post-ready runtime error).
+   */
+  let readyFired = false;
+
+  /**
+   * Dispatch an event to all current listeners. Listener errors are caught
+   * and discarded to guarantee fault isolation — one faulty subscriber must
+   * not skip siblings or leak exceptions into chokidar's internal state.
+   */
   function emit(event: WatcherEvent): void {
     for (const listener of listeners) {
-      listener(event);
+      try {
+        listener(event);
+      } catch {
+        // Subscriber errors must not affect sibling subscribers or chokidar.
+        // Intentionally swallowed — this is a fault-isolation boundary.
+      }
     }
   }
 
   function start(): Promise<void> {
+    // Cannot restart after stop(). Throw synchronously so callers retrying
+    // after a filesystem outage see the dead state instead of a silently
+    // resolved promise on a watcher that will never emit.
+    if (stopped) {
+      throw new Error(
+        'FileWatcher cannot be restarted after stop(); create a new instance',
+      );
+    }
     // Idempotent: if already started, return a resolved promise.
     if (fsw !== null) {
-      return Promise.resolve();
-    }
-    if (stopped) {
       return Promise.resolve();
     }
 
@@ -166,13 +209,18 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
         },
       };
 
-      fsw = chokidarWatch(paths, chokidarOptions);
+      fsw = _watchFactory(paths, chokidarOptions);
 
       fsw.on('add', (filePath, stats) => {
         if (stopped) return;
         if (stats) {
           emit({ kind: 'add', path: filePath, size: stats.size, mtime: stats.mtime });
         } else {
+          // Defensive — chokidar + awaitWriteFinish virtually always supply
+          // stats on Linux/macOS. This branch is for the rare case where the
+          // stat lookup has timed out or been skipped. Untestable in practice
+          // without stubbing internals; surfaces as an error event rather than
+          // silently dropping the event.
           emit({ kind: 'error', error: new Error('stats unavailable'), path: filePath });
         }
       });
@@ -182,6 +230,7 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
         if (stats) {
           emit({ kind: 'change', path: filePath, size: stats.size, mtime: stats.mtime });
         } else {
+          // Same defensive branch as for 'add' above.
           emit({ kind: 'error', error: new Error('stats unavailable'), path: filePath });
         }
       });
@@ -200,11 +249,19 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
         // chokidar v4 types errHandler as (err: unknown) — normalize to Error.
         const error = unknown instanceof Error ? unknown : new Error(String(unknown));
         emit({ kind: 'error', error });
-        // Reject the ready promise if we haven't resolved yet (startup error).
-        readyReject(error);
+        if (!readyFired) {
+          // Pre-ready error: chokidar never reached the initial-scan complete
+          // state. Reject BOTH promises so `start()` and any `ready()` awaiter
+          // unblock. Without rejecting the inner reject(), start() would hang
+          // forever waiting on the 'ready' event that will never come.
+          reject(error);
+          readyReject(error);
+        }
+        // Post-ready errors are runtime events — emitted to listeners only.
       });
 
       fsw.on('ready', () => {
+        readyFired = true;
         resolve();
         readyResolve();
       });

@@ -12,8 +12,8 @@
  */
 
 import { NextResponse } from 'next/server';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { eq, lt } from 'drizzle-orm';
 
 import { authenticateRequest, INVALID_API_KEY, unauthenticatedResponse } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
@@ -232,6 +232,9 @@ export async function deleteCredentials(sourceId: SourceId): Promise<number> {
 /**
  * Issue a new oauth_state row + return the random state value (and code
  * verifier where needed). Caller embeds `state` in the authorize redirect.
+ *
+ * Side-effect: opportunistic sweep of expired rows on ~1% of calls.
+ * See schema.oauth.ts for the lifecycle commentary.
  */
 export async function createOAuthState(args: {
   userId: string;
@@ -258,49 +261,83 @@ export async function createOAuthState(args: {
     expiresAt,
   });
 
+  // Lazy purge: ~1% of /oauth/start calls reap any expired rows.
+  if (Math.random() < 0.01) {
+    try {
+      await db
+        .delete(schema.oauthState)
+        .where(lt(schema.oauthState.expiresAt, now));
+    } catch (err) {
+      logger.warn({ err }, 'oauth-state: opportunistic purge failed (non-fatal)');
+    }
+  }
+
   return { state, codeVerifier };
 }
 
 /**
- * Look up + consume an oauth_state row by state value. Returns null if not
- * found or expired. The caller MUST delete the row after a successful
- * exchange (we don't auto-delete here so the lookup is idempotent across
- * retries within the TTL window).
+ * Atomically consume an oauth_state row.
+ *
+ * Issues `DELETE FROM oauth_state WHERE state=? RETURNING ...` — only the
+ * first concurrent caller sees the row, defending against authorization-code
+ * replay races where two callbacks share a state value.
+ *
+ * The returned state is then compared to the supplied `args.state` with
+ * `crypto.timingSafeEqual` (via {@link timingSafeEqualStrings}). After the
+ * scope/expiry checks return, the row is gone and cannot be reused.
  */
 export async function consumeOAuthState(args: {
   userId: string;
   sourceId: SourceId;
   state: string;
 }): Promise<{ id: string; codeVerifier: string | null; redirectUri: string | null } | null> {
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-  const rows = await db
-    .select({
-      id: schema.oauthState.id,
-      userId: schema.oauthState.userId,
-      sourceId: schema.oauthState.sourceId,
-      codeVerifier: schema.oauthState.codeVerifier,
-      redirectUri: schema.oauthState.redirectUri,
-      expiresAt: schema.oauthState.expiresAt,
-    })
-    .from(schema.oauthState)
-    .where(eq(schema.oauthState.state, args.state))
-    .limit(1);
+  type Row = {
+    id: string;
+    userId: string;
+    sourceId: string;
+    state: string;
+    codeVerifier: string | null;
+    redirectUri: string | null;
+    expiresAt: number; // raw ms — better-sqlite3 returns the underlying integer for RETURNING
+  };
 
-  const row = rows[0];
+  // Drizzle does not surface SQLite's RETURNING for DELETE on the
+  // better-sqlite3 driver yet; drop to the raw client. The driver is exposed
+  // on `(db as any).$client` per Drizzle's better-sqlite3 layer.
+  const db = getDb() as unknown as {
+    $client: {
+      prepare: (sql: string) => {
+        get: (...params: unknown[]) => Row | undefined;
+        all: (...params: unknown[]) => Row[];
+        run: (...params: unknown[]) => { changes: number };
+      };
+    };
+  };
+
+  const stmt = db.$client.prepare(
+    `DELETE FROM oauth_state WHERE state = ?
+     RETURNING id, user_id AS userId, source_id AS sourceId, state,
+               code_verifier AS codeVerifier, redirect_uri AS redirectUri,
+               expires_at AS expiresAt`,
+  );
+  const row = stmt.get(args.state) as Row | undefined;
   if (!row) return null;
+
+  // Timing-safe state comparison — defends against length/equality timing
+  // leaks now that the row is in hand.
+  if (!timingSafeEqualStrings(row.state, args.state)) {
+    return null;
+  }
   if (row.userId !== args.userId) return null;
   if (row.sourceId !== args.sourceId) return null;
-  if (row.expiresAt && row.expiresAt.getTime() < Date.now()) return null;
+  // expiresAt comes back as ms-since-epoch in the raw driver row.
+  if (typeof row.expiresAt === 'number' && row.expiresAt < Date.now()) return null;
+
   return {
     id: row.id,
     codeVerifier: row.codeVerifier,
     redirectUri: row.redirectUri,
   };
-}
-
-export async function deleteOAuthState(id: string): Promise<void> {
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-  await db.delete(schema.oauthState).where(eq(schema.oauthState.id, id));
 }
 
 /**
@@ -348,6 +385,18 @@ export async function readDecryptedBag(sourceId: SourceId): Promise<{
 /** Local helper — node:crypto.randomBytes(N).toString('hex'). */
 function randomBytesHex(bytes: number): string {
   return randomBytes(bytes).toString('hex');
+}
+
+/**
+ * Constant-time string comparison. `crypto.timingSafeEqual` requires equal
+ * buffer lengths — return false on mismatch BEFORE the comparison so we
+ * don't leak length, but the early exit is independent of byte content.
+ */
+export function timingSafeEqualStrings(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, 'utf8');
+  const bBuf = Buffer.from(b, 'utf8');
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
 }
 
 /**

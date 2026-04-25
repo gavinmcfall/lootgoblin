@@ -10,11 +10,18 @@
  *     state: string,
  *     clientId: string,
  *     clientSecret?: string,    // required for non-PKCE (Sketchfab)
- *     redirectUri: string,
  *   }
  *
- * Validates `state` against an oauth_state row owned by the caller. Rejects
- * expired or unknown state with 400.
+ * NOTE: `redirect_uri` is NOT taken from the request body — we use the
+ * value pinned at /oauth/start time (stored on the oauth_state row). A
+ * mismatch between start-time and callback-time redirect_uri can otherwise
+ * be exploited if the OAuth client is misconfigured with a wildcard
+ * redirect allowlist.
+ *
+ * State validation uses {@link consumeOAuthState} which atomically deletes
+ * the row via `DELETE … RETURNING`. Replay races (two concurrent callbacks
+ * with the same state) are defended at the SQL layer — the second sees no
+ * row and 400s.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -23,7 +30,6 @@ import { z } from 'zod';
 import {
   authorizeWrite,
   consumeOAuthState,
-  deleteOAuthState,
   providerConfigFor,
   upsertSourceCredential,
 } from '../../_shared';
@@ -34,7 +40,6 @@ const Body = z.object({
   state: z.string().min(1),
   clientId: z.string().min(1),
   clientSecret: z.string().min(1).optional(),
-  redirectUri: z.string().url(),
 });
 
 export async function POST(
@@ -71,7 +76,10 @@ export async function POST(
     );
   }
 
-  // Validate state.
+  // Atomically consume the state row (DELETE … RETURNING). The function does
+  // length-checked timingSafeEqual on the returned state, validates owner +
+  // sourceId + expiry, and never returns a row that another caller could
+  // also see. If the row is missing/expired/mismatched we 400.
   const stateRow = await consumeOAuthState({
     userId: auth.actor.id,
     sourceId: auth.sourceId,
@@ -83,12 +91,19 @@ export async function POST(
       { status: 400 },
     );
   }
+  if (!stateRow.redirectUri) {
+    // Defensive — should not happen since /oauth/start always persists one.
+    return NextResponse.json(
+      { error: 'invalid-state', reason: 'state row missing redirect_uri' },
+      { status: 400 },
+    );
+  }
 
-  // Exchange code for tokens.
+  // Exchange code for tokens. Use the state-time redirect_uri exclusively.
   const params = new URLSearchParams({
     grant_type: 'authorization_code',
     code: parsed.data.code,
-    redirect_uri: parsed.data.redirectUri,
+    redirect_uri: stateRow.redirectUri,
     client_id: parsed.data.clientId,
   });
   if (parsed.data.clientSecret) params.set('client_secret', parsed.data.clientSecret);
@@ -115,17 +130,24 @@ export async function POST(
   }
 
   if (!tokenRes.ok) {
-    let body: unknown = null;
+    // Server-side log captures the upstream body for diagnostics. The
+    // response to the client redacts the body — providers can echo back
+    // request fragments (correlation ids, sometimes secrets) and we don't
+    // want any of that leaking to the user-agent.
+    let upstreamBody: unknown = null;
     try {
-      body = await tokenRes.json();
+      upstreamBody = await tokenRes.json();
     } catch {
-      body = await tokenRes.text().catch(() => null);
+      upstreamBody = await tokenRes.text().catch(() => null);
     }
+    logger.warn(
+      { sourceId: auth.sourceId, upstreamStatus: tokenRes.status, upstreamBody },
+      'source-auth/oauth/callback: token exchange failed',
+    );
     return NextResponse.json(
       {
         error: 'token-exchange-failed',
         upstreamStatus: tokenRes.status,
-        upstreamBody: body,
       },
       { status: 400 },
     );
@@ -156,7 +178,16 @@ export async function POST(
     );
   }
 
-  const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : 3600;
+  let expiresIn: number;
+  if (typeof payload.expires_in === 'number') {
+    expiresIn = payload.expires_in;
+  } else {
+    logger.warn(
+      { sourceId: auth.sourceId },
+      'source-auth/oauth/callback: upstream token response missing expires_in — defaulting to 3600s',
+    );
+    expiresIn = 3600;
+  }
   const expiresAtMs = Date.now() + expiresIn * 1000;
 
   const bag: Record<string, unknown> = {
@@ -179,8 +210,8 @@ export async function POST(
     expiresAt: new Date(expiresAtMs),
   });
 
-  // Cleanup state row — single-use semantics.
-  await deleteOAuthState(stateRow.id);
+  // No explicit row deletion — consumeOAuthState already performed the
+  // DELETE … RETURNING above.
 
   return NextResponse.json({
     ok: true,

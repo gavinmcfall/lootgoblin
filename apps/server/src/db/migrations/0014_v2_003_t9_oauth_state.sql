@@ -13,6 +13,7 @@ CREATE TABLE `oauth_state` (
 --> statement-breakpoint
 CREATE INDEX `oauth_state_user_idx` ON `oauth_state`(`user_id`);
 --> statement-breakpoint
-CREATE INDEX `oauth_state_state_idx` ON `oauth_state`(`state`);
+-- UNIQUE: single state per active flow; defends against replay races at the schema layer.
+CREATE UNIQUE INDEX `oauth_state_state_uniq` ON `oauth_state`(`state`);
 --> statement-breakpoint
 CREATE INDEX `oauth_state_expires_idx` ON `oauth_state`(`expires_at`);

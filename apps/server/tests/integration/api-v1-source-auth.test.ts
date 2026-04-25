@@ -347,6 +347,158 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback', () => {
   });
 });
 
+describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a second concurrent callback with the same state sees no row and 400s (atomic consume)', async () => {
+    const userId = await seedUser();
+
+    // 1. Issue a state row.
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST: startPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    const startRes = await startPOST(
+      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/start', {
+        redirectUri: 'http://local/cb-replay',
+        clientId: 'cid',
+      }) as never,
+      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+    );
+    const { state } = await startRes.json();
+
+    // 2. Mock token endpoint.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+
+    const { POST: callbackPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/callback/route');
+
+    // 3. Fire two callbacks back-to-back. The first wins, second 400s.
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const [a, b] = await Promise.all([
+      callbackPOST(
+        reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+          code: 'code1', state, clientId: 'cid', clientSecret: 'csec',
+        }) as never,
+        { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      ),
+      callbackPOST(
+        reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+          code: 'code2', state, clientId: 'cid', clientSecret: 'csec',
+        }) as never,
+        { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      ),
+    ]);
+
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 400]);
+
+    // No oauth_state row left for that state value.
+    const remaining = await db()
+      .select({ id: schema.oauthState.id })
+      .from(schema.oauthState)
+      .where(eq(schema.oauthState.state, state));
+    expect(remaining.length).toBe(0);
+  });
+
+  it('uses the state-time redirect_uri (ignores body redirect_uri)', async () => {
+    const userId = await seedUser();
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST: startPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    await startPOST(
+      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/start', {
+        redirectUri: 'http://local/legit-cb',
+        clientId: 'cid',
+      }) as never,
+      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+    );
+
+    // Read the state value out of the table (we didn't capture from response).
+    const stateRows = await db()
+      .select({ state: schema.oauthState.state, redirectUri: schema.oauthState.redirectUri })
+      .from(schema.oauthState)
+      .where(eq(schema.oauthState.userId, userId))
+      .orderBy(schema.oauthState.createdAt);
+    const stateVal = stateRows[stateRows.length - 1]!.state;
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ access_token: 'a', expires_in: 3600 }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/callback/route');
+    const res = await POST(
+      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+        code: 'auth-code',
+        state: stateVal,
+        clientId: 'cid',
+        clientSecret: 'csec',
+        // Body redirectUri is intentionally different — should be IGNORED.
+        redirectUri: 'http://malicious.example/steal',
+      }) as never,
+      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+    );
+    expect(res.status).toBe(200);
+
+    // The fetch body should contain redirect_uri=http://local/legit-cb (URL-encoded).
+    const calledBody = (fetchSpy.mock.calls[0]?.[1] as { body: string }).body;
+    expect(calledBody).toContain(encodeURIComponent('http://local/legit-cb'));
+    expect(calledBody).not.toContain('malicious.example');
+  });
+
+  it('redacts the upstream error body — only the upstreamStatus surfaces to the client', async () => {
+    const userId = await seedUser();
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST: startPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    await startPOST(
+      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/start', {
+        redirectUri: 'http://local/cb',
+        clientId: 'cid',
+      }) as never,
+      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+    );
+    const stateRows = await db()
+      .select({ state: schema.oauthState.state })
+      .from(schema.oauthState)
+      .where(eq(schema.oauthState.userId, userId))
+      .orderBy(schema.oauthState.createdAt);
+    const stateVal = stateRows[stateRows.length - 1]!.state;
+
+    // Upstream returns a body that leaks a "secret-correlation-id".
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: 'invalid_grant', leaked_secret: 'do-not-surface' }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/callback/route');
+    const res = await POST(
+      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+        code: 'c', state: stateVal, clientId: 'cid', clientSecret: 'csec',
+      }) as never,
+      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+    );
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json).toMatchObject({ error: 'token-exchange-failed', upstreamStatus: 400 });
+    // The leak MUST NOT be in the response body.
+    const text = JSON.stringify(json);
+    expect(text).not.toContain('do-not-surface');
+    expect(text).not.toContain('leaked_secret');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Refresh
 // ---------------------------------------------------------------------------

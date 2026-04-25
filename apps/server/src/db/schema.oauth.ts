@@ -8,10 +8,29 @@
  * in the authorize redirect; the `oauth/callback` endpoint validates it before
  * exchanging the code. PKCE flows (Google) also persist the `code_verifier`.
  *
- * Rows expire after 10 minutes — callers (or a sweeper) prune `expires_at < now`.
+ * Lifecycle
+ * ─────────
+ * Rows are created at /oauth/start and deleted at /oauth/callback via an
+ * atomic `DELETE ... RETURNING` (single-use semantics — defends against
+ * authorization-code replay attacks: the second concurrent callback sees no
+ * row and returns 400).
+ *
+ * Lazy purge of abandoned rows
+ * ─────────────────────────────
+ * If the user never completes the flow, the row would otherwise leak. The
+ * /oauth/start handler runs an opportunistic sweep on ~1% of calls
+ * (`DELETE FROM oauth_state WHERE expires_at < now`) so accumulated rows
+ * stay bounded by the 10-minute TTL × create rate without a separate cron.
+ *
+ * Uniqueness
+ * ──────────
+ * `state` is uniquely indexed — defends against pathological collisions
+ * across concurrent /oauth/start calls (with 32-byte randomness collisions
+ * are astronomically unlikely; enforcing the invariant in the schema is
+ * defense-in-depth).
  */
 
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { user } from './schema.auth';
 
 export const oauthState = sqliteTable(
@@ -24,7 +43,7 @@ export const oauthState = sqliteTable(
       .references(() => user.id, { onDelete: 'cascade' }),
     /** SourceId value (e.g. 'sketchfab', 'google-drive'). */
     sourceId: text('source_id').notNull(),
-    /** Opaque random 32-byte hex — the OAuth `state` parameter. */
+    /** Opaque random 32-byte hex — the OAuth `state` parameter. UNIQUE. */
     state: text('state').notNull(),
     /** PKCE code_verifier (Google flows). NULL for non-PKCE flows. */
     codeVerifier: text('code_verifier'),
@@ -36,7 +55,8 @@ export const oauthState = sqliteTable(
   },
   (t) => [
     index('oauth_state_user_idx').on(t.userId),
-    index('oauth_state_state_idx').on(t.state),
+    /** Unique — single state per active flow; defends against replay races. */
+    uniqueIndex('oauth_state_state_uniq').on(t.state),
     index('oauth_state_expires_idx').on(t.expiresAt),
   ],
 );

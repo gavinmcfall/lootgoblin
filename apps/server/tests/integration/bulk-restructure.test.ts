@@ -547,7 +547,7 @@ describe('execute move-to-collection — same stash root', () => {
 
     // ONE ledger event total
     expect(spyLedger.calls).toHaveLength(1);
-    expect(report.ledgerEventId).toBe('spy-event-1');
+    expect(report.ledger).toEqual({ outcome: 'persisted', eventId: 'spy-event-1' });
     expect(spyLedger.calls[0].manifest.applied).toContain(lootId1);
     expect(spyLedger.calls[0].manifest.applied).toContain(lootId2);
   });
@@ -611,7 +611,10 @@ describe('execute move-to-collection — cross stash root', () => {
 
     // ONE ledger event
     expect(spyLedger.calls).toHaveLength(1);
-    expect(report.ledgerEventId).toBeTruthy();
+    expect(report.ledger.outcome).toBe('persisted');
+    if (report.ledger.outcome === 'persisted') {
+      expect(report.ledger.eventId).toBeTruthy();
+    }
   });
 });
 
@@ -936,7 +939,7 @@ describe('ledger event manifest correctness', () => {
 // ---------------------------------------------------------------------------
 
 describe('execute with empty lootIds', () => {
-  it('returns 0 affected, 0 ledger events, and empty ledgerEventId', async () => {
+  it('returns 0 affected, 0 ledger events, and outcome=no-event (reason=empty-bulk)', async () => {
     const ownerId = await seedUser();
     const spyLedger = makeSpyLedger();
     const engine = createBulkRestructureEngine({
@@ -953,11 +956,58 @@ describe('execute with empty lootIds', () => {
 
     expect(report.totalAffected).toBe(0);
     expect(report.applied).toHaveLength(0);
-    expect(report.ledgerEventId).toBe('');
+    // V2-002 carry-forward: discriminated BulkLedgerOutcome disambiguates
+    // "no event needed" from "event tried but failed".
+    expect(report.ledger).toEqual({ outcome: 'no-event', reason: 'empty-bulk' });
 
     // DECISION: no ledger event emitted for empty bulk operations
     // Rationale: an empty manifest has no audit value and would create noise.
     expect(spyLedger.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12b. Ledger emitter returns eventId=null → outcome=failed (reason=ledger-error)
+// ---------------------------------------------------------------------------
+
+describe('execute with ledger emit returning eventId=null', () => {
+  it('reports outcome=failed/reason=ledger-error AND primary op still succeeds', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const sourceCollId = await seedCollection(
+      ownerId, stashRootId, '{title|slug}', `null-src-${uid().slice(0, 8)}`,
+    );
+    const targetCollId = await seedCollection(
+      ownerId, stashRootId, '{creator|slug}/{title|slug}', `null-tgt-${uid().slice(0, 8)}`,
+    );
+    const lootId = await seedLoot(sourceCollId, { title: 'Torch', creator: 'Smith' });
+    const relPath = 'torch.stl';
+    await writeFile(path.join(scratch, relPath), 'torch\n');
+    await seedLootFile(lootId, relPath, path.join(scratch, relPath));
+
+    const nullLedger: BulkLedgerEmitter = {
+      async emitBulk() {
+        return { eventId: null };
+      },
+    };
+
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      aclCheck: async () => true,
+      ledgerEmitter: nullLedger,
+    });
+
+    const report = await engine.execute({
+      action: { kind: 'move-to-collection', targetCollectionId: targetCollId },
+      lootIds: [lootId],
+      ownerId,
+    });
+
+    // Primary op still succeeded.
+    expect(report.applied).toContain(lootId);
+    // Ledger failure surfaced as the discriminated outcome.
+    expect(report.ledger).toEqual({ outcome: 'failed', reason: 'ledger-error' });
   });
 });
 

@@ -21,6 +21,14 @@ export type { ScavengerRegistry } from './registry';
 
 export { createRegistry } from './registry';
 
+// SubscribableAdapter surface — V2-004 Watchlist pillar.
+export type {
+  SubscribableAdapter,
+  DiscoveryEvent,
+  DiscoveryContext,
+} from './subscribable';
+export { hasCapability, dispatchDiscovery } from './subscribable';
+
 export type { RetryDecision, RetryConfig } from './rate-limit';
 
 export { nextRetry, sleep } from './rate-limit';

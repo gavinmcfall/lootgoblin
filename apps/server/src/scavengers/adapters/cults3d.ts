@@ -240,6 +240,19 @@ export function createCults3dAdapter(options?: Cults3dAdapterOptions): Scavenger
                 surfaceToUser:
                   'Cults3D requires email + API key. Add credentials in Settings > Sources.',
               };
+              // Protocol invariant (T7-CF-1): every fetch() MUST terminate
+              // with exactly one `completed` or `failed` event as the final
+              // item. `auth-required` alone leaves the iterator without a
+              // terminal — emit `failed` with reason='auth-revoked' so
+              // downstream consumers see a definitive end-of-stream.
+              // 'auth-revoked' is the catch-all for "auth needed, can't
+              // proceed" per types.ts; 'missing' (the auth-required reason)
+              // is a finer-grained UI hint and isn't a failure-reason value.
+              yield {
+                kind: 'failed' as const,
+                reason: 'auth-revoked' as const,
+                details: 'Cults3D credentials missing — fetch aborted',
+              };
               return;
             }
 
@@ -319,6 +332,14 @@ export function createCults3dAdapter(options?: Cults3dAdapterOptions): Scavenger
                   kind: 'auth-required' as const,
                   reason: 'revoked' as const,
                   surfaceToUser: `Cults3D rejected credentials (${res.status})`,
+                };
+                // T7-CF-1 protocol invariant: terminal `failed` after the
+                // non-terminal `auth-required` event so the iterator ends
+                // with a recognised completed/failed sentinel.
+                yield {
+                  kind: 'failed' as const,
+                  reason: 'auth-revoked' as const,
+                  details: `Cults3D rejected credentials on GraphQL (${res.status})`,
                 };
                 return;
               }
@@ -482,6 +503,13 @@ export function createCults3dAdapter(options?: Cults3dAdapterOptions): Scavenger
                     kind: 'auth-required' as const,
                     reason: 'revoked' as const,
                     surfaceToUser: `Cults3D rejected credentials downloading file (${dlRes.status})`,
+                  };
+                  // T7-CF-1 protocol invariant: terminal `failed` after
+                  // `auth-required` so the iterator ends with a sentinel.
+                  yield {
+                    kind: 'failed' as const,
+                    reason: 'auth-revoked' as const,
+                    details: `Cults3D rejected credentials downloading ${finalName} (${dlRes.status})`,
                   };
                   return;
                 }

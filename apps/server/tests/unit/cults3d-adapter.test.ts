@@ -286,7 +286,7 @@ describe('createCults3dAdapter — target resolution', () => {
 // ---------------------------------------------------------------------------
 
 describe('createCults3dAdapter — credentials', () => {
-  it('test 10: missing credentials → auth-required, reason=missing', async () => {
+  it('test 10: missing credentials → auth-required (reason=missing) followed by terminal failed (auth-revoked)', async () => {
     const httpFetch = vi.fn();
     const stagingDir = await makeStagingDir();
     const adapter = createCults3dAdapter({ httpFetch });
@@ -299,15 +299,24 @@ describe('createCults3dAdapter — credentials', () => {
       makeUrlTarget('https://cults3d.com/en/3d-model/my-model'),
     );
 
+    // T7-CF-1: protocol invariant requires a terminal completed/failed event
+    // after every non-terminal auth-required.
     const last = events[events.length - 1];
-    expect(last?.kind).toBe('auth-required');
-    if (last?.kind !== 'auth-required') return;
-    expect(last.reason).toBe('missing');
-    expect(last.surfaceToUser).toMatch(/Settings > Sources/);
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('auth-revoked');
+
+    // Penultimate event surfaces the auth-required hint to the UI.
+    const penultimate = events[events.length - 2];
+    expect(penultimate?.kind).toBe('auth-required');
+    if (penultimate?.kind !== 'auth-required') return;
+    expect(penultimate.reason).toBe('missing');
+    expect(penultimate.surfaceToUser).toMatch(/Settings > Sources/);
+
     expect(httpFetch).not.toHaveBeenCalled();
   });
 
-  it('test 11: malformed credentials (no apiKey) → auth-required, reason=missing', async () => {
+  it('test 11: malformed credentials (no apiKey) → auth-required (reason=missing) followed by terminal failed', async () => {
     const httpFetch = vi.fn();
     const stagingDir = await makeStagingDir();
     const adapter = createCults3dAdapter({ httpFetch });
@@ -320,9 +329,15 @@ describe('createCults3dAdapter — credentials', () => {
     );
 
     const last = events[events.length - 1];
-    expect(last?.kind).toBe('auth-required');
-    if (last?.kind !== 'auth-required') return;
-    expect(last.reason).toBe('missing');
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('auth-revoked');
+
+    const penultimate = events[events.length - 2];
+    expect(penultimate?.kind).toBe('auth-required');
+    if (penultimate?.kind !== 'auth-required') return;
+    expect(penultimate.reason).toBe('missing');
+
     expect(httpFetch).not.toHaveBeenCalled();
   });
 });
@@ -332,7 +347,7 @@ describe('createCults3dAdapter — credentials', () => {
 // ---------------------------------------------------------------------------
 
 describe('createCults3dAdapter — HTTP errors on GraphQL', () => {
-  it('test 12: HTTP 401 on GraphQL → auth-required, reason=revoked', async () => {
+  it('test 12: HTTP 401 on GraphQL → auth-required (reason=revoked) followed by terminal failed (auth-revoked)', async () => {
     const httpFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 }));
     const stagingDir = await makeStagingDir();
     const adapter = createCults3dAdapter({ httpFetch, endpoint: 'https://test.example/graphql' });
@@ -345,13 +360,19 @@ describe('createCults3dAdapter — HTTP errors on GraphQL', () => {
     );
 
     const last = events[events.length - 1];
-    expect(last?.kind).toBe('auth-required');
-    if (last?.kind !== 'auth-required') return;
-    expect(last.reason).toBe('revoked');
-    expect(last.surfaceToUser).toMatch(/401/);
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('auth-revoked');
+    expect(last.details).toMatch(/401/);
+
+    const penultimate = events[events.length - 2];
+    expect(penultimate?.kind).toBe('auth-required');
+    if (penultimate?.kind !== 'auth-required') return;
+    expect(penultimate.reason).toBe('revoked');
+    expect(penultimate.surfaceToUser).toMatch(/401/);
   });
 
-  it('test 13: HTTP 403 on GraphQL → auth-required, reason=revoked', async () => {
+  it('test 13: HTTP 403 on GraphQL → auth-required (reason=revoked) followed by terminal failed (auth-revoked)', async () => {
     const httpFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 403 }));
     const stagingDir = await makeStagingDir();
     const adapter = createCults3dAdapter({ httpFetch, endpoint: 'https://test.example/graphql' });
@@ -364,10 +385,16 @@ describe('createCults3dAdapter — HTTP errors on GraphQL', () => {
     );
 
     const last = events[events.length - 1];
-    expect(last?.kind).toBe('auth-required');
-    if (last?.kind !== 'auth-required') return;
-    expect(last.reason).toBe('revoked');
-    expect(last.surfaceToUser).toMatch(/403/);
+    expect(last?.kind).toBe('failed');
+    if (last?.kind !== 'failed') return;
+    expect(last.reason).toBe('auth-revoked');
+    expect(last.details).toMatch(/403/);
+
+    const penultimate = events[events.length - 2];
+    expect(penultimate?.kind).toBe('auth-required');
+    if (penultimate?.kind !== 'auth-required') return;
+    expect(penultimate.reason).toBe('revoked');
+    expect(penultimate.surfaceToUser).toMatch(/403/);
   });
 
   it('test 14: HTTP 500 on GraphQL → failed, reason=network-error', async () => {
@@ -699,6 +726,86 @@ describe('createCults3dAdapter — stream errors', () => {
 // ---------------------------------------------------------------------------
 // 23: AbortSignal — pre-aborted
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// T7-CF-1 regression — auth-required must always be followed by terminal failed
+// ---------------------------------------------------------------------------
+
+describe('createCults3dAdapter — T7-CF-1 protocol invariant', () => {
+  it('GraphQL 401 → final event is failed (auth-revoked) AND auth-required precedes it', async () => {
+    const httpFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 }));
+    const stagingDir = await makeStagingDir();
+    const adapter = createCults3dAdapter({ httpFetch, endpoint: 'https://test.example/graphql' });
+    const ctx = makeCtx(stagingDir, validCreds());
+
+    const events = await collectEvents(
+      adapter,
+      ctx,
+      makeUrlTarget('https://cults3d.com/en/3d-model/cool-vase-123'),
+    );
+
+    // Final event MUST be 'failed' with reason='auth-revoked' per types.ts
+    // protocol invariant: every fetch() terminates with completed/failed.
+    const last = events[events.length - 1]!;
+    expect(last.kind).toBe('failed');
+    if (last.kind !== 'failed') return;
+    expect(last.reason).toBe('auth-revoked');
+
+    // The auth-required event must precede the terminal failed in the stream.
+    const authRequiredIdx = events.findIndex((e) => e.kind === 'auth-required');
+    expect(authRequiredIdx).toBeGreaterThanOrEqual(0);
+    expect(authRequiredIdx).toBeLessThan(events.length - 1);
+  });
+
+  it('file-download 403 → final event is failed (auth-revoked) AND auth-required precedes it', async () => {
+    // GraphQL succeeds, then the file-download leg gets rejected.
+    const httpFetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeGqlResponse())
+      .mockResolvedValueOnce(new Response(null, { status: 403 }));
+    const stagingDir = await makeStagingDir();
+    const adapter = createCults3dAdapter({ httpFetch, endpoint: 'https://test.example/graphql' });
+    const ctx = makeCtx(stagingDir, validCreds());
+
+    const events = await collectEvents(
+      adapter,
+      ctx,
+      makeUrlTarget('https://cults3d.com/en/3d-model/cool-vase-123'),
+    );
+
+    const last = events[events.length - 1]!;
+    expect(last.kind).toBe('failed');
+    if (last.kind !== 'failed') return;
+    expect(last.reason).toBe('auth-revoked');
+
+    const authRequiredIdx = events.findIndex((e) => e.kind === 'auth-required');
+    expect(authRequiredIdx).toBeGreaterThanOrEqual(0);
+    expect(authRequiredIdx).toBeLessThan(events.length - 1);
+  });
+
+  it('missing credentials → final event is failed (auth-revoked) AND auth-required (reason=missing) precedes it', async () => {
+    const httpFetch = vi.fn();
+    const stagingDir = await makeStagingDir();
+    const adapter = createCults3dAdapter({ httpFetch });
+    const ctx = makeCtx(stagingDir, undefined);
+
+    const events = await collectEvents(
+      adapter,
+      ctx,
+      makeUrlTarget('https://cults3d.com/en/3d-model/cool-vase-123'),
+    );
+
+    const last = events[events.length - 1]!;
+    expect(last.kind).toBe('failed');
+    if (last.kind !== 'failed') return;
+    expect(last.reason).toBe('auth-revoked');
+
+    const authRequiredEvt = events.find((e) => e.kind === 'auth-required');
+    expect(authRequiredEvt).toBeDefined();
+    if (authRequiredEvt?.kind !== 'auth-required') return;
+    expect(authRequiredEvt.reason).toBe('missing');
+  });
+});
 
 describe('createCults3dAdapter — AbortSignal', () => {
   it('test 23: pre-aborted signal → fetch call rejects → failed event emitted', async () => {

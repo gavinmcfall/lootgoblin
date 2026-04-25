@@ -2,8 +2,8 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     const { startOtel } = await import('./otel');
     const { runMigrations } = await import('./db/client');
-    const { startWorkers } = await import('./workers/pool');
-    const { startIngestWorker } = await import('./workers/ingest-worker');
+    const { startWorkers, stopWorkers } = await import('./workers/pool');
+    const { startIngestWorker, stopIngestWorker } = await import('./workers/ingest-worker');
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -55,5 +55,17 @@ export async function register() {
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));
+
+    // Graceful shutdown — k8s/Docker send SIGTERM with a grace period before
+    // SIGKILL. Stop the worker loops so no job is mid-claim when the process
+    // exits, and abort the scheduler so its sleeps don't hang the shutdown.
+    const shutdown = (signal: string) => {
+      logger.info({ signal }, 'shutdown signal received');
+      abort.abort();
+      stopWorkers();
+      stopIngestWorker();
+    };
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    process.once('SIGINT', () => shutdown('SIGINT'));
   }
 }

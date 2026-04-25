@@ -12,12 +12,14 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 
 import { authenticateRequest, INVALID_API_KEY, unauthenticatedResponse } from '@/auth/request-auth';
-import { getDb, schema } from '@/db/client';
+import { getServerDb, schema } from '@/db/client';
 
 export async function GET(
   req: NextRequest,
   context: { params: Promise<{ jobId: string }> },
 ) {
+  // TODO(scope-enforcement): once the BetterAuth `apikey` plugin is wired,
+  // require the `ingest:read` scope here instead of accepting any programmatic key.
   const actor = await authenticateRequest(req);
   if (!actor || actor === INVALID_API_KEY) {
     return unauthenticatedResponse(actor as null | typeof INVALID_API_KEY);
@@ -28,7 +30,7 @@ export async function GET(
     return NextResponse.json({ error: 'invalid-path', reason: 'missing jobId' }, { status: 400 });
   }
 
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const db = getServerDb();
 
   const rows = await db
     .select({

@@ -99,6 +99,13 @@ export const ingestJobs = sqliteTable(
     /** Per-source job history. */
     index('ingest_jobs_source_idx').on(t.sourceId),
     /**
+     * Compound index for the GET /api/v1/ingest list query — filters by
+     * `owner_id` and orders by `created_at DESC`. The single-column owner
+     * index above forces the planner to scan the owner-bucket and re-sort;
+     * this lets it walk the index directly in the listing's natural order.
+     */
+    index('ingest_jobs_owner_created_idx').on(t.ownerId, t.createdAt),
+    /**
      * Idempotency-Key uniqueness — partial index, only enforced where the
      * key is non-NULL. Lets jobs without an Idempotency-Key remain free of
      * uniqueness constraints.

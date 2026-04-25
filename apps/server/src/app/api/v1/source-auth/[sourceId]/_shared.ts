@@ -17,7 +17,7 @@ import { eq, lt } from 'drizzle-orm';
 
 import { authenticateRequest, INVALID_API_KEY, unauthenticatedResponse } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
-import { getDb, schema } from '@/db/client';
+import { getDb, getServerDb, schema } from '@/db/client';
 import { encrypt, decrypt } from '@/crypto';
 import { defaultRegistry, type SourceId } from '@/scavengers';
 import { logger } from '@/logger';
@@ -128,6 +128,11 @@ export async function authorizeRead(
  * The existing source_credentials schema is keyed by sourceId (no per-user
  * column), so we upsert the FIRST row matching `sourceId` — or insert a new
  * row if none exists. Returns the row id.
+ *
+ * TODO(multi-tenant-credentials): the v2.0 contract is single-tenant per
+ * source — multiple users sharing a deployment all see the same Sketchfab
+ * row. V2-003b/V2-004 will add a `(source_id, user_id)` keying so each user
+ * can supply their own credential without clobbering the others.
  */
 export async function upsertSourceCredential(args: {
   sourceId: SourceId;
@@ -141,7 +146,7 @@ export async function upsertSourceCredential(args: {
   }
   const encryptedBlob = Buffer.from(encrypt(JSON.stringify(args.bag), secret));
 
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const db = getServerDb();
 
   const existing = await db
     .select({ id: schema.sourceCredentials.id })
@@ -193,7 +198,7 @@ export async function readCredentialStatus(sourceId: SourceId): Promise<
       lastUsedAt?: number;
     }
 > {
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const db = getServerDb();
   const rows = await db
     .select({
       kind: schema.sourceCredentials.kind,
@@ -217,7 +222,7 @@ export async function readCredentialStatus(sourceId: SourceId): Promise<
 
 /** Remove every source_credentials row for `sourceId`. Returns rows-deleted. */
 export async function deleteCredentials(sourceId: SourceId): Promise<number> {
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const db = getServerDb();
   const before = await db
     .select({ id: schema.sourceCredentials.id })
     .from(schema.sourceCredentials)
@@ -249,7 +254,7 @@ export async function createOAuthState(args: {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 10 * 60_000);
 
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const db = getServerDb();
   await db.insert(schema.oauthState).values({
     id,
     userId: args.userId,
@@ -353,7 +358,7 @@ export async function readDecryptedBag(sourceId: SourceId): Promise<{
   const secret = process.env.LOOTGOBLIN_SECRET;
   if (!secret) throw new Error('LOOTGOBLIN_SECRET not set');
 
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const db = getServerDb();
   const rows = await db
     .select({
       id: schema.sourceCredentials.id,

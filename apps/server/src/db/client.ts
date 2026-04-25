@@ -34,6 +34,19 @@ export function resetDbCache(): void {
 }
 
 /**
+ * Convenience accessor for routes/workers that have settled on the
+ * better-sqlite3 driver (which is the only deployment dialect in use today).
+ * Drops the repeated `getDb() as ReturnType<typeof import(...)>` cast that
+ * appeared at every consumer site post-V2-003-T9.
+ *
+ * Postgres deployments still use `getDb()` directly — see schema.ts header
+ * for the dialect-parity caveat.
+ */
+export function getServerDb(url?: string): ReturnType<typeof drizzleSqlite> {
+  return getDb(url) as ReturnType<typeof drizzleSqlite>;
+}
+
+/**
  * Returns the number of rows in the users table.
  * Uses a raw SQL query to avoid the TypeScript union-type incompatibility
  * that arises when calling dialect-specific methods on the union return type

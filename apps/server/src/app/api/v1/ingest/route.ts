@@ -40,7 +40,7 @@ import { and, desc, eq, lt } from 'drizzle-orm';
 
 import { authenticateRequest, INVALID_API_KEY, unauthenticatedResponse } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
-import { getDb, schema } from '@/db/client';
+import { getServerDb, schema } from '@/db/client';
 import { defaultRegistry, type SourceId } from '@/scavengers';
 import { logger } from '@/logger';
 
@@ -97,6 +97,8 @@ function normalizeBody(parsed: z.infer<typeof IngestBody>, sourceId: string): st
 
 export async function POST(req: NextRequest) {
   // ── 1. Auth ──────────────────────────────────────────────────────────────
+  // TODO(scope-enforcement): once the BetterAuth `apikey` plugin is wired,
+  // require the `ingest:write` scope here instead of accepting any programmatic key.
   const actor = await authenticateRequest(req);
   if (!actor || actor === INVALID_API_KEY) {
     return unauthenticatedResponse(actor as null | typeof INVALID_API_KEY);
@@ -148,10 +150,10 @@ export async function POST(req: NextRequest) {
   }
 
   const collectionId = parsed.data.collectionId;
-  const idempotencyKey = (req.headers as Headers).get('Idempotency-Key');
+  const idempotencyKey = req.headers.get('Idempotency-Key');
   const normalized = normalizeBody(parsed.data, resolvedSourceId);
 
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const db = getServerDb();
 
   // ── 4. Collection existence + ACL ────────────────────────────────────────
   const collectionRows = await db
@@ -302,6 +304,8 @@ export async function POST(req: NextRequest) {
 // ---------------------------------------------------------------------------
 
 export async function GET(req: NextRequest) {
+  // TODO(scope-enforcement): once the BetterAuth `apikey` plugin is wired,
+  // require the `ingest:read` scope here instead of accepting any programmatic key.
   const actor = await authenticateRequest(req);
   if (!actor || actor === INVALID_API_KEY) {
     return unauthenticatedResponse(actor as null | typeof INVALID_API_KEY);
@@ -322,7 +326,7 @@ export async function GET(req: NextRequest) {
   }
   const { status, limit, cursor } = queryParsed.data;
 
-  const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
+  const db = getServerDb();
 
   const conditions = [eq(schema.ingestJobs.ownerId, actor.id)];
   if (status) conditions.push(eq(schema.ingestJobs.status, status));

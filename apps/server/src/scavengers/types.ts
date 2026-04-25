@@ -244,9 +244,43 @@ export type FetchTarget =
  * - Perform Stash placement or dedup logic.
  * - Write outside `context.stagingDir`.
  */
+/**
+ * Auth-method discriminator used by the public source catalog (GET /api/v1/sources).
+ * One adapter may declare multiple methods (e.g. Sketchfab supports both
+ * `oauth` and `api-key`). `none` means the adapter requires no credentials
+ * (e.g. the upload adapter — files come from the multipart form body).
+ */
+export type ScavengerAuthMethod = 'oauth' | 'api-key' | 'extension' | 'none';
+
+/**
+ * Public adapter metadata exposed via GET /api/v1/sources.
+ *
+ * Adapters set these fields once at construction time. The catalog route
+ * exposes them so UI clients (and downstream automation) can render the
+ * appropriate auth controls per source without hard-coding adapter-specific
+ * knowledge.
+ */
+export type ScavengerMetadata = {
+  /** Human-readable display name (e.g. "Cults3D", "Google Drive"). */
+  displayName: string;
+  /** Which auth flows this adapter accepts. One adapter MAY support several. */
+  authMethods: ScavengerAuthMethod[];
+  /** Which kinds of `FetchTarget` the adapter accepts. */
+  supports: { url: boolean; sourceItemId: boolean; raw: boolean };
+  /** Optional adapter-level rate-limit hints surfaced to the UI. */
+  rateLimitPolicy?: { baseMs: number; maxMs: number; maxRetries: number };
+};
+
 export interface ScavengerAdapter {
   /** Unique stable identifier for this source. Must match a SourceId value. */
   readonly id: SourceId;
+
+  /**
+   * Public adapter metadata. Used by the source catalog route to render UI
+   * affordances. Optional for backwards-compatibility with adapters predating
+   * V2-003-T9; adapters added in T9+ MUST populate this field.
+   */
+  readonly metadata?: ScavengerMetadata;
 
   /**
    * Returns true if this adapter handles the given URL.

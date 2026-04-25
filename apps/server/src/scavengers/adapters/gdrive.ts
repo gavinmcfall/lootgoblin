@@ -498,6 +498,12 @@ export function createGdriveAdapter(options?: GDriveAdapterOptions): ScavengerAd
   return {
     id: 'google-drive' as const,
 
+    metadata: {
+      displayName: 'Google Drive',
+      authMethods: ['oauth', 'api-key'],
+      supports: { url: true, sourceItemId: true, raw: false },
+    },
+
     /**
      * Returns true when host is in `GDRIVE_HOSTS` and a recognisable
      * file/folder/doc id can be extracted. Doc-shaped URLs return true even

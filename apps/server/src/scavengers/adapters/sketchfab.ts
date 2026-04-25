@@ -302,6 +302,12 @@ export function createSketchfabAdapter(options?: SketchfabAdapterOptions): Scave
   return {
     id: 'sketchfab' as const,
 
+    metadata: {
+      displayName: 'Sketchfab',
+      authMethods: ['oauth', 'api-key'],
+      supports: { url: true, sourceItemId: true, raw: false },
+    },
+
     /**
      * Returns true for `sketchfab.com` and `www.sketchfab.com` URLs whose
      * path matches a model URL shape and from which a UID can be extracted.

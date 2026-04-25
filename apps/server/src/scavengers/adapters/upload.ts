@@ -50,6 +50,12 @@ export function createUploadAdapter(): ScavengerAdapter {
   return {
     id: 'upload' as const,
 
+    metadata: {
+      displayName: 'Upload',
+      authMethods: ['none'],
+      supports: { url: false, sourceItemId: false, raw: true },
+    },
+
     /**
      * Upload is not URL-driven. The registry's resolveUrl() path never
      * invokes this adapter. Routes that accept uploads call getById('upload')

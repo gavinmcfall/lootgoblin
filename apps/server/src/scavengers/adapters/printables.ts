@@ -28,5 +28,10 @@ export function createPrintablesAdapter(options?: ExtensionMediatedAdapterOption
   return {
     ...createExtensionMediatedAdapter('printables', PRINTABLES_HOSTS, options),
     id: 'printables' as const,
+    metadata: {
+      displayName: 'Printables',
+      authMethods: ['extension'],
+      supports: { url: true, sourceItemId: true, raw: true },
+    },
   };
 }

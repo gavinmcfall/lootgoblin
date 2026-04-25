@@ -13,6 +13,8 @@ export type {
   FetchContext,
   FetchTarget,
   ScavengerAdapter,
+  ScavengerMetadata,
+  ScavengerAuthMethod,
 } from './types';
 
 export type { ScavengerRegistry } from './registry';
@@ -114,3 +116,17 @@ export function createDefaultRegistry(): ScavengerRegistry {
   registry.register(createGdriveAdapter());
   return registry;
 }
+
+/**
+ * Process-level singleton registry — V2-003-T9.
+ *
+ * Routes that need adapter metadata (e.g. /api/v1/sources, /api/v1/ingest,
+ * /api/v1/source-auth/:sourceId) import this singleton instead of calling
+ * createDefaultRegistry() per request. The factory is cheap, but the
+ * singleton lets us share any future adapter-level cache across requests.
+ *
+ * HMR-safe: stateless adapters + Map-backed registry. If an adapter ever
+ * adds in-memory state, swap this for a global symbol cache to survive
+ * dev-mode module reloads.
+ */
+export const defaultRegistry: ScavengerRegistry = createDefaultRegistry();

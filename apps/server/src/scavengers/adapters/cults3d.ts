@@ -177,6 +177,12 @@ export function createCults3dAdapter(options?: Cults3dAdapterOptions): Scavenger
   return {
     id: 'cults3d' as const,
 
+    metadata: {
+      displayName: 'Cults3D',
+      authMethods: ['api-key'],
+      supports: { url: true, sourceItemId: true, raw: false },
+    },
+
     /**
      * Returns true for cults3d.com and www.cults3d.com.
      * T3-L9: exact-host allowlist — never suffix-match.

@@ -28,5 +28,10 @@ export function createMakerWorldAdapter(options?: ExtensionMediatedAdapterOption
   return {
     ...createExtensionMediatedAdapter('makerworld', MAKERWORLD_HOSTS, options),
     id: 'makerworld' as const,
+    metadata: {
+      displayName: 'MakerWorld',
+      authMethods: ['extension'],
+      supports: { url: true, sourceItemId: true, raw: true },
+    },
   };
 }

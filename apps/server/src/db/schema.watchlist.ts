@@ -42,6 +42,7 @@
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
 import { user } from './schema.auth';
+import { collections } from './schema.stash';
 
 // ---------------------------------------------------------------------------
 // watchlistSubscriptions
@@ -129,6 +130,22 @@ export const watchlistSubscriptions = sqliteTable(
      * tuned without a migration.
      */
     errorStreak: integer('error_streak').notNull().default(0),
+    /**
+     * V2-004-T4: target collection for child ingest_jobs spawned by this
+     * subscription's discovery phase. Nullable on purpose — T1 shipped before
+     * this column existed; the application layer enforces non-NULL at
+     * subscription-creation time (T9 HTTP API). The watchlist worker fails
+     * the firing with a clear "subscription missing default_collection_id"
+     * error if the column is NULL at run time.
+     *
+     * SET NULL on collection delete: deleting a collection must not orphan
+     * the subscription history. The next firing fails fast and the user can
+     * re-target via the UI.
+     */
+    defaultCollectionId: text('default_collection_id').references(
+      () => collections.id,
+      { onDelete: 'set null' },
+    ),
     /** ms epoch of subscription creation. App-side default. */
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
     /** ms epoch of the most recent UPDATE. App-side bumped on every write. */

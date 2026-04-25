@@ -4,6 +4,7 @@ export async function register() {
     const { runMigrations } = await import('./db/client');
     const { startWorkers, stopWorkers } = await import('./workers/pool');
     const { startIngestWorker, stopIngestWorker } = await import('./workers/ingest-worker');
+    const { startWatchlistScheduler, stopWatchlistScheduler } = await import('./workers/watchlist-scheduler');
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -52,6 +53,9 @@ export async function register() {
     startWorkers();
     // V2-003-T9 ingest worker — drains ingest_jobs WHERE status='queued'.
     startIngestWorker();
+    // V2-004-T3 watchlist scheduler — polls due watchlist_subscriptions and
+    // enqueues watchlist_jobs. Worker that drains those rows ships in T4.
+    startWatchlistScheduler();
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));
@@ -64,6 +68,7 @@ export async function register() {
       abort.abort();
       stopWorkers();
       stopIngestWorker();
+      stopWatchlistScheduler();
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));

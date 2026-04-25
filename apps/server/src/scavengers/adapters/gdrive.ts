@@ -55,6 +55,12 @@ import type {
   FetchTarget,
   NormalizedItem,
 } from '../types';
+import type {
+  SubscribableAdapter,
+  DiscoveryContext,
+  DiscoveryEvent,
+} from '../subscribable';
+import type { WatchlistSubscriptionKind } from '../../watchlist/types';
 import { nextRetry, sleep } from '../rate-limit';
 import { sanitizeFilename } from '../filename-sanitize';
 import { logger } from '../../logger';
@@ -487,7 +493,9 @@ type SkipRecord = { name: string; mimeType: string };
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createGdriveAdapter(options?: GDriveAdapterOptions): ScavengerAdapter {
+export function createGdriveAdapter(
+  options?: GDriveAdapterOptions,
+): ScavengerAdapter & SubscribableAdapter {
   const apiBase = (options?.apiBase ?? DEFAULT_API_BASE).replace(/\/+$/, '');
   const tokenEndpoint = options?.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT;
   const httpFetch = options?.httpFetch ?? globalThis.fetch;
@@ -502,6 +510,36 @@ export function createGdriveAdapter(options?: GDriveAdapterOptions): ScavengerAd
       displayName: 'Google Drive',
       authMethods: ['oauth', 'api-key'],
       supports: { url: true, sourceItemId: true, raw: false },
+    },
+
+    // V2-004 T7 — SubscribableAdapter capabilities.
+    // GDrive uniquely supports folder + URL polling. No creator/tag/search.
+    capabilities: new Set<WatchlistSubscriptionKind>(['folder_watch', 'url_watch']),
+
+    enumerateFolder(context: DiscoveryContext, folderId: string): AsyncIterable<DiscoveryEvent> {
+      return runGdriveEnumerateFolder({
+        context,
+        folderId,
+        apiBase,
+        tokenEndpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        defaultCaps,
+      });
+    },
+
+    pollUrl(context: DiscoveryContext, url: string): AsyncIterable<DiscoveryEvent> {
+      return runGdrivePollUrl({
+        context,
+        url,
+        apiBase,
+        tokenEndpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        defaultCaps,
+      });
     },
 
     /**
@@ -1534,4 +1572,727 @@ async function* requestJsonWithRetries<T>(
       return { outcome: 'terminal' };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// V2-004 T7 — SubscribableAdapter discovery support
+// ---------------------------------------------------------------------------
+
+/**
+ * Folder-watch cursor: a snapshot of `{fileId: modifiedTime}` from the prior
+ * firing. Each subsequent firing enumerates the folder fresh and emits items
+ * whose id is NOT in the snapshot OR whose modifiedTime is newer.
+ *
+ * V2.0 simplification (per task spec): we re-enumerate every firing rather
+ * than using Google's changes API. This is simpler and the watchlist
+ * scheduler bounds firing frequency. Change-feed migration is V2-004b.
+ *
+ * On first fire (no cursor), we emit ALL non-folder, non-Google-native files
+ * present in the folder — folder-watch UX expects "subscribe and grab
+ * everything that's there". The first-fire backfill cap does NOT apply to
+ * folder enumeration; the existing GDriveCaps (maxFiles/maxBytes/maxDepth)
+ * are honored instead.
+ */
+type GdriveFolderCursor = {
+  /** Map of fileId → modifiedTime ISO string from the prior firing. */
+  lastSeen: Record<string, string>;
+};
+
+/**
+ * URL-poll cursor: the etag and modifiedTime from the most recent
+ * successful 200 response. The next firing sends `If-None-Match: <etag>` and
+ * exits early on 304.
+ */
+type GdriveUrlPollCursor = {
+  etag: string;
+  modifiedTime?: string;
+};
+
+type GdriveDiscoveryEnv = {
+  context: DiscoveryContext;
+  apiBase: string;
+  tokenEndpoint: string;
+  httpFetch: typeof fetch;
+  maxRetries: number;
+  retryBaseMs: number | undefined;
+  defaultCaps: ResolvedCaps;
+};
+
+function parseFolderCursor(raw: string | undefined): GdriveFolderCursor | undefined {
+  if (!raw) return undefined;
+  try {
+    const obj = JSON.parse(raw) as unknown;
+    if (
+      obj &&
+      typeof obj === 'object' &&
+      typeof (obj as Record<string, unknown>)['lastSeen'] === 'object' &&
+      (obj as Record<string, unknown>)['lastSeen'] !== null
+    ) {
+      const ls = (obj as Record<string, Record<string, unknown>>)['lastSeen']!;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(ls)) {
+        if (typeof v === 'string') out[k] = v;
+      }
+      return { lastSeen: out };
+    }
+  } catch {
+    // Malformed cursor — first-fire.
+  }
+  return undefined;
+}
+
+function parseUrlPollCursor(raw: string | undefined): GdriveUrlPollCursor | undefined {
+  if (!raw) return undefined;
+  try {
+    const obj = JSON.parse(raw) as unknown;
+    if (
+      obj &&
+      typeof obj === 'object' &&
+      typeof (obj as Record<string, unknown>)['etag'] === 'string'
+    ) {
+      const r = obj as Record<string, unknown>;
+      const out: GdriveUrlPollCursor = { etag: r['etag'] as string };
+      if (typeof r['modifiedTime'] === 'string') out.modifiedTime = r['modifiedTime'] as string;
+      return out;
+    }
+  } catch {
+    // Malformed cursor — first-fire.
+  }
+  return undefined;
+}
+
+/**
+ * Discovery-side OAuth refresh that yields DiscoveryEvent. Mirrors
+ * `maybeRefreshToken` (fetch-side) logic.
+ */
+async function* maybeRefreshGdriveTokenForDiscovery(
+  creds: GDriveCredentials,
+  context: DiscoveryContext,
+  tokenEndpoint: string,
+  httpFetch: typeof fetch,
+): AsyncGenerator<DiscoveryEvent, GDriveCredentials | 'failed', void> {
+  const oauthBag =
+    creds.kind === 'oauth'
+      ? creds
+      : creds.kind === 'oauth+api-key'
+      ? creds.oauth
+      : null;
+  if (!oauthBag) return creds;
+
+  const remaining = oauthBag.expiresAt - Date.now();
+  if (remaining >= TOKEN_REFRESH_LEAD_MS) return creds;
+
+  yield {
+    kind: 'progress' as const,
+    message: 'Refreshing Google Drive OAuth token',
+    itemsSeen: 0,
+  };
+
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: oauthBag.refreshToken,
+    client_id: oauthBag.clientId,
+    client_secret: oauthBag.clientSecret,
+  });
+
+  let res: Response;
+  try {
+    res = await httpFetch(tokenEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: body.toString(),
+      signal: context.signal,
+    });
+  } catch (err) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `google-drive token refresh fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: err,
+    };
+    return 'failed';
+  }
+
+  if (res.status === 400 || res.status === 401) {
+    yield {
+      kind: 'auth-required' as const,
+      reason: 'revoked' as const,
+      surfaceToUser:
+        'Google Drive refresh token rejected. Reconnect Google in Settings > Sources.',
+    };
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'auth-revoked' as const,
+      details: `google-drive refresh token rejected (HTTP ${res.status})`,
+    };
+    return 'failed';
+  }
+
+  if (!res.ok) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `google-drive token endpoint responded ${res.status}`,
+    };
+    return 'failed';
+  }
+
+  let payload: unknown;
+  try {
+    payload = await res.json();
+  } catch (err) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `google-drive token response parse failed: ${(err as Error).message}`,
+      error: err,
+    };
+    return 'failed';
+  }
+
+  const tok = payload as { access_token?: unknown; expires_in?: unknown; refresh_token?: unknown };
+  if (typeof tok.access_token !== 'string' || !tok.access_token || typeof tok.expires_in !== 'number') {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: 'google-drive token response missing access_token or expires_in',
+    };
+    return 'failed';
+  }
+  const newRefreshToken =
+    typeof tok.refresh_token === 'string' && tok.refresh_token
+      ? tok.refresh_token
+      : oauthBag.refreshToken;
+  const newExpiresAt = Date.now() + tok.expires_in * 1000;
+
+  let newCreds: GDriveCredentials;
+  if (creds.kind === 'oauth') {
+    newCreds = {
+      kind: 'oauth',
+      accessToken: tok.access_token,
+      refreshToken: newRefreshToken,
+      expiresAt: newExpiresAt,
+      clientId: oauthBag.clientId,
+      clientSecret: oauthBag.clientSecret,
+    };
+  } else {
+    const dual = creds as GDriveDualCredentials;
+    newCreds = {
+      kind: 'oauth+api-key',
+      apiKey: dual.apiKey,
+      oauth: {
+        accessToken: tok.access_token,
+        refreshToken: newRefreshToken,
+        expiresAt: newExpiresAt,
+        clientId: oauthBag.clientId,
+        clientSecret: oauthBag.clientSecret,
+      },
+    };
+  }
+  if (context.onTokenRefreshed) {
+    try {
+      await context.onTokenRefreshed(newCreds as unknown as Record<string, unknown>);
+    } catch (cbErr) {
+      logger.warn(
+        { err: cbErr },
+        'gdrive: discovery onTokenRefreshed callback failed; continuing with new creds for this request',
+      );
+    }
+  }
+  return newCreds;
+}
+
+/**
+ * Helper: perform a single GET against Google Drive with the standard 429/5xx
+ * retry loop and dual-mode auth cascade. Returns the JSON body on 200, or null
+ * if a terminal failed/auth event was already yielded.
+ *
+ * Discovery-side flavour — yields `DiscoveryEvent` (not `ScavengerEvent`).
+ */
+async function* gdriveDiscoveryGet<T>(
+  url: string,
+  creds: GDriveCredentials,
+  context: DiscoveryContext,
+  env: GdriveDiscoveryEnv,
+  itemsSeen: number,
+  label: string,
+  extraHeaders?: Record<string, string>,
+): AsyncGenerator<
+  DiscoveryEvent,
+  { outcome: 'value'; value: T; etag?: string } | { outcome: 'not-modified'; etag?: string } | { outcome: 'terminal' },
+  void
+> {
+  const tryWithMode = async (
+    mode: 'oauth-only' | 'api-key-only',
+  ): Promise<{ kind: 'value'; value: T; etag?: string } | { kind: 'not-modified'; etag?: string } | { kind: 'auth-rejected' } | { kind: 'retry'; res: Response } | { kind: 'terminal'; event: DiscoveryEvent }> => {
+    const auth = selectAuth(creds, mode, undefined);
+    const finalUrl = withQuery(url, auth.query);
+    const headers = { ...auth.headers, ...(extraHeaders ?? {}) };
+    let res: Response;
+    try {
+      res = await env.httpFetch(finalUrl, { headers, signal: context.signal });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        kind: 'terminal',
+        event: {
+          kind: 'discovery-failed' as const,
+          reason: 'network-error' as const,
+          details: `Google Drive ${label} fetch failed: ${msg}`,
+          error: err,
+        },
+      };
+    }
+
+    if (res.status === 304) {
+      const etag = res.headers.get('etag') ?? undefined;
+      const out: { kind: 'not-modified'; etag?: string } = { kind: 'not-modified' };
+      if (etag !== undefined) out.etag = etag;
+      return out;
+    }
+
+    if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+      return { kind: 'retry', res };
+    }
+
+    if (res.status === 401 || res.status === 403) {
+      if (creds.kind === 'oauth+api-key' && mode === 'api-key-only') {
+        return { kind: 'auth-rejected' };
+      }
+      return {
+        kind: 'terminal',
+        event: {
+          kind: 'discovery-failed' as const,
+          reason: 'auth-revoked' as const,
+          details: `Google Drive ${label} responded ${res.status}`,
+        },
+      };
+    }
+
+    if (res.status === 404 || res.status === 410) {
+      return {
+        kind: 'terminal',
+        event: {
+          kind: 'discovery-failed' as const,
+          reason: 'content-removed' as const,
+          details: `Google Drive ${label} responded ${res.status}`,
+        },
+      };
+    }
+
+    if (!res.ok) {
+      return {
+        kind: 'terminal',
+        event: {
+          kind: 'discovery-failed' as const,
+          reason: 'network-error' as const,
+          details: `Google Drive ${label} responded ${res.status}`,
+        },
+      };
+    }
+
+    try {
+      const value = (await res.json()) as T;
+      const etag = res.headers.get('etag') ?? undefined;
+      const out: { kind: 'value'; value: T; etag?: string } = { kind: 'value', value };
+      if (etag !== undefined) out.etag = etag;
+      return out;
+    } catch (parseErr) {
+      return {
+        kind: 'terminal',
+        event: {
+          kind: 'discovery-failed' as const,
+          reason: 'network-error' as const,
+          details: `Google Drive ${label} JSON parse failed: ${(parseErr as Error).message}`,
+          error: parseErr,
+        },
+      };
+    }
+  };
+
+  // Pick initial mode.
+  let mode: 'oauth-only' | 'api-key-only' =
+    creds.kind === 'oauth' ? 'oauth-only' : creds.kind === 'api-key' ? 'api-key-only' : 'api-key-only';
+
+  let attempt = 1;
+  while (true) {
+    yield {
+      kind: 'progress' as const,
+      message: `Google Drive ${label} request (attempt ${attempt})`,
+      itemsSeen,
+    };
+    const result = await tryWithMode(mode);
+    if (result.kind === 'value') {
+      const out: { outcome: 'value'; value: T; etag?: string } = { outcome: 'value', value: result.value };
+      if (result.etag !== undefined) out.etag = result.etag;
+      return out;
+    }
+    if (result.kind === 'not-modified') {
+      const out: { outcome: 'not-modified'; etag?: string } = { outcome: 'not-modified' };
+      if (result.etag !== undefined) out.etag = result.etag;
+      return out;
+    }
+    if (result.kind === 'auth-rejected') {
+      // Cascade.
+      mode = 'oauth-only';
+      attempt = 1;
+      continue;
+    }
+    if (result.kind === 'terminal') {
+      yield result.event;
+      return { outcome: 'terminal' };
+    }
+    // retry path
+    const ra = result.res.status === 429 ? result.res.headers.get('retry-after') : null;
+    const retryAfterMs = ra ? parseRetryAfter(ra) : undefined;
+    const decision = nextRetry(
+      attempt,
+      { maxAttempts: env.maxRetries, baseMs: env.retryBaseMs },
+      retryAfterMs,
+    );
+    if (!decision.retry) {
+      yield {
+        kind: 'discovery-failed' as const,
+        reason: 'rate-limit-exhausted' as const,
+        details: `Google Drive ${label} retries exhausted (last status ${result.res.status})`,
+      };
+      return { outcome: 'terminal' };
+    }
+    yield {
+      kind: 'rate-limited' as const,
+      retryAfterMs: decision.delayMs,
+      attempt,
+    };
+    await sleep(decision.delayMs, context.signal);
+    attempt += 1;
+  }
+}
+
+type RunGdriveFolderArgs = Omit<GdriveDiscoveryEnv, 'context'> & {
+  context: DiscoveryContext;
+  folderId: string;
+};
+
+function runGdriveEnumerateFolder(args: RunGdriveFolderArgs): AsyncIterable<DiscoveryEvent> {
+  const { context, folderId, apiBase, tokenEndpoint, httpFetch, maxRetries, retryBaseMs, defaultCaps } = args;
+  const env: GdriveDiscoveryEnv = {
+    context,
+    apiBase,
+    tokenEndpoint,
+    httpFetch,
+    maxRetries,
+    retryBaseMs,
+    defaultCaps,
+  };
+
+  return {
+    [Symbol.asyncIterator]: async function* (): AsyncGenerator<DiscoveryEvent, void, void> {
+      try {
+        if (context.credentials === undefined || context.credentials === null) {
+          yield {
+            kind: 'auth-required' as const,
+            reason: 'missing' as const,
+            surfaceToUser:
+              'Google Drive credentials not configured. Add an API key or connect a Google account in Settings > Sources.',
+          };
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'auth-revoked' as const,
+            details: 'google-drive discovery: credentials missing',
+          };
+          return;
+        }
+
+        const credValidation = validateCredentials(context.credentials, defaultCaps);
+        if (!credValidation.ok) {
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'auth-revoked' as const,
+            details: `google-drive discovery: ${credValidation.reason}`,
+          };
+          return;
+        }
+        const refreshed = yield* maybeRefreshGdriveTokenForDiscovery(
+          credValidation.creds,
+          context,
+          tokenEndpoint,
+          httpFetch,
+        );
+        if (refreshed === 'failed') return;
+        const creds = refreshed;
+        const caps = credValidation.caps;
+
+        const priorCursor = parseFolderCursor(context.cursor);
+        const lastSeen = priorCursor?.lastSeen ?? {};
+        const newSnapshot: Record<string, string> = {};
+
+        // Page through folder children.
+        let pageToken: string | undefined;
+        let itemsTotal = 0;
+
+        do {
+          if (context.signal?.aborted) {
+            yield {
+              kind: 'discovery-failed' as const,
+              reason: 'unknown' as const,
+              details: 'gdrive folder enumeration aborted by signal',
+            };
+            return;
+          }
+          const baseUrl = `${apiBase}/files`;
+          const query: Record<string, string> = {
+            q: `'${folderId}' in parents and trashed=false`,
+            fields: LIST_FIELDS,
+            pageSize: String(FILE_LIST_PAGE_SIZE),
+          };
+          if (pageToken) query['pageToken'] = pageToken;
+          const url = withQuery(baseUrl, query);
+
+          const result = yield* gdriveDiscoveryGet<{
+            files?: GDriveFile[];
+            nextPageToken?: string;
+          }>(url, creds, context, env, itemsTotal, 'folder-list');
+          if (result.outcome === 'terminal') return;
+          if (result.outcome === 'not-modified') {
+            // List endpoint won't 304 in practice; treat as empty-page.
+            break;
+          }
+          const listing = result.value;
+
+          const children = listing.files ?? [];
+          for (const child of children) {
+            // Skip subfolders (folder watch is shallow per v2.0; recursive
+            // enumeration is handled by the ingest-side pipeline if needed).
+            if (child.mimeType === FOLDER_MIME) continue;
+            // Skip Google-native files — they have no downloadable bytes.
+            if (GOOGLE_NATIVE_MIMES.has(child.mimeType)) continue;
+            if (typeof child.id !== 'string' || !child.id) continue;
+
+            const mt = typeof child.modifiedTime === 'string' ? child.modifiedTime : '';
+            newSnapshot[child.id] = mt;
+
+            const prior = lastSeen[child.id];
+            // First-fire (no prior cursor) → emit ALL items.
+            // Subsequent fires → emit only NEW items OR items with newer modifiedTime.
+            const isNew = priorCursor === undefined ? true : prior === undefined;
+            const isUpdated = !isNew && prior !== undefined && mt && mt > prior;
+            if (!isNew && !isUpdated) continue;
+
+            const ev: DiscoveryEvent = {
+              kind: 'item-discovered' as const,
+              sourceItemId: child.id,
+            };
+            const hint: { title?: string; publishedAt?: Date } = {};
+            if (typeof child.name === 'string' && child.name) hint.title = child.name;
+            if (mt) {
+              const d = new Date(mt);
+              if (!Number.isNaN(d.getTime())) hint.publishedAt = d;
+            }
+            if (hint.title || hint.publishedAt) ev.metadataHint = hint;
+            yield ev;
+            itemsTotal += 1;
+
+            // Honor caps.maxFiles to bound first-fire emission.
+            if (itemsTotal >= caps.maxFiles) {
+              yield {
+                kind: 'progress' as const,
+                message: 'Google Drive: folder enumeration stopped: file-count cap reached',
+                itemsSeen: itemsTotal,
+              };
+              break;
+            }
+          }
+
+          if (itemsTotal >= caps.maxFiles) break;
+          pageToken = listing.nextPageToken;
+        } while (pageToken);
+
+        const newCursor: GdriveFolderCursor = { lastSeen: newSnapshot };
+        yield {
+          kind: 'discovery-completed' as const,
+          itemsTotal,
+          cursor: JSON.stringify(newCursor),
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isAbort =
+          (err instanceof Error && err.name === 'AbortError') ||
+          context.signal?.aborted === true;
+        logger.warn({ err }, 'gdrive: folder enumeration unexpected error');
+        yield {
+          kind: 'discovery-failed' as const,
+          reason: isAbort ? 'network-error' : 'unknown',
+          details: msg,
+          error: err,
+        };
+      }
+    },
+  };
+}
+
+type RunGdriveUrlPollArgs = Omit<GdriveDiscoveryEnv, 'context'> & {
+  context: DiscoveryContext;
+  url: string;
+};
+
+function runGdrivePollUrl(args: RunGdriveUrlPollArgs): AsyncIterable<DiscoveryEvent> {
+  const { context, url, apiBase, tokenEndpoint, httpFetch, maxRetries, retryBaseMs, defaultCaps } = args;
+  const env: GdriveDiscoveryEnv = {
+    context,
+    apiBase,
+    tokenEndpoint,
+    httpFetch,
+    maxRetries,
+    retryBaseMs,
+    defaultCaps,
+  };
+
+  return {
+    [Symbol.asyncIterator]: async function* (): AsyncGenerator<DiscoveryEvent, void, void> {
+      try {
+        // Parse the URL to get a fileId. Accept file or folder URL shapes; we
+        // only emit url-watch events for `file` shapes — folder URLs should
+        // use folder_watch instead.
+        const parsed = parseGDriveUrl(url);
+        if (!parsed) {
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'unknown' as const,
+            details: `gdrive pollUrl: could not parse URL: ${url}`,
+          };
+          return;
+        }
+        if (parsed.resourceType === 'doc-shaped') {
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'no-results' as const,
+            details: 'gdrive pollUrl: doc-shaped URLs are Google-native and not pollable',
+          };
+          return;
+        }
+        const fileId = parsed.id;
+
+        if (context.credentials === undefined || context.credentials === null) {
+          yield {
+            kind: 'auth-required' as const,
+            reason: 'missing' as const,
+            surfaceToUser:
+              'Google Drive credentials not configured. Add an API key or connect a Google account in Settings > Sources.',
+          };
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'auth-revoked' as const,
+            details: 'google-drive pollUrl: credentials missing',
+          };
+          return;
+        }
+
+        const credValidation = validateCredentials(context.credentials, defaultCaps);
+        if (!credValidation.ok) {
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'auth-revoked' as const,
+            details: `google-drive pollUrl: ${credValidation.reason}`,
+          };
+          return;
+        }
+        const refreshed = yield* maybeRefreshGdriveTokenForDiscovery(
+          credValidation.creds,
+          context,
+          tokenEndpoint,
+          httpFetch,
+        );
+        if (refreshed === 'failed') return;
+        const creds = refreshed;
+
+        const priorCursor = parseUrlPollCursor(context.cursor);
+
+        const metaUrl = `${apiBase}/files/${encodeURIComponent(fileId)}`;
+        const fullUrl = withQuery(metaUrl, { fields: META_FIELDS });
+
+        const extraHeaders: Record<string, string> = {};
+        if (priorCursor?.etag) {
+          extraHeaders['If-None-Match'] = priorCursor.etag;
+        }
+
+        const result = yield* gdriveDiscoveryGet<GDriveFile>(
+          fullUrl,
+          creds,
+          context,
+          env,
+          0,
+          'pollUrl',
+          extraHeaders,
+        );
+        if (result.outcome === 'terminal') return;
+
+        if (result.outcome === 'not-modified') {
+          // 304 Not Modified — preserve prior cursor, emit no item.
+          const completed: DiscoveryEvent = {
+            kind: 'discovery-completed' as const,
+            itemsTotal: 0,
+          };
+          if (priorCursor) completed.cursor = JSON.stringify(priorCursor);
+          yield completed;
+          return;
+        }
+
+        const meta = result.value;
+        const newCursor: GdriveUrlPollCursor = {
+          etag: result.etag ?? '',
+        };
+        if (typeof meta.modifiedTime === 'string') {
+          newCursor.modifiedTime = meta.modifiedTime;
+        }
+
+        // Determine whether anything changed:
+        //   - no prior cursor → emit one item (first-fire).
+        //   - prior modifiedTime exists and equals current → no change.
+        //   - otherwise → emit one item.
+        const changed =
+          priorCursor === undefined ||
+          priorCursor.modifiedTime === undefined ||
+          newCursor.modifiedTime === undefined ||
+          newCursor.modifiedTime !== priorCursor.modifiedTime;
+
+        let itemsTotal = 0;
+        if (changed) {
+          const ev: DiscoveryEvent = {
+            kind: 'item-discovered' as const,
+            sourceItemId: fileId,
+          };
+          const hint: { title?: string; publishedAt?: Date } = {};
+          if (typeof meta.name === 'string' && meta.name) hint.title = meta.name;
+          if (typeof meta.modifiedTime === 'string') {
+            const d = new Date(meta.modifiedTime);
+            if (!Number.isNaN(d.getTime())) hint.publishedAt = d;
+          }
+          if (hint.title || hint.publishedAt) ev.metadataHint = hint;
+          yield ev;
+          itemsTotal += 1;
+        }
+
+        yield {
+          kind: 'discovery-completed' as const,
+          itemsTotal,
+          cursor: JSON.stringify(newCursor),
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isAbort =
+          (err instanceof Error && err.name === 'AbortError') ||
+          context.signal?.aborted === true;
+        logger.warn({ err }, 'gdrive: pollUrl unexpected error');
+        yield {
+          kind: 'discovery-failed' as const,
+          reason: isAbort ? 'network-error' : 'unknown',
+          details: msg,
+          error: err,
+        };
+      }
+    },
+  };
 }

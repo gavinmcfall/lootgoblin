@@ -36,5 +36,7 @@ export const ledgerEvents = sqliteTable(
     index('ledger_events_created_idx').on(t.createdAt),
     /** Event-kind filtering (e.g. 'migration.execute' log). */
     index('ledger_events_kind_idx').on(t.kind),
+    /** Per-actor audit history lookup (V2 carry-forward, migration 0012). */
+    index('ledger_events_actor_idx').on(t.actorId),
   ],
 );

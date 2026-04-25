@@ -26,6 +26,9 @@ export * from './schema.ledger';
 // Ingest jobs table — V2-003-T2.
 export * from './schema.ingest';
 
+// OAuth state table — V2-003-T9.
+export * from './schema.oauth';
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 

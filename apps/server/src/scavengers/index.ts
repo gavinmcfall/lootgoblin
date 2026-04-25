@@ -129,12 +129,30 @@ import type { ScavengerRegistry } from './registry';
 export function createDefaultRegistry(): ScavengerRegistry {
   const registry = createRegistry();
   registry.register(createUploadAdapter());
-  registry.register(createCults3dAdapter());
+
+  // V2-004 T7: adapters that satisfy BOTH ScavengerAdapter (ingest) AND
+  // SubscribableAdapter (Watchlist discovery) get registered in both maps.
+  // Upload + extension-mediated (makerworld, printables) are NOT subscribable
+  // — Patreon-style "extension watches" / uploads have no remote feed to poll.
+  const cults = createCults3dAdapter();
+  registry.register(cults);
+  registry.registerSubscribable(cults);
+
   registry.register(createMakerWorldAdapter());
   registry.register(createPrintablesAdapter());
-  registry.register(createSketchfabAdapter());
-  registry.register(createGdriveAdapter());
-  registry.register(createThingiverseAdapter());
+
+  const sketchfab = createSketchfabAdapter();
+  registry.register(sketchfab);
+  registry.registerSubscribable(sketchfab);
+
+  const gdrive = createGdriveAdapter();
+  registry.register(gdrive);
+  registry.registerSubscribable(gdrive);
+
+  const thingiverse = createThingiverseAdapter();
+  registry.register(thingiverse);
+  registry.registerSubscribable(thingiverse);
+
   return registry;
 }
 

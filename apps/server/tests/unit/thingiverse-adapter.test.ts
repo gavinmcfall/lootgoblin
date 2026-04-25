@@ -1032,7 +1032,7 @@ describe('createThingiverseAdapter — misc edges', () => {
     expect(last.reason).toBe('no-downloadable-formats');
   });
 
-  it('test 46: redirect on download → followed without Authorization header', async () => {
+  it('test 46: redirect on download — initial hop carries Authorization, redirect target does NOT', async () => {
     const httpFetch = vi.fn()
       .mockResolvedValueOnce(jsonResponse(fakeMetadata))
       .mockResolvedValueOnce(jsonResponse(fakeFiles))
@@ -1046,17 +1046,348 @@ describe('createThingiverseAdapter — misc edges', () => {
 
     const stagingDir = await makeStagingDir();
     const adapter = makeAdapter(httpFetch);
-    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds('app-tok-456') });
 
     const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
     const last = events[events.length - 1];
     expect(last?.kind).toBe('completed');
 
-    // Final fetch (the redirect target) must NOT carry an Authorization header.
+    // ── Initial download_url request MUST carry Authorization ────────────
+    // Thingiverse's `download_url` requires the same bearer the JSON API uses
+    // for non-public Things; sending no auth would 401.
+    const initialDl = httpFetch.mock.calls[2]!;
+    expect(initialDl[0]).toBe('https://cdn.example/file/100');
+    const initialInit = initialDl[1] as RequestInit;
+    const initialHeaders = (initialInit.headers ?? {}) as Record<string, string>;
+    expect(initialHeaders['Authorization']).toBe('Bearer app-tok-456');
+
+    // ── Redirect target MUST NOT carry Authorization (T7-L3) ─────────────
     const finalCall = httpFetch.mock.calls[3]!;
     expect(finalCall[0]).toBe('https://signed-cdn.example/redirected.bin');
     const finalInit = finalCall[1] as RequestInit | undefined;
     const headers = (finalInit?.headers ?? {}) as Record<string, string>;
     expect(headers['Authorization']).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 47-48: B1 — ancestors fetch graceful degradation
+//
+// A failed /things/:id/ancestors call MUST NOT abort an ingest whose files
+// have already been staged. Spec calls relationships "data-only placeholders,
+// not activated in v2" — they're a strict best-effort enrichment.
+// ---------------------------------------------------------------------------
+
+describe('createThingiverseAdapter — ancestors graceful degradation (B1)', () => {
+  it('test 47: derivative Thing whose /ancestors returns 404 → completed; relationships undefined; staged file preserved', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ...fakeMetadata, is_derivative: true }))
+      .mockResolvedValueOnce(jsonResponse(fakeFiles))
+      .mockResolvedValueOnce(fileResponse('staged-bytes'))
+      // /ancestors → 404 (Thing was previously a derivative but its
+      // ancestor was deleted; the endpoint can return 404 here).
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'completed') throw new Error('expected completed');
+    expect(last.item.relationships).toBeUndefined();
+
+    // Degradation `progress` event was logged for observability.
+    const degraded = events.find(
+      (e) => e.kind === 'progress' && /ancestors fetch failed/.test(e.message),
+    );
+    expect(degraded).toBeDefined();
+
+    // Staged file preserved on disk.
+    const staged = await fsp.readdir(stagingDir);
+    expect(staged.length).toBe(1);
+  });
+
+  it('test 48: derivative Thing whose /ancestors exhausts retries → completed; relationships undefined; no failed event', async () => {
+    // Six 5xx responses for /ancestors → rate-limit-exhausted internally,
+    // but tolerateTerminalFailure suppresses the failed yield.
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ ...fakeMetadata, is_derivative: true }))
+      .mockResolvedValueOnce(jsonResponse(fakeFiles))
+      .mockResolvedValueOnce(fileResponse('staged-bytes'))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch, { maxRetries: 6, retryBaseMs: 0 });
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'completed') throw new Error('expected completed');
+    expect(last.item.relationships).toBeUndefined();
+
+    // No `failed` event polluted the stream — the ingest completes cleanly.
+    const failedEvts = events.filter((e) => e.kind === 'failed');
+    expect(failedEvts).toEqual([]);
+
+    // Degradation `progress` event surfaced.
+    const degraded = events.find(
+      (e) => e.kind === 'progress' && /ancestors fetch failed/.test(e.message),
+    );
+    expect(degraded).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 49: I1 — case-insensitive URL parsing
+// ---------------------------------------------------------------------------
+
+describe('createThingiverseAdapter — case-insensitive URL parsing (I1)', () => {
+  it('test 49: supports() accepts uppercase THING:NN/Files', () => {
+    const adapter = createThingiverseAdapter();
+    expect(adapter.supports(`https://www.thingiverse.com/THING:${THING_ID}`)).toBe(true);
+    expect(adapter.supports(`https://www.thingiverse.com/THING:${THING_ID}/Files`)).toBe(true);
+    expect(adapter.supports(`https://www.thingiverse.com/Thing:${THING_ID}/REMIXES`)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 50: I3 — token endpoint 403 → auth-revoked (not network-error)
+// ---------------------------------------------------------------------------
+
+describe('createThingiverseAdapter — token endpoint 403 mapping (I3)', () => {
+  it('test 50: refresh 403 → auth-required revoked + failed auth-revoked', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(new Response('{"error":"forbidden"}', { status: 403 }));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({
+      stagingDir,
+      credentials: oauthCreds({ expiresAt: Date.now() - 10_000 }),
+    });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const authReq = events.find((e) => e.kind === 'auth-required');
+    expect(authReq).toBeDefined();
+    if (authReq?.kind !== 'auth-required') return;
+    expect(authReq.reason).toBe('revoked');
+
+    const last = events[events.length - 1];
+    if (last?.kind !== 'failed') throw new Error('expected failed');
+    expect(last.reason).toBe('auth-revoked');
+    expect(last.details).toMatch(/HTTP 403/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 51: M2 — non-array files payload → network-error
+// ---------------------------------------------------------------------------
+
+describe('createThingiverseAdapter — non-array files payload (M2)', () => {
+  it('test 51: /files returns object instead of array → failed reason network-error', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      .mockResolvedValueOnce(jsonResponse({ error: 'unexpected shape' }));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'failed') throw new Error('expected failed');
+    expect(last.reason).toBe('network-error');
+    expect(last.details).toMatch(/non-array payload/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 52: M5 — logger.warn observed when onTokenRefreshed callback throws
+// ---------------------------------------------------------------------------
+
+describe('createThingiverseAdapter — logger.warn observability (M5)', () => {
+  it('test 52: callback throw logs a warn with the original error', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        access_token: 'new-access-tok',
+        refresh_token: 'new-refresh-tok',
+        expires_in: 3600,
+      }))
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      .mockResolvedValueOnce(jsonResponse(fakeFiles))
+      .mockResolvedValueOnce(fileResponse('binary'));
+
+    // Spy on logger.warn — the adapter imports `logger` from
+    // `../../logger`, so spy on the same module instance.
+    const loggerModule = await import('../../src/logger');
+    const warnSpy = vi.spyOn(loggerModule.logger, 'warn').mockImplementation(() => {});
+
+    const onTokenRefreshed = vi.fn().mockRejectedValue(new Error('persist boom'));
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({
+      stagingDir,
+      credentials: oauthCreds({ expiresAt: Date.now() + 30_000 }),
+      onTokenRefreshed,
+    });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('completed');
+
+    // Find the warn call mentioning the callback failure.
+    const callbackWarn = warnSpy.mock.calls.find((call) =>
+      String(call[1] ?? '').includes('onTokenRefreshed callback failed'),
+    );
+    expect(callbackWarn).toBeDefined();
+    // The first arg is the bindings object including `err`.
+    if (callbackWarn) {
+      const bindings = callbackWarn[0] as { err?: { message?: string } };
+      expect(bindings.err).toBeDefined();
+      expect(String((bindings.err as Error).message)).toMatch(/persist boom/);
+    }
+
+    warnSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 53-57: M4 — additional coverage gaps
+// ---------------------------------------------------------------------------
+
+describe('createThingiverseAdapter — exactly-at-cap (M4)', () => {
+  it('test 53: file count exactly equals maxFiles → completes with all files, no cap progress event', async () => {
+    const files = [
+      { id: 1, name: 'a.stl', size: 100, download_url: 'https://cdn.example/a' },
+      { id: 2, name: 'b.stl', size: 100, download_url: 'https://cdn.example/b' },
+    ];
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      .mockResolvedValueOnce(jsonResponse(files))
+      .mockResolvedValueOnce(fileResponse('a-bytes'))
+      .mockResolvedValueOnce(fileResponse('b-bytes'));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch, {
+      defaultCaps: { maxFiles: 2, maxBytes: Number.MAX_SAFE_INTEGER },
+    });
+    const ctx = makeCtx({ stagingDir, credentials: apiTokenCreds() });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'completed') throw new Error('expected completed');
+    expect(last.item.files).toHaveLength(2);
+
+    // No spurious "file-count cap reached" progress event when we exactly
+    // hit the cap without trying to exceed it.
+    const capProgress = events.find(
+      (e) => e.kind === 'progress' && /file-count cap/.test(e.message),
+    );
+    expect(capProgress).toBeUndefined();
+  });
+});
+
+describe('createThingiverseAdapter — token endpoint variants (M4)', () => {
+  it('test 54: refresh 401 → auth-required revoked + failed auth-revoked', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }));
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({
+      stagingDir,
+      credentials: oauthCreds({ expiresAt: Date.now() - 10_000 }),
+    });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const authReq = events.find((e) => e.kind === 'auth-required');
+    expect(authReq?.kind === 'auth-required' && authReq.reason).toBe('revoked');
+    const last = events[events.length - 1];
+    if (last?.kind !== 'failed') throw new Error('expected failed');
+    expect(last.reason).toBe('auth-revoked');
+  });
+
+  it('test 55: refresh 503 → failed network-error (not auth-revoked — transient outage)', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({
+      stagingDir,
+      credentials: oauthCreds({ expiresAt: Date.now() - 10_000 }),
+    });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    // No auth-required for transient 5xx — credentials still valid, server isn't.
+    expect(events.find((e) => e.kind === 'auth-required')).toBeUndefined();
+    const last = events[events.length - 1];
+    if (last?.kind !== 'failed') throw new Error('expected failed');
+    expect(last.reason).toBe('network-error');
+    expect(last.details).toMatch(/responded 503/);
+  });
+
+  it('test 56: refresh 200 with malformed JSON → failed network-error mentioning parse', async () => {
+    // `new Response('not-json')` parses fine via res.json()? Actually it
+    // would throw because 'not-json' is not valid JSON. Confirm.
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(new Response('this is not json', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({
+      stagingDir,
+      credentials: oauthCreds({ expiresAt: Date.now() - 10_000 }),
+    });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'failed') throw new Error('expected failed');
+    expect(last.reason).toBe('network-error');
+    expect(last.details).toMatch(/parse failed/);
+  });
+});
+
+describe('createThingiverseAdapter — mixed cascade (M4)', () => {
+  it('test 57: dual creds — api-token succeeds for metadata, fails (403) for files; OAuth fallback completes files', async () => {
+    const httpFetch = vi.fn()
+      // 1: metadata via api-token → 200
+      .mockResolvedValueOnce(jsonResponse(fakeMetadata))
+      // 2: files via api-token → 403
+      .mockResolvedValueOnce(new Response(null, { status: 403 }))
+      // 3: files via OAuth fallback → 200
+      .mockResolvedValueOnce(jsonResponse(fakeFiles))
+      // 4: download
+      .mockResolvedValueOnce(fileResponse('content'));
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({
+      stagingDir,
+      credentials: dualCreds({ token: 'app-tok-mid', oauth: oauthCreds({ accessToken: 'oauth-tok-mid' }) }),
+    });
+
+    const events = await collectEvents(adapter, ctx, makeUrlTarget(THING_URL));
+    const last = events[events.length - 1];
+    expect(last?.kind).toBe('completed');
+
+    // Call 1 (metadata) used the api-token.
+    expect((httpFetch.mock.calls[0]![1] as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer app-tok-mid',
+    });
+    // Call 2 (files first attempt) used the api-token.
+    expect((httpFetch.mock.calls[1]![1] as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer app-tok-mid',
+    });
+    // Call 3 (files cascade fallback) used the OAuth bearer.
+    expect((httpFetch.mock.calls[2]![1] as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer oauth-tok-mid',
+    });
   });
 });

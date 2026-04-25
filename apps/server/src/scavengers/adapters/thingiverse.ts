@@ -180,17 +180,19 @@ function parseThingiverseUrl(url: string): ParsedTarget | null {
   if (parts.length === 0) return null;
 
   // First segment must be `thing:<numericId>` — only single-Thing URLs are
-  // owned by this adapter.
+  // owned by this adapter. Case-insensitive: copy-pasted URLs from email /
+  // Discord embeds occasionally land as `THING:1234`. The URL parser does NOT
+  // case-normalize the pathname, so we accept either casing here.
   const head = parts[0];
   if (!head) return null;
-  const m = /^thing:(\d+)$/.exec(head);
+  const m = /^thing:(\d+)$/i.exec(head);
   if (!m || !m[1]) return null;
 
-  // Optional trailing segment must be one of these, otherwise reject.
-  // `/files` and `/remixes` are part of the same Thing — we always fetch
-  // the full file list from /things/:id/files regardless.
+  // Optional trailing segment must be one of these (case-insensitive),
+  // otherwise reject. `/files` and `/remixes` are part of the same Thing —
+  // we always fetch the full file list from /things/:id/files regardless.
   if (parts.length > 1) {
-    const tail = parts[1];
+    const tail = (parts[1] ?? '').toLowerCase();
     if (tail !== 'files' && tail !== 'remixes' && tail !== 'apps' && tail !== 'comments') {
       return null;
     }
@@ -299,7 +301,14 @@ function validateCredentials(
 // Auth header selection
 // ---------------------------------------------------------------------------
 
-type AuthMode = 'api-token-first' | 'api-token-only' | 'oauth-only';
+/**
+ * Auth-cascade modes. Thingiverse, unlike GDrive, has no anonymous-+-key-as-
+ * query mode: both api-token and oauth paths emit the same `Authorization:
+ * Bearer <…>` header shape. The cascade for `oauth+api-token` credentials is
+ * therefore strictly binary — try `'api-token-only'` first, fall back to
+ * `'oauth-only'` on 401/403. There is no "first" hint distinct from "only".
+ */
+type AuthMode = 'api-token-only' | 'oauth-only';
 
 type RequestAuth = {
   headers: Record<string, string>;
@@ -324,12 +333,11 @@ function selectAuth(creds: ThingiverseCredentials, mode: AuthMode): RequestAuth 
     return { headers, usedOAuth: false, usedApiToken: true };
   }
 
-  // 'oauth+api-token'
+  // 'oauth+api-token' — strict binary cascade driven by `mode`.
   if (mode === 'oauth-only') {
     headers['Authorization'] = `Bearer ${creds.oauth.accessToken}`;
     return { headers, usedOAuth: true, usedApiToken: false };
   }
-  // mode === 'api-token-first' || 'api-token-only'
   headers['Authorization'] = `Bearer ${creds.token}`;
   return { headers, usedOAuth: false, usedApiToken: true };
 }
@@ -588,6 +596,7 @@ export function createThingiverseAdapter(
                 file as ThingFile & { download_url: string },
                 thingId,
                 usedNames,
+                creds,
                 context,
                 env,
               );
@@ -598,17 +607,28 @@ export function createThingiverseAdapter(
             }
 
             if (fileDescriptors.length === 0) {
-              // Cap of zero or all files failed silently — should not happen
-              // given the maxFiles>0 guarantee in resolveCaps, but defensive.
+              // Reachable when the very first file's `size` already exceeds
+              // `maxBytes` — the byte-cap guard fires before any download
+              // attempt and we exit the loop with zero descriptors. We treat
+              // that as no-downloadable-formats so the user gets a coherent
+              // error rather than a silently-empty Loot row.
               yield {
                 kind: 'failed' as const,
                 reason: 'no-downloadable-formats' as const,
-                details: `Thingiverse thing ${thingId} produced no downloadable files (caps may be zero)`,
+                details: `Thingiverse thing ${thingId} produced no downloadable files (caps too small for first file)`,
               };
               return;
             }
 
             // ── 7. Optional: fetch ancestors for remix metadata ──────────────
+            //
+            // Files are already staged at this point. Ancestor metadata is a
+            // best-effort enrichment surfaced as `NormalizedItem.relationships`
+            // — v2 stores it data-only (Watchlist V2-004 territory). A failed
+            // /ancestors lookup MUST NOT abort the ingest. We pass
+            // `tolerateTerminalFailure=true` through the cascade so
+            // 404/auth/rate-limit failures return null instead of yielding a
+            // `failed` event, and we log a `progress` event noting the drop.
 
             let relationships: NormalizedItem['relationships'] | undefined;
             if (metadata.is_derivative === true) {
@@ -618,8 +638,13 @@ export function createThingiverseAdapter(
                 context.signal,
                 env,
               );
-              if (ancestors === 'failed') return;
-              if (ancestors && ancestors.length > 0) {
+              if (ancestors === null) {
+                yield {
+                  kind: 'progress' as const,
+                  message:
+                    'Thingiverse: ancestors fetch failed; relationships dropped (files unaffected)',
+                };
+              } else if (ancestors.length > 0) {
                 relationships = ancestors
                   .filter((a): a is ThingAncestor & { id: number } => typeof a.id === 'number')
                   .map((a) => {
@@ -672,7 +697,14 @@ export function createThingiverseAdapter(
               title: titleForFile,
               files: fileDescriptors,
             };
-            if (typeof metadata.description === 'string') item.description = metadata.description;
+            // NormalizedItem contract: "All string fields are trimmed UTF-8".
+            // Thingiverse descriptions occasionally arrive with leading/
+            // trailing whitespace (markdown trailing newlines, indented
+            // template fragments); trim to satisfy the contract.
+            if (typeof metadata.description === 'string') {
+              const trimmed = metadata.description.trim();
+              if (trimmed) item.description = trimmed;
+            }
             if (creator) item.creator = creator;
             if (typeof metadata.license === 'string') item.license = metadata.license;
             if (tags && tags.length > 0) item.tags = tags;
@@ -782,7 +814,14 @@ async function* maybeRefreshToken(
     return 'failed';
   }
 
-  if (res.status === 400 || res.status === 401) {
+  // Auth-failure status codes from the token endpoint:
+  //   400 — invalid_grant (refresh token no longer valid)
+  //   401 — invalid_client (rare here; Thingiverse usually returns 400)
+  //   403 — revoked client_secret, suspended app, IP block on the OAuth host
+  // All three are credential-side issues; surfacing as 'network-error' would
+  // hide them in the wrong UI bucket and prevent the pipeline pausing for
+  // user re-authentication.
+  if (res.status === 400 || res.status === 401 || res.status === 403) {
     yield {
       kind: 'auth-required' as const,
       reason: 'revoked' as const,
@@ -911,9 +950,12 @@ async function* fetchThingFiles(
   const result = yield* requestJsonWithCascade<ThingFile[]>(url, creds, signal, env, 'files');
   if (!result) return null;
   if (!Array.isArray(result)) {
+    // Treat shape-of-payload errors as transport-layer failures, matching
+    // the JSON-parse failure branch in `requestJsonWithRetries`. The user-
+    // facing meaning is "the source returned something we can't read".
     yield {
       kind: 'failed' as const,
-      reason: 'unknown' as const,
+      reason: 'network-error' as const,
       details: `Thingiverse files endpoint for thing ${thingId} returned non-array payload`,
     };
     return null;
@@ -921,15 +963,34 @@ async function* fetchThingFiles(
   return result;
 }
 
+/**
+ * Optional ancestors fetch. NEVER aborts the parent ingest:
+ *
+ *   - Returns the ancestors array on success.
+ *   - Returns null on ANY failure (404, 401/403, rate-limit-exhausted, 5xx,
+ *     parse error, network error). The caller is expected to log a `progress`
+ *     event noting the degradation and continue with `relationships=undefined`.
+ *
+ * Files have already been staged by the time we call this; the spec calls
+ * relationships "data-only placeholders, not activated in v2", so a failed
+ * lookup MUST NOT prevent the user's downloaded files from being persisted.
+ */
 async function* fetchAncestors(
   thingId: string,
   creds: ThingiverseCredentials,
   signal: AbortSignal | undefined,
   env: RequestEnv,
-): AsyncGenerator<ScavengerEvent, ThingAncestor[] | null | 'failed', void> {
+): AsyncGenerator<ScavengerEvent, ThingAncestor[] | null, void> {
   const url = `${env.apiBase}/things/${encodeURIComponent(thingId)}/ancestors`;
-  const result = yield* requestJsonWithCascade<ThingAncestor[]>(url, creds, signal, env, 'ancestors');
-  if (result === null) return 'failed';
+  const result = yield* requestJsonWithCascade<ThingAncestor[]>(
+    url,
+    creds,
+    signal,
+    env,
+    'ancestors',
+    true, // tolerateTerminalFailure — never block completion on this
+  );
+  if (result === null) return null;
   if (!Array.isArray(result)) return null;
   return result;
 }
@@ -938,6 +999,13 @@ async function* fetchAncestors(
  * Helper that wraps `requestJsonWithRetries` with the dual-mode cascade for
  * `oauth+api-token` credentials: try API-token first, fall back to OAuth on
  * 401/403. Single-mode credentials skip the cascade.
+ *
+ * When `tolerateTerminalFailure=true` the helper passes the flag through so
+ * non-success terminal statuses (404 / 5xx-exhausted / non-ok / parse-fail)
+ * become a `'tolerated-failure'` cascade outcome that returns null WITHOUT
+ * yielding a `failed` event. The caller can then decide whether to log a
+ * `progress` event and continue (e.g. ancestors metadata) or surface the
+ * absence to the user.
  */
 async function* requestJsonWithCascade<T>(
   url: string,
@@ -945,6 +1013,7 @@ async function* requestJsonWithCascade<T>(
   signal: AbortSignal | undefined,
   env: RequestEnv,
   label: string,
+  tolerateTerminalFailure = false,
 ): AsyncGenerator<ScavengerEvent, T | null, void> {
   if (creds.kind === 'oauth+api-token') {
     const apiAttempt = yield* requestJsonWithRetries<T>(
@@ -956,8 +1025,10 @@ async function* requestJsonWithCascade<T>(
       env.retryBaseMs,
       label,
       true, // tolerateAuthFailure → caller cascades to OAuth
+      tolerateTerminalFailure,
     );
     if (apiAttempt.outcome === 'value') return apiAttempt.value;
+    if (apiAttempt.outcome === 'tolerated-failure') return null;
     if (apiAttempt.outcome === 'auth-rejected') {
       // Fall through to OAuth attempt below.
     } else {
@@ -972,6 +1043,7 @@ async function* requestJsonWithCascade<T>(
       env.retryBaseMs,
       label,
       false,
+      tolerateTerminalFailure,
     );
     if (oauthAttempt.outcome === 'value') return oauthAttempt.value;
     return null;
@@ -990,6 +1062,7 @@ async function* requestJsonWithCascade<T>(
     env.retryBaseMs,
     label,
     false,
+    tolerateTerminalFailure,
   );
   if (attempt.outcome === 'value') return attempt.value;
   return null;
@@ -1003,19 +1076,37 @@ async function* downloadFile(
   file: ThingFile & { download_url: string },
   thingId: string,
   usedNames: Set<string>,
+  creds: ThingiverseCredentials,
   context: FetchContext,
   env: RequestEnv,
 ): AsyncGenerator<ScavengerEvent, NormalizedItem['files'][number] | null, void> {
-  // Thingiverse `download_url` typically redirects to a signed CDN host.
-  // We use `redirect: 'manual'` so we can drop the Authorization header
-  // before following — matches gdrive/sketchfab T7-L3 pattern.
+  // Thingiverse `download_url` for non-public Things requires the same
+  // Authorization header as the JSON API — the bare URL returns 401 without
+  // it. The URL typically 302s to a signed CDN host, where the
+  // Authorization header would be wrongly echoed back to a third-party
+  // host (and rejected — T7-L3). So:
+  //
+  //   1. Initial fetch: carry Authorization (Bearer per credential kind).
+  //      For dual creds we use the OAuth bearer here — the api-token path is
+  //      already exercised by metadata + files, and the file-list endpoint
+  //      having succeeded means OAuth is valid. Sending api-token for
+  //      `oauth+api-token` would also work; OAuth is the more general path.
+  //   2. Redirect target: re-fetch with NO Authorization header.
+  const initialAuth = selectAuth(
+    creds,
+    creds.kind === 'api-token' ? 'api-token-only' : 'oauth-only',
+  );
+  // `selectAuth` returns Accept: application/json by default; downloads are
+  // binary — drop Accept so we don't mis-cue a JSON-aware origin.
+  const initialHeaders: Record<string, string> = {};
+  if (initialAuth.headers['Authorization']) {
+    initialHeaders['Authorization'] = initialAuth.headers['Authorization'];
+  }
+
   let res: Response;
   try {
     res = await env.httpFetch(file.download_url, {
-      // The initial request may carry our auth (Thingiverse sometimes
-      // requires it for the first hop). The redirect target is a CDN URL
-      // and MUST be re-fetched without Authorization.
-      headers: {},
+      headers: initialHeaders,
       signal: context.signal,
       redirect: 'manual',
     });
@@ -1154,9 +1245,28 @@ async function* downloadFile(
 // Internal: rate-limit-aware JSON GET helper (T7+T8 pattern)
 // ---------------------------------------------------------------------------
 
+/**
+ * Outcomes from `requestJsonWithRetries`. Three tolerated-failure shapes
+ * keep the helper composable:
+ *
+ *   - `'value'`            — request succeeded, payload returned.
+ *   - `'auth-rejected'`    — 401/403 hit AND `tolerateAuthFailure=true`.
+ *                            Caller cascades (e.g. api-token → oauth fallback).
+ *   - `'tolerated-failure'`— any non-success terminal status hit AND
+ *                            `tolerateTerminalFailure=true`. Caller treats the
+ *                            request as "give up on this optional metadata"
+ *                            and continues. NO `failed` event was yielded,
+ *                            so the parent stream stays clean for `completed`.
+ *   - `'terminal'`         — a terminal `failed` event was already yielded;
+ *                            caller should bail out.
+ *
+ * Tolerance flags are independent: an ancestors fetch sets BOTH so a 401 OR
+ * a 404 OR rate-limit-exhaustion all return without dirtying the stream.
+ */
 type RequestOutcome<T> =
   | { outcome: 'value'; value: T }
   | { outcome: 'auth-rejected' }
+  | { outcome: 'tolerated-failure' }
   | { outcome: 'terminal' };
 
 async function* requestJsonWithRetries<T>(
@@ -1168,6 +1278,7 @@ async function* requestJsonWithRetries<T>(
   retryBaseMs: number | undefined,
   label: string,
   tolerateAuthFailure: boolean,
+  tolerateTerminalFailure = false,
 ): AsyncGenerator<ScavengerEvent, RequestOutcome<T>, void> {
   let attempt = 1;
   while (true) {
@@ -1184,6 +1295,9 @@ async function* requestJsonWithRetries<T>(
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (tolerateTerminalFailure) {
+        return { outcome: 'tolerated-failure' };
+      }
       yield {
         kind: 'failed' as const,
         reason: 'network-error' as const,
@@ -1205,6 +1319,9 @@ async function* requestJsonWithRetries<T>(
         retryAfterMs,
       );
       if (!decision.retry) {
+        if (tolerateTerminalFailure) {
+          return { outcome: 'tolerated-failure' };
+        }
         yield {
           kind: 'failed' as const,
           reason: 'rate-limit-exhausted' as const,
@@ -1226,6 +1343,9 @@ async function* requestJsonWithRetries<T>(
       if (tolerateAuthFailure) {
         return { outcome: 'auth-rejected' };
       }
+      if (tolerateTerminalFailure) {
+        return { outcome: 'tolerated-failure' };
+      }
       yield {
         kind: 'auth-required' as const,
         reason: 'revoked' as const,
@@ -1240,6 +1360,9 @@ async function* requestJsonWithRetries<T>(
     }
 
     if (res.status === 404 || res.status === 410) {
+      if (tolerateTerminalFailure) {
+        return { outcome: 'tolerated-failure' };
+      }
       yield {
         kind: 'failed' as const,
         reason: 'content-removed' as const,
@@ -1249,6 +1372,9 @@ async function* requestJsonWithRetries<T>(
     }
 
     if (!res.ok) {
+      if (tolerateTerminalFailure) {
+        return { outcome: 'tolerated-failure' };
+      }
       yield {
         kind: 'failed' as const,
         reason: 'network-error' as const,
@@ -1261,6 +1387,9 @@ async function* requestJsonWithRetries<T>(
       const value = (await res.json()) as T;
       return { outcome: 'value', value };
     } catch (parseErr) {
+      if (tolerateTerminalFailure) {
+        return { outcome: 'tolerated-failure' };
+      }
       yield {
         kind: 'failed' as const,
         reason: 'network-error' as const,

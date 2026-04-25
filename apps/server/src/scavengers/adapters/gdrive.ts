@@ -264,9 +264,7 @@ type CredentialValidation =
   | { ok: true; creds: GDriveCredentials; caps: ResolvedCaps }
   | { ok: false; reason: string };
 
-function isValidOAuthShape(o: unknown): o is GDriveOAuthCredentials['accessToken'] extends string
-  ? Record<string, unknown>
-  : never {
+function isValidOAuthShape(o: unknown): o is Record<string, unknown> {
   if (!o || typeof o !== 'object') return false;
   const r = o as Record<string, unknown>;
   return (
@@ -348,17 +346,26 @@ function validateCredentials(
   };
 }
 
+/**
+ * Resolve per-credential caps, falling back to `defaults` for any field that
+ * is missing, non-finite, or NOT strictly positive.
+ *
+ * Zero / negative values are intentionally REJECTED (treated as "use default")
+ * because silently producing empty enumerations is more surprising than
+ * ignoring an obviously-broken override. Callers who want to disable a cap
+ * should use `Number.MAX_SAFE_INTEGER`, not 0.
+ */
 function resolveCaps(raw: unknown, defaults: ResolvedCaps): ResolvedCaps {
   if (!raw || typeof raw !== 'object') return defaults;
   const r = raw as Record<string, unknown>;
   const out: ResolvedCaps = { ...defaults };
-  if (typeof r['maxFiles'] === 'number' && Number.isFinite(r['maxFiles']) && r['maxFiles'] >= 0) {
+  if (typeof r['maxFiles'] === 'number' && Number.isFinite(r['maxFiles']) && r['maxFiles'] > 0) {
     out.maxFiles = r['maxFiles'];
   }
-  if (typeof r['maxBytes'] === 'number' && Number.isFinite(r['maxBytes']) && r['maxBytes'] >= 0) {
+  if (typeof r['maxBytes'] === 'number' && Number.isFinite(r['maxBytes']) && r['maxBytes'] > 0) {
     out.maxBytes = r['maxBytes'];
   }
-  if (typeof r['maxDepth'] === 'number' && Number.isFinite(r['maxDepth']) && r['maxDepth'] >= 0) {
+  if (typeof r['maxDepth'] === 'number' && Number.isFinite(r['maxDepth']) && r['maxDepth'] > 0) {
     out.maxDepth = r['maxDepth'];
   }
   return out;
@@ -594,6 +601,18 @@ export function createGdriveAdapter(options?: GDriveAdapterOptions): ScavengerAd
               ? `${parsedTarget.id}/${parsedTarget.resourceKey}`
               : undefined;
 
+            // Docs/Sheets/Slides/Forms URLs are guaranteed Google-native by
+            // their URL shape — short-circuit without spending a metadata API
+            // call. Saves an authoritative request per docs URL.
+            if (parsedTarget.resourceType === 'doc-shaped') {
+              yield {
+                kind: 'failed' as const,
+                reason: 'no-downloadable-formats' as const,
+                details: `Google Drive URL ${target.kind === 'url' ? target.url : parsedTarget.id} is a Google-native document; export not supported`,
+              };
+              return;
+            }
+
             const meta = yield* fetchMetadata(
               parsedTarget.id,
               creds,
@@ -602,17 +621,6 @@ export function createGdriveAdapter(options?: GDriveAdapterOptions): ScavengerAd
               { httpFetch, apiBase, maxRetries, retryBaseMs },
             );
             if (!meta) return;
-
-            // If the URL was doc-shaped, the metadata WILL be Google-native —
-            // single-item skip → no-downloadable-formats.
-            if (parsedTarget.resourceType === 'doc-shaped') {
-              yield {
-                kind: 'failed' as const,
-                reason: 'no-downloadable-formats' as const,
-                details: `Google Drive item ${meta.name} (${meta.mimeType}) is a Google-native format; export not supported`,
-              };
-              return;
-            }
 
             // Folder → recursive enumeration.
             if (meta.mimeType === FOLDER_MIME) {
@@ -1176,13 +1184,6 @@ async function* downloadFile(
   context: FetchContext,
   env: RequestEnv,
 ): AsyncGenerator<ScavengerEvent, NormalizedItem['files'][number] | null, void> {
-  const baseName =
-    sanitizeFilename(file.name) ?? `gdrive-${file.id}.bin`;
-  const finalName = nextUniqueName(baseName, usedNames);
-  usedNames.add(finalName);
-
-  const destPath = path.join(context.stagingDir, finalName);
-
   // Build download URL. For oauth+api-key, follow the same cascade.
   const baseDlUrl = `${env.apiBase}/files/${encodeURIComponent(file.id)}`;
   const dlQuery = { alt: 'media' };
@@ -1327,55 +1328,28 @@ async function* downloadFile(
 
   const dlRes = attempt.res;
 
-  // Filename: prefer Content-Disposition, fall back to the metadata-based name.
-  const cdName = filenameFromContentDisposition(dlRes.headers.get('content-disposition'));
-  if (cdName) {
-    const sanitized = sanitizeFilename(cdName);
-    if (sanitized) {
-      // Use the Content-Disposition-derived name only if it doesn't collide.
-      const cdFinal = nextUniqueName(sanitized, usedNames);
-      // We've already reserved `finalName` above; if CD gave us something
-      // different, swap to it.
-      if (cdFinal !== finalName) {
-        usedNames.delete(finalName);
-        usedNames.add(cdFinal);
-        // Re-target dest path.
-        const newDest = path.join(context.stagingDir, cdFinal);
-        try {
-          const nodeReadable = Readable.fromWeb(
-            dlRes.body as unknown as import('stream/web').ReadableStream<Uint8Array>,
-          );
-          await streamPipeline(nodeReadable, createWriteStream(newDest));
-        } catch (streamErr) {
-          await fsp.unlink(newDest).catch(() => {});
-          const msg =
-            streamErr instanceof Error ? streamErr.message : String(streamErr);
-          yield {
-            kind: 'failed' as const,
-            reason: 'network-error' as const,
-            details: `Google Drive download stream error: ${msg}`,
-            error: streamErr,
-          };
-          return null;
-        }
-        let size: number | undefined;
-        try {
-          const stat = await fsp.stat(newDest);
-          size = stat.size;
-        } catch {
-          /* ignore */
-        }
-        const out: NormalizedItem['files'][number] = {
-          stagedPath: newDest,
-          suggestedName: cdFinal,
-        };
-        if (size !== undefined) out.size = size;
-        return out;
-      }
-    }
-  }
+  // ── Choose final filename AFTER seeing Content-Disposition ───────────────
+  //
+  // Order of preference:
+  //   1. Content-Disposition's filename (sanitized) — server-authoritative.
+  //   2. metadata.name (sanitized) — fallback when no CD header.
+  //   3. `gdrive-<id>.bin` — last-resort safe default.
+  //
+  // Crucially we do NOT reserve a metadata-derived name in `usedNames` before
+  // this decision. Doing so caused a bug where a CD header echoing the same
+  // name as metadata would be treated as a sibling collision and suffixed
+  // `_2`. The reservation happens once at the bottom, against the chosen
+  // name only. Cross-file dedup (sibling-folder name clashes) still goes
+  // through `nextUniqueName`.
+  const cdRaw = filenameFromContentDisposition(dlRes.headers.get('content-disposition'));
+  const cdSanitized = cdRaw ? sanitizeFilename(cdRaw) : null;
+  const metaSanitized = sanitizeFilename(file.name);
+  const baseName = cdSanitized ?? metaSanitized ?? `gdrive-${file.id}.bin`;
+  const finalName = nextUniqueName(baseName, usedNames);
+  usedNames.add(finalName);
 
-  // Default path: stream into `destPath` chosen up-front.
+  const destPath = path.join(context.stagingDir, finalName);
+
   try {
     const nodeReadable = Readable.fromWeb(
       dlRes.body as unknown as import('stream/web').ReadableStream<Uint8Array>,
@@ -1417,13 +1391,14 @@ function nextUniqueName(base: string, used: Set<string>): string {
   const dot = base.lastIndexOf('.');
   const stem = dot > 0 ? base.slice(0, dot) : base;
   const ext = dot > 0 ? base.slice(dot) : '';
+
   let n = 2;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const candidate = `${stem}_${n}${ext}`;
-    if (!used.has(candidate)) return candidate;
+  let candidate = `${stem}_${n}${ext}`;
+  while (used.has(candidate)) {
     n += 1;
+    candidate = `${stem}_${n}${ext}`;
   }
+  return candidate;
 }
 
 // ---------------------------------------------------------------------------

@@ -280,13 +280,10 @@ describe('createGdriveAdapter — URL parsing', () => {
     expect(last?.kind).toBe('completed');
   });
 
-  it('test 11: docs.google.com URL → metadata fetched, then no-downloadable-formats', async () => {
-    const httpFetch = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({
-        ...fileMeta,
-        mimeType: 'application/vnd.google-apps.document',
-        name: 'Some Doc',
-      }));
+  it('test 11: docs.google.com URL → no-downloadable-formats WITHOUT a metadata API call', async () => {
+    // M1: doc-shaped URLs are guaranteed Google-native by their URL shape.
+    // The adapter must short-circuit before spending a metadata API call.
+    const httpFetch = vi.fn();
 
     const stagingDir = await makeStagingDir();
     const adapter = makeAdapter(httpFetch);
@@ -297,6 +294,7 @@ describe('createGdriveAdapter — URL parsing', () => {
     expect(last?.kind).toBe('failed');
     if (last?.kind !== 'failed') return;
     expect(last.reason).toBe('no-downloadable-formats');
+    expect(httpFetch).not.toHaveBeenCalled();
   });
 
   it('test 12: source-item-id target → treated as file id, metadata disambiguates', async () => {
@@ -1215,5 +1213,99 @@ describe('createGdriveAdapter — filename + dedup', () => {
     const names = last.item.files.map((f) => f.suggestedName);
     expect(names).toContain('model.stl');
     expect(names).toContain('model_2.stl');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 50-52: Content-Disposition handling (regression coverage for B1)
+// ---------------------------------------------------------------------------
+
+describe('createGdriveAdapter — Content-Disposition handling', () => {
+  it('test 50: CD echoes metadata name → file staged under original name (NOT suffixed)', async () => {
+    // Drive frequently echoes `attachment; filename="<original_name>"`. The
+    // earlier B1 bug reserved the metadata-derived name in `usedNames` BEFORE
+    // checking CD, so an echoing CD header looked like a sibling collision
+    // and produced `<name>_2.ext`. The fix defers reservation until the
+    // single final name is chosen.
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(fileMeta)) // metadata.name = "cool-model.stl"
+      .mockResolvedValueOnce(
+        fileResponse('content', {
+          'content-disposition': 'attachment; filename="cool-model.stl"',
+        }),
+      );
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiKeyCreds() });
+
+    const events = await collect(adapter, ctx, urlTarget(FILE_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'completed') throw new Error('expected completed');
+    expect(last.item.files[0]!.suggestedName).toBe('cool-model.stl');
+
+    // Disk-level confirmation: only the un-suffixed file exists.
+    const diskFiles = await fsp.readdir(stagingDir);
+    expect(diskFiles).toEqual(['cool-model.stl']);
+  });
+
+  it('test 51: CD differs from metadata → file staged under CD-derived sanitized name', async () => {
+    // Server-authoritative CD takes precedence over metadata.name when the
+    // two differ (e.g. Drive resolved a collision server-side or normalized
+    // the case).
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(fileMeta)) // metadata.name = "cool-model.stl"
+      .mockResolvedValueOnce(
+        fileResponse('content', {
+          'content-disposition': 'attachment; filename="server-renamed.stl"',
+        }),
+      );
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiKeyCreds() });
+
+    const events = await collect(adapter, ctx, urlTarget(FILE_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'completed') throw new Error('expected completed');
+    expect(last.item.files[0]!.suggestedName).toBe('server-renamed.stl');
+
+    const diskFiles = await fsp.readdir(stagingDir);
+    expect(diskFiles).toEqual(['server-renamed.stl']);
+  });
+
+  it('test 52: CD header absent → falls back to sanitized metadata name', async () => {
+    // No content-disposition header at all. Adapter must use the metadata
+    // name (already covered for the happy path elsewhere; this test locks
+    // the precedence rule explicitly).
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(fileMeta))
+      .mockResolvedValueOnce(fileResponse('content')); // no CD header
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiKeyCreds() });
+
+    const events = await collect(adapter, ctx, urlTarget(FILE_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'completed') throw new Error('expected completed');
+    expect(last.item.files[0]!.suggestedName).toBe('cool-model.stl');
+  });
+
+  it('test 53: CD header malformed (no filename field) → falls back to metadata name', async () => {
+    const httpFetch = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(fileMeta))
+      .mockResolvedValueOnce(
+        fileResponse('content', { 'content-disposition': 'attachment' }),
+      );
+
+    const stagingDir = await makeStagingDir();
+    const adapter = makeAdapter(httpFetch);
+    const ctx = makeCtx({ stagingDir, credentials: apiKeyCreds() });
+
+    const events = await collect(adapter, ctx, urlTarget(FILE_URL));
+    const last = events[events.length - 1];
+    if (last?.kind !== 'completed') throw new Error('expected completed');
+    expect(last.item.files[0]!.suggestedName).toBe('cool-model.stl');
   });
 });

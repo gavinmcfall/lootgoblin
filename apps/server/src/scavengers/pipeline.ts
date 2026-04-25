@@ -82,12 +82,32 @@ export type IngestOptions = {
 };
 
 export interface IngestPipeline {
-  /** Run the full pipeline for a single target. Creates ingest_jobs row, invokes adapter, handles outcome. */
+  /**
+   * Run the full pipeline for a single target.
+   *
+   * Two job-row modes:
+   *
+   *   1. `existingJobId` omitted (default — used by /api/v1/loot/upload).
+   *      The pipeline INSERTs a fresh `ingest_jobs` row with status='queued',
+   *      then drives it through the lifecycle.
+   *
+   *   2. `existingJobId` provided (used by the V2-003-T9 ingest worker).
+   *      The route already inserted the row when it accepted POST /api/v1/ingest;
+   *      the worker has just claimed it (status='running'). The pipeline
+   *      MUST NOT insert a new row — it updates the existing one. Caller is
+   *      responsible for the initial insert + claim transition.
+   */
   run(args: {
     adapter: ScavengerAdapter;
     target: FetchTarget;
     credentials?: Record<string, unknown>;
     signal?: AbortSignal;
+    /**
+     * If set, the pipeline reuses this row id instead of inserting a new one.
+     * The row must already exist with at least `ownerId`, `sourceId`,
+     * `targetKind`, `targetPayload`, and `collectionId` populated.
+     */
+    existingJobId?: string;
   }): Promise<IngestOutcome>;
 }
 
@@ -116,27 +136,32 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
   }
 
   return {
-    async run({ adapter, target, credentials, signal }) {
-      const jobId = crypto.randomUUID();
+    async run({ adapter, target, credentials, signal, existingJobId }) {
+      const jobId = existingJobId ?? crypto.randomUUID();
       const createdAt = now();
 
-      // ── 1. Create ingest_jobs row ─────────────────────────────────────────
-      await db().insert(schema.ingestJobs).values({
-        id: jobId,
-        ownerId,
-        sourceId: adapter.id,
-        targetKind: target.kind,
-        targetPayload: JSON.stringify(target),
-        collectionId,
-        status: 'queued',
-        lootId: null,
-        quarantineItemId: null,
-        failureReason: null,
-        failureDetails: null,
-        attempt: 1,
-        createdAt,
-        updatedAt: createdAt,
-      });
+      // ── 1. Create ingest_jobs row (skipped when existingJobId is supplied)
+      // The V2-003-T9 ingest worker inserts the row at POST time and claims
+      // it (status='running') before calling run(). Inserting again would
+      // cause a UNIQUE-PK collision; updating it is the correct path below.
+      if (!existingJobId) {
+        await db().insert(schema.ingestJobs).values({
+          id: jobId,
+          ownerId,
+          sourceId: adapter.id,
+          targetKind: target.kind,
+          targetPayload: JSON.stringify(target),
+          collectionId,
+          status: 'queued',
+          lootId: null,
+          quarantineItemId: null,
+          failureReason: null,
+          failureDetails: null,
+          attempt: 1,
+          createdAt,
+          updatedAt: createdAt,
+        });
+      }
 
       // ── 2. Create staging dir (inside try so mkdir failures are caught) ───
       const stagingDir = path.join(stagingRoot, jobId);

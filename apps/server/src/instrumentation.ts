@@ -3,6 +3,7 @@ export async function register() {
     const { startOtel } = await import('./otel');
     const { runMigrations } = await import('./db/client');
     const { startWorkers } = await import('./workers/pool');
+    const { startIngestWorker } = await import('./workers/ingest-worker');
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -49,6 +50,8 @@ export async function register() {
     }
 
     startWorkers();
+    // V2-003-T9 ingest worker — drains ingest_jobs WHERE status='queued'.
+    startIngestWorker();
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));

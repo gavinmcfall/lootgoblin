@@ -396,7 +396,9 @@ describe('GET /api/v1/ingest (list)', () => {
     const colId = await seedCollection(userId, stashId);
     const postMod = await import('../../src/app/api/v1/ingest/route');
 
-    // Create 3 jobs.
+    // Create 3 jobs. Sleep 2ms between creates so each row gets a distinct
+    // createdAt millisecond — the cursor uses strict lt() and a same-ms
+    // race would put all rows on the same cursor boundary.
     for (let i = 0; i < 3; i++) {
       mockAuthenticate.mockResolvedValueOnce(actor(userId));
       const r = await postMod.POST(makePost({
@@ -404,6 +406,7 @@ describe('GET /api/v1/ingest (list)', () => {
         collectionId: colId,
       }));
       expect(r.status).toBe(201);
+      await new Promise((res) => setTimeout(res, 5));
     }
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
@@ -416,9 +419,9 @@ describe('GET /api/v1/ingest (list)', () => {
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const res2 = await GET(makeGet(`?limit=2&cursor=${encodeURIComponent(json1.nextCursor)}`));
     const json2 = await res2.json();
-    // The next page is owner-scoped; we created 3 user jobs in this test,
-    // plus possibly more from earlier tests in the same file. The cursor
-    // gates us to "older than json1's last entry" → at least the 3rd of 3.
+    // Owner-scoped — we created 3 user jobs in this test (plus possibly
+    // earlier ones for the same user from prior cases). The cursor gates
+    // to "older than json1's last entry" → at least the 3rd of 3.
     expect(json2.jobs.length).toBeGreaterThanOrEqual(1);
   });
 });

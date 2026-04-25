@@ -42,6 +42,7 @@ import {
   createMakerWorldAdapter,
   createPrintablesAdapter,
   createUploadAdapter,
+  createThingiverseAdapter,
 } from '../../../src/scavengers';
 
 // ---------------------------------------------------------------------------
@@ -109,6 +110,7 @@ export function rewireAdaptersForMsw(): void {
   defaultRegistry.register(createPrintablesAdapter({ httpFetch: lazyFetch, retryBaseMs: 0 }));
   defaultRegistry.register(createSketchfabAdapter({ httpFetch: lazyFetch, retryBaseMs: 0 }));
   defaultRegistry.register(createGdriveAdapter({ httpFetch: lazyFetch, retryBaseMs: 0 }));
+  defaultRegistry.register(createThingiverseAdapter({ httpFetch: lazyFetch, retryBaseMs: 0 }));
 }
 
 /** Best-effort SQLite teardown. Quiet on missing files. */

@@ -715,3 +715,142 @@ describe('12. restored file un-flags file_missing', () => {
     expect(lootAfter[0]?.fileMissing).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests 13-15: V2-002 T5 carry-forward — default policy emits ledger events
+// on removed-externally and content-changed, and survives ledger failures.
+// ---------------------------------------------------------------------------
+
+describe('13. default policy emits ledger event on removed-externally', () => {
+  it('persists a reconciler.removed-externally event after marking loot.fileMissing', async () => {
+    const scratchDir = makeScratchDir();
+    const fileContent = 'content to be removed with audit trail';
+    const filePath = path.join(scratchDir, 'audit-remove.stl');
+    writeFileSync(filePath, fileContent);
+    const hash = await sha256OfContent(fileContent);
+
+    const userId = await seedUser();
+    const rootId = await seedStashRoot(userId, scratchDir);
+    const collId = await seedCollection(userId, rootId);
+    const lootId = await seedLoot(collId);
+    const lootFileId = await seedLootFile(lootId, 'audit-remove.stl', hash, fileContent.length);
+
+    unlinkSync(filePath);
+
+    const rec = createReconciler({
+      stashRoots: [{ id: rootId, path: scratchDir }],
+      rescanIntervalMs: 0,
+      eventDebounceMs: DEBOUNCE_MS,
+    });
+
+    await rec.start();
+    await rec.rescan();
+    await rec.stop();
+
+    const events = await db()
+      .select()
+      .from(schema.ledgerEvents)
+      .where(eq(schema.ledgerEvents.resourceId, lootFileId));
+
+    const removedEvents = events.filter((e) => e.kind === 'reconciler.removed-externally');
+    expect(removedEvents.length).toBeGreaterThanOrEqual(1);
+
+    const evt = removedEvents[removedEvents.length - 1]!;
+    expect(evt.resourceType).toBe('loot-file');
+    expect(evt.actorId).toBeNull(); // system-reconciler — nullable actor
+    expect(evt.payload).toBeTruthy();
+    const payload = JSON.parse(evt.payload!);
+    expect(payload.lootId).toBe(lootId);
+    expect(payload.path).toBe('audit-remove.stl');
+  });
+});
+
+describe('14. default policy emits ledger event on content-changed', () => {
+  it('persists a reconciler.content-changed event after updating hash/size', async () => {
+    const scratchDir = makeScratchDir();
+    const originalContent = 'original audit content';
+    const newContent = 'audit drifted content';
+    const filePath = path.join(scratchDir, 'audit-change.stl');
+    writeFileSync(filePath, originalContent);
+    const originalHash = await sha256OfContent(originalContent);
+    const newHash = await sha256OfContent(newContent);
+
+    const userId = await seedUser();
+    const rootId = await seedStashRoot(userId, scratchDir);
+    const collId = await seedCollection(userId, rootId);
+    const lootId = await seedLoot(collId);
+    const lootFileId = await seedLootFile(lootId, 'audit-change.stl', originalHash, originalContent.length);
+
+    const rec = createReconciler({
+      stashRoots: [{ id: rootId, path: scratchDir }],
+      rescanIntervalMs: 0,
+      eventDebounceMs: DEBOUNCE_MS,
+    });
+
+    await rec.start();
+    writeFileSync(filePath, newContent);
+    await rec.rescan();
+    await rec.stop();
+
+    const events = await db()
+      .select()
+      .from(schema.ledgerEvents)
+      .where(eq(schema.ledgerEvents.resourceId, lootFileId));
+
+    const changedEvents = events.filter((e) => e.kind === 'reconciler.content-changed');
+    expect(changedEvents.length).toBeGreaterThanOrEqual(1);
+
+    const evt = changedEvents[changedEvents.length - 1]!;
+    expect(evt.resourceType).toBe('loot-file');
+    expect(evt.actorId).toBeNull();
+    const payload = JSON.parse(evt.payload!);
+    expect(payload.lootId).toBe(lootId);
+    expect(payload.path).toBe('audit-change.stl');
+    expect(payload.newHash).toBe(newHash);
+    expect(payload.newSize).toBe(newContent.length);
+  });
+});
+
+describe('15. default policy — ledger failure is non-fatal', () => {
+  it('still marks loot.fileMissing when persistLedgerEvent throws', async () => {
+    const scratchDir = makeScratchDir();
+    const fileContent = 'policy ledger-failure test';
+    const filePath = path.join(scratchDir, 'policy-ledger-fail.stl');
+    writeFileSync(filePath, fileContent);
+    const hash = await sha256OfContent(fileContent);
+
+    const userId = await seedUser();
+    const rootId = await seedStashRoot(userId, scratchDir);
+    const collId = await seedCollection(userId, rootId);
+    const lootId = await seedLoot(collId);
+    await seedLootFile(lootId, 'policy-ledger-fail.stl', hash, fileContent.length);
+
+    unlinkSync(filePath);
+
+    // Spy on persistLedgerEvent so the reconciler's call throws.
+    const ledgerModule = await import('../../src/stash/ledger');
+    const spy = vi
+      .spyOn(ledgerModule, 'persistLedgerEvent')
+      .mockRejectedValue(new Error('simulated ledger failure inside policy'));
+
+    try {
+      const rec = createReconciler({
+        stashRoots: [{ id: rootId, path: scratchDir }],
+        rescanIntervalMs: 0,
+        eventDebounceMs: DEBOUNCE_MS,
+      });
+
+      await rec.start();
+      await rec.rescan();
+      await rec.stop();
+
+      // Primary effect applied despite ledger failure.
+      const lootRow = await db().select().from(schema.loot).where(eq(schema.loot.id, lootId)).limit(1);
+      expect(lootRow[0]?.fileMissing).toBe(true);
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+

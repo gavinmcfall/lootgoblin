@@ -25,6 +25,7 @@ import { eq, and } from 'drizzle-orm';
 
 import { logger } from '../logger';
 import { getDb, schema } from '../db/client';
+import { encrypt } from '../crypto';
 import { sha256Hex } from '../stash/hash-util';
 import { applySingleCandidate } from '../stash/adoption/applier';
 import { sniffFormat, DEFAULT_ACCEPTED_FORMATS } from './format-sniff';
@@ -147,11 +148,62 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
         await safeUpdateJob(db, jobId, { status: 'fetching', updatedAt: now() });
 
         // ── 4. Drive adapter event loop ─────────────────────────────────────
+        //
+        // onTokenRefreshed: when the adapter refreshes an OAuth token (or any
+        // other credential bag), we persist the new bag back to source_credentials
+        // so subsequent fetches use the fresh access token instead of triggering
+        // another refresh round-trip. Errors here MUST NOT propagate — adapters
+        // already received the refreshed bag in-memory and the request will
+        // succeed; persistence is best-effort.
+        //
+        // Lookup model: source_credentials is keyed by sourceId (no per-user
+        // column in the existing schema). We update the most-recent active row
+        // for the given sourceId. If no row is present (rare race — credential
+        // was deleted between fetch start and refresh), we log warn + skip.
         const fetchCtx = {
           userId: ownerId,
           credentials,
           stagingDir,
           signal,
+          onTokenRefreshed: async (newCredentials: Record<string, unknown>) => {
+            try {
+              const secret = process.env.LOOTGOBLIN_SECRET;
+              if (!secret) {
+                logger.warn(
+                  { jobId, sourceId: adapter.id },
+                  'ingest: LOOTGOBLIN_SECRET unset — skipping refreshed-credential persistence',
+                );
+                return;
+              }
+              const rows = await db()
+                .select({ id: schema.sourceCredentials.id })
+                .from(schema.sourceCredentials)
+                .where(eq(schema.sourceCredentials.sourceId, adapter.id))
+                .limit(1);
+              const row = rows[0];
+              if (!row) {
+                logger.warn(
+                  { jobId, sourceId: adapter.id },
+                  'ingest: no source_credentials row to persist refreshed credentials — skipping',
+                );
+                return;
+              }
+              const blob = JSON.stringify(newCredentials);
+              const encrypted = encrypt(blob, secret);
+              await db()
+                .update(schema.sourceCredentials)
+                .set({
+                  encryptedBlob: Buffer.from(encrypted),
+                  lastUsedAt: now(),
+                })
+                .where(eq(schema.sourceCredentials.id, row.id));
+            } catch (err) {
+              logger.warn(
+                { jobId, sourceId: adapter.id, err },
+                'ingest: failed to persist refreshed credentials (non-fatal)',
+              );
+            }
+          },
         };
 
         let completedItem: NormalizedItem | null = null;

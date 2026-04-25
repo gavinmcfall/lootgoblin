@@ -390,6 +390,57 @@ describe('bulk-restructure ledger — change-template', () => {
     const payload = JSON.parse(event.payload!);
     expect(payload.action.kind).toBe('change-template');
     expect(payload.manifest.applied).toContain(lootId);
+
+    // V2-002 T10 carry-forward: change-template bulks use resourceType
+    // 'bulk-action' with a synthetic `bulk-<actor>-<timestamp>` resourceId,
+    // NOT the actor id as a 'collection' (which previously polluted
+    // collection audit queries).
+    expect(event.resourceType).toBe('bulk-action');
+    expect(event.resourceId).toMatch(new RegExp(`^bulk-${ownerId}-\\d+$`));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 4b — move-to-collection still uses resourceType='collection' + target id
+// ---------------------------------------------------------------------------
+
+describe('bulk-restructure ledger — move-to-collection resourceType invariant', () => {
+  it('uses resourceType=collection with resourceId=targetCollectionId (regression guard for T10 carry-forward)', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const sourceCollId = await seedCollection(
+      ownerId, stashRootId, '{title|slug}', `t4b-src-${uid().slice(0, 8)}`,
+    );
+    const targetCollId = await seedCollection(
+      ownerId, stashRootId, '{creator|slug}/{title|slug}', `t4b-tgt-${uid().slice(0, 8)}`,
+    );
+
+    const lootId = await seedLoot(sourceCollId, { title: 'Bow', creator: 'Elf' });
+    const rel = 'bow.stl';
+    await writeFile(path.join(scratch, rel), 'bow\n');
+    await seedLootFile(lootId, rel, path.join(scratch, rel));
+
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      aclCheck: async () => true,
+    });
+
+    await engine.execute({
+      action: { kind: 'move-to-collection', targetCollectionId: targetCollId },
+      lootIds: [lootId],
+      ownerId,
+    });
+
+    const events = await getLedgerEvents({
+      kind: 'bulk.move-to-collection',
+      resourceType: 'collection',
+      resourceId: targetCollId,
+    });
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    const evt = events[events.length - 1]!;
+    expect(evt.resourceType).toBe('collection');
+    expect(evt.resourceId).toBe(targetCollId);
   });
 });
 

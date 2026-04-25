@@ -132,18 +132,33 @@ function createDefaultLedgerEmitter(dbUrl?: string): BulkLedgerEmitter {
   return {
     async emitBulk(event) {
       try {
-        // For move-to-collection the canonical resource is the target collection.
-        // For change-template there is no single collection (the action is multi-collection),
-        // so we use the actor as the resource id — it's still a valid, non-empty identifier.
-        const resourceId =
-          event.action.kind === 'move-to-collection'
-            ? event.action.targetCollectionId
-            : event.actorOwnerId;
+        // Choose resourceType + resourceId so `(resource_type, resource_id)`
+        // audit queries don't return cross-type false hits.
+        //
+        //   move-to-collection → resourceType='collection', resourceId=targetCollectionId
+        //     (the canonical resource acted on)
+        //   change-template    → resourceType='bulk-action', resourceId=synthetic
+        //     `bulk-${actorOwnerId}-${timestamp}`
+        //     (V2-002 T10 carry-forward: previously used actorOwnerId as
+        //      resourceId with resourceType='collection', which polluted
+        //      collection audit queries and made user-id lookups hit bulk
+        //      events by accident. 'bulk-action' is a synthetic type name
+        //      reserved for multi-collection bulks that have no single
+        //      canonical resource.)
+        let resourceType: string;
+        let resourceId: string;
+        if (event.action.kind === 'move-to-collection') {
+          resourceType = 'collection';
+          resourceId = event.action.targetCollectionId;
+        } else {
+          resourceType = 'bulk-action';
+          resourceId = `bulk-${event.actorOwnerId}-${event.timestamp.getTime()}`;
+        }
         const result = await persistLedgerEvent(
           {
             kind: `bulk.${event.action.kind}`,
             actorId: event.actorOwnerId,
-            resourceType: 'collection',
+            resourceType,
             resourceId,
             payload: {
               action: event.action,

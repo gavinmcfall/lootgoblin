@@ -66,6 +66,17 @@ export type {
 } from './adapters/sketchfab';
 export { createSketchfabAdapter } from './adapters/sketchfab';
 
+// Google Drive adapter — T8 (OAuth + API key + folder recursion).
+export type {
+  GDriveAdapterOptions,
+  GDriveCredentials,
+  GDriveOAuthCredentials,
+  GDriveApiKeyCredentials,
+  GDriveDualCredentials,
+  GDriveCaps,
+} from './adapters/gdrive';
+export { createGdriveAdapter } from './adapters/gdrive';
+
 // Shared filename sanitizer — used by URL-driven adapters (T5+).
 export { sanitizeFilename } from './filename-sanitize';
 
@@ -83,6 +94,7 @@ import { createCults3dAdapter } from './adapters/cults3d';
 import { createMakerWorldAdapter } from './adapters/makerworld';
 import { createPrintablesAdapter } from './adapters/printables';
 import { createSketchfabAdapter } from './adapters/sketchfab';
+import { createGdriveAdapter } from './adapters/gdrive';
 import type { ScavengerRegistry } from './registry';
 
 /**
@@ -99,6 +111,6 @@ export function createDefaultRegistry(): ScavengerRegistry {
   registry.register(createMakerWorldAdapter());
   registry.register(createPrintablesAdapter());
   registry.register(createSketchfabAdapter());
-  // T8 will add: google-drive
+  registry.register(createGdriveAdapter());
   return registry;
 }

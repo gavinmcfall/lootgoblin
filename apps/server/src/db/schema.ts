@@ -23,6 +23,11 @@ export * from './schema.indexer';
 // Ledger tables — V2-002-T13.
 export * from './schema.ledger';
 
+// Watchlist tables — V2-004-T1.
+// NOTE: must be re-exported BEFORE schema.ingest so the FK reference from
+// ingest_jobs.parent_subscription_id resolves at module-load time.
+export * from './schema.watchlist';
+
 // Ingest jobs table — V2-003-T2.
 export * from './schema.ingest';
 

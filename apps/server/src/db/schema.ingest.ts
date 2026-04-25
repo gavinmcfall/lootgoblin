@@ -1,5 +1,5 @@
 /**
- * Ingest jobs table — V2-003-T2
+ * Ingest jobs table — V2-003-T2 (extended in V2-004-T1)
  *
  * Tracks every ingest pipeline run from source fetch through validation,
  * dedup, and final placement (into Loot) or quarantine.
@@ -10,6 +10,12 @@
  *              → failed
  *              → paused-auth
  *              → rate-limit-deferred
+ *
+ * V2-004-T1 added the optional `parent_subscription_id` FK so children
+ * jobs spawned by a watchlist firing can be traced back to the originating
+ * subscription. ON DELETE SET NULL (NOT CASCADE) — deleting a subscription
+ * must NOT yank in-flight ingest_jobs out from under the pipeline. The
+ * parent reference is simply nulled out; the job runs to completion.
  */
 
 import { sql } from 'drizzle-orm';
@@ -18,6 +24,7 @@ import { user } from './schema.auth';
 import { collections } from './schema.stash';
 import { loot } from './schema.stash';
 import { quarantineItems } from './schema.stash';
+import { watchlistSubscriptions } from './schema.watchlist';
 
 // ---------------------------------------------------------------------------
 // ingestJobs
@@ -88,6 +95,18 @@ export const ingestJobs = sqliteTable(
      * for non-NULL values so legacy + non-idempotent jobs coexist.
      */
     idempotencyKey: text('idempotency_key'),
+    /**
+     * V2-004-T1: optional FK → watchlist_subscriptions.id. Set when this
+     * ingest_job was spawned by a Watchlist firing's discovery phase.
+     *
+     * SET NULL on delete — if the user deletes the originating subscription
+     * mid-flight, the job continues to completion; only the lineage pointer
+     * is cleared. CASCADE would risk losing files mid-stream.
+     */
+    parentSubscriptionId: text('parent_subscription_id').references(
+      () => watchlistSubscriptions.id,
+      { onDelete: 'set null' },
+    ),
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   },
@@ -113,5 +132,13 @@ export const ingestJobs = sqliteTable(
     uniqueIndex('ingest_jobs_owner_idem_uniq')
       .on(t.ownerId, t.idempotencyKey)
       .where(sql`idempotency_key IS NOT NULL`),
+    /**
+     * V2-004-T1: "List ingest_jobs spawned by subscription X" — partial,
+     * only indexes rows where parent_subscription_id is non-NULL so the
+     * index stays small (the vast majority of paste-driven jobs have NULL).
+     */
+    index('ingest_jobs_parent_sub_idx')
+      .on(t.parentSubscriptionId)
+      .where(sql`parent_subscription_id IS NOT NULL`),
   ],
 );

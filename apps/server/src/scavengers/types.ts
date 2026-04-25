@@ -77,6 +77,26 @@ export type NormalizedItem = {
    * by T2, not by the adapter.
    */
   sourcePublishedAt?: Date;
+  /**
+   * Optional relationships to other items (remix-of, fork-of, etc).
+   *
+   * Adapters MAY emit relationships when the source exposes them — e.g.
+   * Thingiverse derivatives via `is_derivative` + `ancestors[]`, or future
+   * GitHub-style forks. The shape stores both the local source kind and the
+   * source's id for the related item; the consumer is responsible for
+   * resolving these into Loot rows when the corresponding pillar lands.
+   *
+   * v2 NOTE: relationships are persisted as data-only — the pipeline does
+   * NOT create rows in `loot_relationships`. Future Watchlist (V2-004) and
+   * Grimoire pillars will activate the relationship surface. For now,
+   * adapters set the field; downstream silently passes through.
+   */
+  relationships?: Array<{
+    kind: 'remix-of' | 'fork-of';
+    sourceId: SourceId;
+    sourceItemId: string;
+    label?: string;
+  }>;
 };
 
 // ---------------------------------------------------------------------------

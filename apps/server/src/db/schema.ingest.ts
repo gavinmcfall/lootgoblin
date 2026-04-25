@@ -12,7 +12,8 @@
  *              → rate-limit-deferred
  */
 
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { user } from './schema.auth';
 import { collections } from './schema.stash';
 import { loot } from './schema.stash';
@@ -77,6 +78,16 @@ export const ingestJobs = sqliteTable(
      * Adapter-level retry state; pipeline never resets this to 0.
      */
     attempt: integer('attempt').notNull().default(1),
+    /**
+     * Caller-supplied Idempotency-Key header value (V2-003-T9). Optional.
+     *
+     * When present, the POST /api/v1/ingest route enforces RFC 7240-style
+     * idempotency: a second POST with the same `(owner_id, idempotency_key)`
+     * either returns the existing jobId (on body match) or 409 (on body
+     * mismatch). The partial unique index below enforces uniqueness only
+     * for non-NULL values so legacy + non-idempotent jobs coexist.
+     */
+    idempotencyKey: text('idempotency_key'),
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   },
@@ -87,5 +98,13 @@ export const ingestJobs = sqliteTable(
     index('ingest_jobs_status_idx').on(t.status),
     /** Per-source job history. */
     index('ingest_jobs_source_idx').on(t.sourceId),
+    /**
+     * Idempotency-Key uniqueness — partial index, only enforced where the
+     * key is non-NULL. Lets jobs without an Idempotency-Key remain free of
+     * uniqueness constraints.
+     */
+    uniqueIndex('ingest_jobs_owner_idem_uniq')
+      .on(t.ownerId, t.idempotencyKey)
+      .where(sql`idempotency_key IS NOT NULL`),
   ],
 );

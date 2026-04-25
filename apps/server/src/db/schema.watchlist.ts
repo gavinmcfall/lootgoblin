@@ -146,6 +146,13 @@ export const watchlistSubscriptions = sqliteTable(
       () => collections.id,
       { onDelete: 'set null' },
     ),
+    /**
+     * V2-004-T9: optional dedupe token supplied via the `Idempotency-Key`
+     * header on POST /api/v1/watchlist/subscriptions. Partial unique index
+     * `(owner_id, idempotency_key)` enforced when non-NULL — see migration
+     * 0017. Same shape as `ingest_jobs.idempotency_key` (migration 0013).
+     */
+    idempotencyKey: text('idempotency_key'),
     /** ms epoch of subscription creation. App-side default. */
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
     /** ms epoch of the most recent UPDATE. App-side bumped on every write. */

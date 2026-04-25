@@ -120,6 +120,13 @@
       "when": 1746460800000,
       "tag": "0016_v2_004_t4_watchlist_default_collection",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1746547200000,
+      "tag": "0017_v2_004_t9_watchlist_idempotency_key",
+      "breakpoints": true
     }
   ]
 }

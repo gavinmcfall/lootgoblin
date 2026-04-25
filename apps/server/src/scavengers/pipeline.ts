@@ -25,7 +25,7 @@ import { eq, and } from 'drizzle-orm';
 
 import { logger } from '../logger';
 import { getDb, schema } from '../db/client';
-import { encrypt } from '../crypto';
+import { encrypt, decrypt } from '../crypto';
 import { sha256Hex } from '../stash/hash-util';
 import { applySingleCandidate } from '../stash/adoption/applier';
 import { sniffFormat, DEFAULT_ACCEPTED_FORMATS } from './format-sniff';
@@ -201,7 +201,10 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
                 return;
               }
               const rows = await db()
-                .select({ id: schema.sourceCredentials.id })
+                .select({
+                  id: schema.sourceCredentials.id,
+                  encryptedBlob: schema.sourceCredentials.encryptedBlob,
+                })
                 .from(schema.sourceCredentials)
                 .where(eq(schema.sourceCredentials.sourceId, adapter.id))
                 .limit(1);
@@ -213,7 +216,32 @@ export function createIngestPipeline(options: IngestOptions): IngestPipeline {
                 );
                 return;
               }
-              const blob = JSON.stringify(newCredentials);
+              // Merge with the existing bag so refresh callbacks that only
+              // echo `accessToken/refreshToken/expiresAt` don't drop
+              // longer-lived fields like `clientId` / `clientSecret` /
+              // `scope`. Without this merge, subsequent /refresh calls would
+              // be missing the credentials they need to talk to the IDP.
+              let merged: Record<string, unknown> = newCredentials;
+              try {
+                const buf = Buffer.from(row.encryptedBlob as Uint8Array);
+                const existingJson = decrypt(buf.toString('utf8'), secret);
+                const existing = JSON.parse(existingJson);
+                if (existing && typeof existing === 'object') {
+                  merged = { ...(existing as Record<string, unknown>), ...newCredentials };
+                }
+              } catch (mergeErr) {
+                // If the existing blob is corrupt or undecryptable, fall back
+                // to writing just the new bag — the worst case is a future
+                // /refresh missing client_secret, which the user can fix by
+                // re-running /oauth/start. Surfacing here would lose the
+                // brand-new tokens which is worse.
+                logger.warn(
+                  { jobId, sourceId: adapter.id, err: mergeErr },
+                  'ingest: failed to merge with existing credential bag — writing new bag only',
+                );
+              }
+
+              const blob = JSON.stringify(merged);
               const encrypted = encrypt(blob, secret);
               await db()
                 .update(schema.sourceCredentials)

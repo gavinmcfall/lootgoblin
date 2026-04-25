@@ -118,6 +118,25 @@ async function seedSourceCredential(sourceId: string): Promise<string> {
   return id;
 }
 
+async function seedEncryptedCredential(
+  sourceId: string,
+  bag: Record<string, unknown>,
+): Promise<string> {
+  const id = uid();
+  // Lazy import keeps the test file independent of import order at module load.
+  const { encrypt: enc } = await import('../../src/crypto');
+  const blob = Buffer.from(enc(JSON.stringify(bag), TEST_SECRET));
+  await db().insert(schema.sourceCredentials).values({
+    id,
+    sourceId,
+    label: `cred-${id.slice(0, 6)}`,
+    kind: 'oauth-token',
+    encryptedBlob: blob,
+    status: 'active',
+  });
+  return id;
+}
+
 /**
  * A fake adapter whose fetch() calls onTokenRefreshed once with a new
  * credential bag, writes one valid file, then completes.
@@ -241,5 +260,63 @@ describe('pipeline.onTokenRefreshed persistence', () => {
       .from(schema.sourceCredentials)
       .where(eq(schema.sourceCredentials.sourceId, 'sketchfab'));
     expect(after.length).toBe(0);
+  });
+
+  it('MERGES the new bag with the existing one — long-lived fields like clientId/clientSecret survive', async () => {
+    const userId = await seedUser();
+    const { collectionId } = await seedStashAndCollection(userId);
+
+    // Use printables to avoid colliding with rows seeded by earlier tests.
+    // Seed a full-shaped existing bag with both short-lived (access/refresh)
+    // and long-lived (clientId/clientSecret/scope) fields.
+    const credId = await seedEncryptedCredential('printables', {
+      kind: 'oauth',
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      expiresAt: 100,
+      clientId: 'persistent-client',
+      clientSecret: 'persistent-secret',
+      scope: 'persistent-scope',
+    });
+
+    // Adapter calls onTokenRefreshed with ONLY the rotated short-lived fields
+    // — exactly what the Sketchfab adapter does today.
+    const partialRefresh = {
+      kind: 'oauth',
+      accessToken: 'NEW-access',
+      refreshToken: 'NEW-refresh',
+      expiresAt: 999,
+    };
+
+    const pipeline = createIngestPipeline({ ownerId: userId, collectionId, dbUrl: DB_URL });
+    const adapter = makeRefreshingAdapter('cults3d', partialRefresh);
+    (adapter as { id: string }).id = 'printables';
+
+    const outcome = await pipeline.run({
+      adapter,
+      target: { kind: 'url', url: 'https://example.test/merge' },
+    });
+    expect(outcome.status).toBe('placed');
+
+    // Re-read + decrypt; clientId, clientSecret, scope MUST survive.
+    const rows = await db()
+      .select({ encryptedBlob: schema.sourceCredentials.encryptedBlob })
+      .from(schema.sourceCredentials)
+      .where(eq(schema.sourceCredentials.id, credId));
+    expect(rows.length).toBe(1);
+    const buf = Buffer.from(rows[0]!.encryptedBlob as Uint8Array);
+    const json = decrypt(buf.toString('utf8'), TEST_SECRET);
+    const merged = JSON.parse(json);
+
+    expect(merged).toMatchObject({
+      // Rotated fields took the new values.
+      accessToken: 'NEW-access',
+      refreshToken: 'NEW-refresh',
+      expiresAt: 999,
+      // Long-lived fields preserved.
+      clientId: 'persistent-client',
+      clientSecret: 'persistent-secret',
+      scope: 'persistent-scope',
+    });
   });
 });

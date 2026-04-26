@@ -79,6 +79,17 @@ export type {
 } from './adapters/gdrive';
 export { createGdriveAdapter } from './adapters/gdrive';
 
+// Thingiverse adapter — V2-003b-T1 (API token + OAuth + remix metadata).
+export type {
+  ThingiverseAdapterOptions,
+  ThingiverseCredentials,
+  ThingiverseOAuthCredentials,
+  ThingiverseApiTokenCredentials,
+  ThingiverseDualCredentials,
+  ThingiverseCaps,
+} from './adapters/thingiverse';
+export { createThingiverseAdapter } from './adapters/thingiverse';
+
 // Shared filename sanitizer — used by URL-driven adapters (T5+).
 export { sanitizeFilename } from './filename-sanitize';
 
@@ -97,6 +108,7 @@ import { createMakerWorldAdapter } from './adapters/makerworld';
 import { createPrintablesAdapter } from './adapters/printables';
 import { createSketchfabAdapter } from './adapters/sketchfab';
 import { createGdriveAdapter } from './adapters/gdrive';
+import { createThingiverseAdapter } from './adapters/thingiverse';
 import type { ScavengerRegistry } from './registry';
 
 /**
@@ -114,6 +126,7 @@ export function createDefaultRegistry(): ScavengerRegistry {
   registry.register(createPrintablesAdapter());
   registry.register(createSketchfabAdapter());
   registry.register(createGdriveAdapter());
+  registry.register(createThingiverseAdapter());
   return registry;
 }
 

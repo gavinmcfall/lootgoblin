@@ -38,15 +38,6 @@ import {
 } from '@/scavengers';
 import { logger } from '@/logger';
 
-/**
- * Backwards-compatible export for integration tests that import this name
- * from the route file. The implementation lives in `@/scavengers/filename-sanitize`
- * so that URL-driven adapters (cults3d, makerworld, printables, …) and the
- * upload route share a single source of truth — UTF-8-aware byte-cap, percent-
- * decode-before-split, etc. See V2-003-T5 code-review fix 1.
- */
-export const sanitizeUploadFilename = sanitizeFilename;
-
 // ---------------------------------------------------------------------------
 // Validation schema
 // ---------------------------------------------------------------------------

@@ -366,7 +366,7 @@ describe('POST /api/v1/loot/upload', () => {
   });
 
   it('sanitizeUploadFilename strips path separators, null bytes, and leading dots', async () => {
-    const { sanitizeUploadFilename } = await import('../../../src/app/api/v1/loot/upload/route');
+    const { sanitizeFilename: sanitizeUploadFilename } = await import('../../../src/scavengers/filename-sanitize');
 
     expect(sanitizeUploadFilename('../etc/passwd')).toBe('passwd');
     expect(sanitizeUploadFilename('foo/../bar.stl')).toBe('bar.stl');
@@ -385,7 +385,7 @@ describe('POST /api/v1/loot/upload', () => {
   });
 
   it('sanitizeUploadFilename URL-decodes percent-encoded traversal sequences', async () => {
-    const { sanitizeUploadFilename } = await import('../../../src/app/api/v1/loot/upload/route');
+    const { sanitizeFilename: sanitizeUploadFilename } = await import('../../../src/scavengers/filename-sanitize');
 
     // Uppercase + lowercase %2F / %5C (forward slash and backslash).
     expect(sanitizeUploadFilename('..%2F..%2Fpasswd')).toBe('passwd');

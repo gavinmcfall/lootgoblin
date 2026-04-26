@@ -14,3 +14,6 @@ apps/extension/.output/
 # One-off design-feed artifacts produced by scrape.mjs + build-mw-scrape.mjs
 mw-scrape/
 mw-scrape.zip
+
+# Multi-model code review prompts (local only)
+.codereview/

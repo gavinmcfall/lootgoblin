@@ -5,7 +5,7 @@
  * already-resolved instance without triggering a second resolution pass.
  *
  * Usage:
- *   import { configResolver } from '../config/index.js';
+ *   import { configResolver } from '../config/index';
  *   const secret = configResolver.get('BETTER_AUTH_SECRET');
  *
  * The singleton is populated by instrumentation.ts during Next.js startup
@@ -13,15 +13,15 @@
  * will throw a ConfigurationError.
  */
 
-export { ConfigResolver, ConfigurationError } from './resolver.js';
-export type { ResolvedConfig, ProvenanceEntry, ConfigSource } from './types.js';
+export { ConfigResolver, ConfigurationError } from './resolver';
+export type { ResolvedConfig, ProvenanceEntry, ConfigSource } from './types';
 export {
   REQUIRED_BOOT_KEYS,
   WIZARD_DEFERRABLE_KEYS,
   CONFIG_DEFAULTS,
-} from './types.js';
+} from './types';
 
-import { ConfigResolver } from './resolver.js';
+import { ConfigResolver } from './resolver';
 
 /**
  * The application-wide singleton resolver.

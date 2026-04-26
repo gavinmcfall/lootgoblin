@@ -11,6 +11,18 @@ export * from './schema.auth';
 // Config-resolver tables — V2-001-T3.
 export * from './schema.config';
 
+// Stash pillar tables — V2-002-T1.
+export * from './schema.stash';
+
+// Inbox Triage tables — V2-002-T8.
+export * from './schema.inbox';
+
+// Indexer tables — V2-002-T11.
+export * from './schema.indexer';
+
+// Ledger tables — V2-002-T13.
+export * from './schema.ledger';
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 

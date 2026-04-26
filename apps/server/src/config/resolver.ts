@@ -21,12 +21,12 @@ import type {
   ResolvedConfig,
   ProvenanceEntry,
   ConfigSource,
-} from './types.js';
+} from './types';
 import {
   REQUIRED_BOOT_KEYS,
   WIZARD_DEFERRABLE_KEYS,
   CONFIG_DEFAULTS,
-} from './types.js';
+} from './types';
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -140,8 +140,8 @@ export interface ConfigDbAdapter {
 export const productionDbAdapter: ConfigDbAdapter = {
   async readInstanceConfig(key: string) {
     try {
-      const { getDb } = await import('../db/client.js');
-      const { instanceConfig } = await import('../db/schema.config.js');
+      const { getDb } = await import('../db/client');
+      const { instanceConfig } = await import('../db/schema.config');
       const { eq } = await import('drizzle-orm');
       const db = getDb();
       const rows = await (db as any)
@@ -156,8 +156,8 @@ export const productionDbAdapter: ConfigDbAdapter = {
   },
   async writeProvenance(entry: ProvenanceEntry) {
     try {
-      const { getDb } = await import('../db/client.js');
-      const { configProvenance } = await import('../db/schema.config.js');
+      const { getDb } = await import('../db/client');
+      const { configProvenance } = await import('../db/schema.config');
       const db = getDb();
       await (db as any)
         .insert(configProvenance)

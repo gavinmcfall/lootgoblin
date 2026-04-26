@@ -137,6 +137,9 @@ export const slicerProfiles = sqliteTable(
     /** Free-form notes. Optional. */
     notes: text('notes'),
 
+    /** Idempotency-Key on POST /api/v1/grimoire/slicer-profiles (V2-007a-T14). */
+    idempotencyKey: text('idempotency_key'),
+
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
@@ -186,6 +189,9 @@ export const printSettings = sqliteTable(
       .notNull(),
 
     notes: text('notes'),
+
+    /** Idempotency-Key on POST /api/v1/grimoire/print-settings (V2-007a-T14). */
+    idempotencyKey: text('idempotency_key'),
 
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()

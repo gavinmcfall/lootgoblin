@@ -184,6 +184,13 @@ export const materials = sqliteTable(
      */
     extra: text('extra', { mode: 'json' }).$type<Record<string, unknown>>(),
 
+    /**
+     * Idempotency-Key on POST /api/v1/materials. Nullable; when set, the route
+     * dedupes replayed creates against (owner_id, idempotency_key). Migration
+     * 0021 adds a partial unique index. See V2-007a-T14.
+     */
+    idempotencyKey: text('idempotency_key'),
+
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
@@ -236,6 +243,8 @@ export const mixRecipes = sqliteTable(
       .$type<Array<{ materialProductRef: string; ratioOrGrams: number }>>()
       .notNull(),
     notes: text('notes'),
+    /** Idempotency-Key on POST /api/v1/materials/mix-recipes (V2-007a-T14). */
+    idempotencyKey: text('idempotency_key'),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
@@ -284,6 +293,15 @@ export const mixBatches = sqliteTable(
     perComponentDraws: text('per_component_draws', { mode: 'json' })
       .$type<Array<{ sourceMaterialId: string; drawAmount: number; provenanceClass: string }>>()
       .notNull(),
+
+    /**
+     * Denormalised owner_id for the partial unique idempotency index. Mirrors
+     * the recipe's owner_id (recipes are owner-scoped). Added in migration
+     * 0021. Nullable for legacy rows; the route always populates on insert.
+     */
+    ownerId: text('owner_id'),
+    /** Idempotency-Key on POST /api/v1/materials/mix-batches (V2-007a-T14). */
+    idempotencyKey: text('idempotency_key'),
 
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
@@ -338,6 +356,9 @@ export const recycleEvents = sqliteTable(
       .references(() => materials.id, { onDelete: 'cascade' }),
 
     notes: text('notes'),
+
+    /** Idempotency-Key on POST /api/v1/materials/recycle-events (V2-007a-T14). */
+    idempotencyKey: text('idempotency_key'),
 
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()

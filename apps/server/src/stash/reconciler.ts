@@ -131,17 +131,17 @@ export function createDefaultPolicy(): DriftResolutionPolicy {
         'lootFile removed externally; loot.fileMissing set to true',
       );
       // V2-002 T5 carry-forward: persist a ledger event so audit queries
-      // grouped by resource see reconciliation drift. actorId is null because
-      // the reconciler is a system actor (ledger_events.actor_id is nullable
-      // per schema.ledger.ts for exactly this case). Wrapped defensively:
-      // persistLedgerEvent is documented as fire-and-continue (never throws),
-      // but the try/catch guarantees any future regression there cannot fail
-      // the policy handler and poison a rescan.
+      // grouped by subject see reconciliation drift. actorUserId is null
+      // because the reconciler is a system actor (ledger_events.actor_user_id
+      // is nullable per schema.ledger.ts for exactly this case). Wrapped
+      // defensively: persistLedgerEvent is documented as fire-and-continue
+      // (never throws), but the try/catch guarantees any future regression
+      // there cannot fail the policy handler and poison a rescan.
       try {
         await persistLedgerEvent({
           kind: 'reconciler.removed-externally',
-          resourceType: 'loot-file',
-          resourceId: lootFileId,
+          subjectType: 'loot-file',
+          subjectId: lootFileId,
           payload: { lootId, path: filePath },
         });
       } catch (ledgerErr) {
@@ -179,8 +179,8 @@ export function createDefaultPolicy(): DriftResolutionPolicy {
       try {
         await persistLedgerEvent({
           kind: 'reconciler.content-changed',
-          resourceType: 'loot-file',
-          resourceId: lootFileId,
+          subjectType: 'loot-file',
+          subjectId: lootFileId,
           payload: { lootId, path: filePath, newHash, newSize },
         });
       } catch (ledgerErr) {

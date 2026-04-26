@@ -750,14 +750,14 @@ describe('13. default policy emits ledger event on removed-externally', () => {
     const events = await db()
       .select()
       .from(schema.ledgerEvents)
-      .where(eq(schema.ledgerEvents.resourceId, lootFileId));
+      .where(eq(schema.ledgerEvents.subjectId, lootFileId));
 
     const removedEvents = events.filter((e) => e.kind === 'reconciler.removed-externally');
     expect(removedEvents.length).toBeGreaterThanOrEqual(1);
 
     const evt = removedEvents[removedEvents.length - 1]!;
-    expect(evt.resourceType).toBe('loot-file');
-    expect(evt.actorId).toBeNull(); // system-reconciler — nullable actor
+    expect(evt.subjectType).toBe('loot-file');
+    expect(evt.actorUserId).toBeNull(); // system-reconciler — nullable actor
     expect(evt.payload).toBeTruthy();
     const payload = JSON.parse(evt.payload!);
     expect(payload.lootId).toBe(lootId);
@@ -795,14 +795,14 @@ describe('14. default policy emits ledger event on content-changed', () => {
     const events = await db()
       .select()
       .from(schema.ledgerEvents)
-      .where(eq(schema.ledgerEvents.resourceId, lootFileId));
+      .where(eq(schema.ledgerEvents.subjectId, lootFileId));
 
     const changedEvents = events.filter((e) => e.kind === 'reconciler.content-changed');
     expect(changedEvents.length).toBeGreaterThanOrEqual(1);
 
     const evt = changedEvents[changedEvents.length - 1]!;
-    expect(evt.resourceType).toBe('loot-file');
-    expect(evt.actorId).toBeNull();
+    expect(evt.subjectType).toBe('loot-file');
+    expect(evt.actorUserId).toBeNull();
     const payload = JSON.parse(evt.payload!);
     expect(payload.lootId).toBe(lootId);
     expect(payload.path).toBe('audit-change.stl');

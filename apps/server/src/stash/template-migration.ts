@@ -110,8 +110,8 @@ function createDefaultLedgerEmitter(dbUrl?: string): LedgerEmitter {
         await persistLedgerEvent(
           {
             kind: 'migration.execute',
-            resourceType: 'loot',
-            resourceId: event.lootId,
+            subjectType: 'loot',
+            subjectId: event.lootId,
             payload: {
               lootFileId: event.lootFileId,
               collectionId: event.collectionId,

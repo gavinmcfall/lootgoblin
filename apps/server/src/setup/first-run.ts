@@ -11,8 +11,8 @@
  *   - Admin exists + no pending keys → needsSetup: false.
  */
 
-import type { ConfigResolver } from '../config/resolver.js';
-import { configResolver as defaultConfigResolver } from '../config/index.js';
+import type { ConfigResolver } from '../config/resolver';
+import { configResolver as defaultConfigResolver } from '../config/index';
 
 export type FirstRunState =
   | { needsSetup: false }
@@ -29,8 +29,8 @@ export async function getFirstRunState(
   resolver: ConfigResolver = defaultConfigResolver,
 ): Promise<FirstRunState> {
   // Check for existing users via Drizzle (lazy import avoids circular deps).
-  const { getDb } = await import('../db/client.js');
-  const { user } = await import('../db/schema.auth.js');
+  const { getDb } = await import('../db/client');
+  const { user } = await import('../db/schema.auth');
 
   const db = getDb() as any;
   const rows = await db.select({ id: user.id }).from(user).limit(1);

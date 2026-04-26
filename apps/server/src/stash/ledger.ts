@@ -17,6 +17,7 @@ import * as crypto from 'node:crypto';
 
 import { logger } from '../logger';
 import { getDb, schema } from '../db/client';
+import { validateLedgerEventPayload } from './ledger-schemas';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -110,6 +111,29 @@ export async function persistLedgerEvent(
   dbUrl?: string,
 ): Promise<{ eventId: string | null }> {
   const eventId = crypto.randomUUID();
+
+  // V2-007a-T12: per-event-type schema validation. Runs before serialization
+  // so that bad payloads short-circuit BEFORE we touch JSON.stringify or the
+  // DB. Unknown kinds + undefined payloads pass through (forward compat); a
+  // registered-and-failing payload is treated like a DB-write failure: log
+  // warn, don't insert, return { eventId: null }. Atomic-rollback callers
+  // (mix/recycle/consumption transactions) will see the null and surface it
+  // to their own error path; fire-and-continue callers (reconciler hooks)
+  // simply lose the audit row, which is the documented contract.
+  const validation = validateLedgerEventPayload(event.kind, event.payload);
+  if (!validation.ok) {
+    logger.warn(
+      {
+        kind: event.kind,
+        actorUserId: event.actorUserId,
+        subjectType: event.subjectType,
+        subjectId: event.subjectId,
+        issues: validation.issues,
+      },
+      'ledger: payload failed schema validation — row not written',
+    );
+    return { eventId: null };
+  }
 
   // Pre-serialize the payload so a TypeError from circular references doesn't
   // leak out of this function. The DB write below is wrapped in its own

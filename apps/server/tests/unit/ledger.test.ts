@@ -58,7 +58,15 @@ describe('persistLedgerEvent — happy path', () => {
         actorUserId: 'user-123',
         subjectType: 'loot',
         subjectId: 'loot-abc',
-        payload: { oldPath: 'a/b.stl', newPath: 'c/d.stl' },
+        // V2-007a-T12: payload must satisfy the registered schema for
+        // 'migration.execute' (production shape from template-migration.ts).
+        payload: {
+          lootFileId: 'lf-abc',
+          collectionId: 'coll-xyz',
+          oldPath: 'a/b.stl',
+          newPath: 'c/d.stl',
+          timestamp: '2026-04-25T00:00:00.000Z',
+        },
       },
       DB_URL,
     );
@@ -97,11 +105,16 @@ describe('persistLedgerEvent — happy path', () => {
 
 describe('persistLedgerEvent — payload round-trip', () => {
   it('JSON-serializes payload on INSERT and parses back to matching shape', async () => {
+    // V2-007a-T12: 'migration.execute' is a registered kind. Use its full
+    // production shape so the schema accepts; the round-trip assertion below
+    // still proves arbitrary nested data is preserved verbatim because Zod
+    // doesn't strip unknown nested keys (we use object schemas, not strict).
     const payload = {
+      lootFileId: 'lf-round-trip',
+      collectionId: 'coll-xyz',
       oldPath: 'legacy/thing.stl',
       newPath: 'creator/thing.stl',
-      collectionId: 'coll-xyz',
-      extra: { nested: true, count: 42 },
+      timestamp: '2026-04-25T00:00:00.000Z',
     };
 
     const result = await persistLedgerEvent(
@@ -185,9 +198,19 @@ describe('persistLedgerEvent — null payload', () => {
 
 describe('persistLedgerEvent — circular-ref payload is replaced with placeholder', () => {
   it('persists the event with a placeholder payload when JSON.stringify throws', async () => {
-    // Construct a self-referential object — JSON.stringify throws TypeError.
+    // Construct a payload that satisfies the registered 'migration.execute'
+    // schema (V2-007a-T12) but ALSO contains a self-referential field. Zod
+    // strips unknown keys during validation, but the helper serializes the
+    // ORIGINAL payload — so JSON.stringify still throws TypeError on the
+    // circular `self`, exercising the circular-ref placeholder branch.
     type CircularPayload = Record<string, unknown> & { self?: CircularPayload };
-    const circular: CircularPayload = {};
+    const circular: CircularPayload = {
+      lootFileId: 'lf-circular',
+      collectionId: 'coll-circular',
+      oldPath: 'old/p.stl',
+      newPath: 'new/p.stl',
+      timestamp: '2026-04-25T00:00:00.000Z',
+    };
     circular.self = circular;
 
     const result = await persistLedgerEvent(

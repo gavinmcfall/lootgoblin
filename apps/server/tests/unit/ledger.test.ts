@@ -178,6 +178,48 @@ describe('persistLedgerEvent — null payload', () => {
 // Test 5 — DB write failure → returns { eventId: null }, no throw
 // ---------------------------------------------------------------------------
 
+describe('persistLedgerEvent — circular-ref payload is replaced with placeholder', () => {
+  it('persists the event with a placeholder payload when JSON.stringify throws', async () => {
+    // Construct a self-referential object — JSON.stringify throws TypeError.
+    type CircularPayload = Record<string, unknown> & { self?: CircularPayload };
+    const circular: CircularPayload = {};
+    circular.self = circular;
+
+    const result = await persistLedgerEvent(
+      {
+        kind: 'migration.execute',
+        actorId: 'user-circular',
+        resourceType: 'loot',
+        resourceId: 'loot-circular',
+        payload: circular,
+      },
+      DB_URL,
+    );
+
+    // The event still persists — caller contract is fire-and-continue, and
+    // a circular payload is a misbehaving caller, not a DB failure.
+    expect(result.eventId).toBeTruthy();
+    expect(typeof result.eventId).toBe('string');
+
+    const rows = await db()
+      .select()
+      .from(schema.ledgerEvents)
+      .where(eq(schema.ledgerEvents.id, result.eventId!));
+
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.kind).toBe('migration.execute');
+    expect(row.actorId).toBe('user-circular');
+
+    // Stored payload is the placeholder shape, NOT the original object.
+    const stored = JSON.parse(row.payload!);
+    expect(stored).toEqual({
+      _serialization_failed: true,
+      reason: 'circular-reference',
+    });
+  });
+});
+
 describe('persistLedgerEvent — DB failure is non-fatal', () => {
   it('returns { eventId: null } and does not throw when getDb throws', async () => {
     // Spy on getDb to throw — simulates a broken DB connection.

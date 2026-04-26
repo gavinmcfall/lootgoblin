@@ -78,6 +78,34 @@
       "when": 1746028800000,
       "tag": "0010_v2_002_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1746115200000,
+      "tag": "0011_v2_003_ingest",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1746201600000,
+      "tag": "0012_v2_carry_forward_ledger_actor_id_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1746288000000,
+      "tag": "0013_v2_003_t9_idempotency_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1746288060000,
+      "tag": "0014_v2_003_t9_oauth_state",
+      "breakpoints": true
     }
   ]
 }

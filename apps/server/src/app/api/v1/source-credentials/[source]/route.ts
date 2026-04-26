@@ -1,3 +1,19 @@
+/**
+ * LEGACY route — V1 cookie-jar credential uploads from the extension.
+ *
+ * v2-003-T9 successor lives at `/api/v1/source-auth/:sourceId/*`:
+ *   - GET    /api/v1/source-auth/:sourceId            (status)
+ *   - POST   /api/v1/source-auth/:sourceId/oauth/start
+ *   - POST   /api/v1/source-auth/:sourceId/oauth/callback
+ *   - POST   /api/v1/source-auth/:sourceId/api-key
+ *   - POST   /api/v1/source-auth/:sourceId/refresh
+ *   - DELETE /api/v1/source-auth/:sourceId            (revoke)
+ *
+ * This file is retained for transitional compatibility — the extension still
+ * uploads cookie-jar credentials here. Do not extend it; new flows should use
+ * the v2 routes above.
+ */
+
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';

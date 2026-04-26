@@ -328,7 +328,7 @@ describe('bulk-restructure ledger — move-to-collection', () => {
     });
 
     expect(report.applied.length).toBeGreaterThan(0);
-    expect(report.ledgerEventId).toBeTruthy();
+    expect(report.ledger.outcome).toBe('persisted');
 
     // Exactly ONE bulk ledger event for the whole operation
     const events = await getLedgerEvents({
@@ -345,8 +345,10 @@ describe('bulk-restructure ledger — move-to-collection', () => {
     expect(payload.manifest.applied).toContain(loot1Id);
     expect(payload.manifest.applied).toContain(loot2Id);
 
-    // ledgerEventId in report matches the DB row id
-    expect(report.ledgerEventId).toBe(event.id);
+    // report.ledger.eventId matches the DB row id
+    if (report.ledger.outcome === 'persisted') {
+      expect(report.ledger.eventId).toBe(event.id);
+    }
   });
 });
 
@@ -378,7 +380,7 @@ describe('bulk-restructure ledger — change-template', () => {
     });
 
     expect(report.applied.length).toBeGreaterThan(0);
-    expect(report.ledgerEventId).toBeTruthy();
+    expect(report.ledger.outcome).toBe('persisted');
 
     // Exactly ONE bulk.change-template event
     const events = await getLedgerEvents({ kind: 'bulk.change-template' });
@@ -390,6 +392,57 @@ describe('bulk-restructure ledger — change-template', () => {
     const payload = JSON.parse(event.payload!);
     expect(payload.action.kind).toBe('change-template');
     expect(payload.manifest.applied).toContain(lootId);
+
+    // V2-002 T10 carry-forward: change-template bulks use resourceType
+    // 'bulk-action' with a synthetic `bulk-<actor>-<timestamp>` resourceId,
+    // NOT the actor id as a 'collection' (which previously polluted
+    // collection audit queries).
+    expect(event.resourceType).toBe('bulk-action');
+    expect(event.resourceId).toMatch(new RegExp(`^bulk-${ownerId}-\\d+$`));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 4b — move-to-collection still uses resourceType='collection' + target id
+// ---------------------------------------------------------------------------
+
+describe('bulk-restructure ledger — move-to-collection resourceType invariant', () => {
+  it('uses resourceType=collection with resourceId=targetCollectionId (regression guard for T10 carry-forward)', async () => {
+    const scratch = await makeScratchDir();
+    const ownerId = await seedUser();
+    const stashRootId = await seedStashRoot(ownerId, scratch);
+    const sourceCollId = await seedCollection(
+      ownerId, stashRootId, '{title|slug}', `t4b-src-${uid().slice(0, 8)}`,
+    );
+    const targetCollId = await seedCollection(
+      ownerId, stashRootId, '{creator|slug}/{title|slug}', `t4b-tgt-${uid().slice(0, 8)}`,
+    );
+
+    const lootId = await seedLoot(sourceCollId, { title: 'Bow', creator: 'Elf' });
+    const rel = 'bow.stl';
+    await writeFile(path.join(scratch, rel), 'bow\n');
+    await seedLootFile(lootId, rel, path.join(scratch, rel));
+
+    const engine = createBulkRestructureEngine({
+      dbUrl: DB_URL,
+      aclCheck: async () => true,
+    });
+
+    await engine.execute({
+      action: { kind: 'move-to-collection', targetCollectionId: targetCollId },
+      lootIds: [lootId],
+      ownerId,
+    });
+
+    const events = await getLedgerEvents({
+      kind: 'bulk.move-to-collection',
+      resourceType: 'collection',
+      resourceId: targetCollId,
+    });
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    const evt = events[events.length - 1]!;
+    expect(evt.resourceType).toBe('collection');
+    expect(evt.resourceId).toBe(targetCollId);
   });
 });
 
@@ -495,8 +548,11 @@ describe('bulk-restructure — emitBulk failure does not abort primary op', () =
     expect(report.applied).toContain(lootId);
     expect(report.failed).toHaveLength(0);
 
-    // ledgerEventId falls back to sentinel '' because emit threw
-    expect(report.ledgerEventId).toBe('');
+    // ledger outcome falls back to 'failed' because emit threw.
+    // V2-002 carry-forward: discriminated BulkLedgerOutcome replaces the
+    // earlier ambiguous '' sentinel (which previously meant both
+    // "empty bulk" and "ledger tried but failed").
+    expect(report.ledger).toEqual({ outcome: 'failed', reason: 'ledger-error' });
 
     // DB reflects move: loot.collectionId updated
     const lootRows = await db()

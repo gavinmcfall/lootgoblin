@@ -29,6 +29,7 @@ import type { WatcherEvent, FileWatcher } from './file-watcher';
 import { classifyDrift } from './drift-classifier';
 import type { FsEntry, DbLootFileEntry } from './drift-classifier';
 import { emitSystemHealth, _clearSystemHealthListeners } from './system-health';
+import { persistLedgerEvent } from './ledger';
 
 // ---------------------------------------------------------------------------
 // Re-export for external consumers
@@ -129,6 +130,26 @@ export function createDefaultPolicy(): DriftResolutionPolicy {
         { lootFileId, lootId, path: filePath },
         'lootFile removed externally; loot.fileMissing set to true',
       );
+      // V2-002 T5 carry-forward: persist a ledger event so audit queries
+      // grouped by resource see reconciliation drift. actorId is null because
+      // the reconciler is a system actor (ledger_events.actor_id is nullable
+      // per schema.ledger.ts for exactly this case). Wrapped defensively:
+      // persistLedgerEvent is documented as fire-and-continue (never throws),
+      // but the try/catch guarantees any future regression there cannot fail
+      // the policy handler and poison a rescan.
+      try {
+        await persistLedgerEvent({
+          kind: 'reconciler.removed-externally',
+          resourceType: 'loot-file',
+          resourceId: lootFileId,
+          payload: { lootId, path: filePath },
+        });
+      } catch (ledgerErr) {
+        logger.warn(
+          { ledgerErr, lootFileId, lootId },
+          'reconciler: ledger emit failed on removed-externally — primary op unaffected',
+        );
+      }
     },
 
     async onContentChanged(lootFileId, lootId, filePath, newHash, newSize) {
@@ -153,6 +174,21 @@ export function createDefaultPolicy(): DriftResolutionPolicy {
         { lootFileId, lootId, path: filePath, newHash, newSize },
         'lootFile content drifted; DB updated',
       );
+      // V2-002 T5 carry-forward: same ledger-event pattern as
+      // onRemovedExternally. See the commentary there for rationale.
+      try {
+        await persistLedgerEvent({
+          kind: 'reconciler.content-changed',
+          resourceType: 'loot-file',
+          resourceId: lootFileId,
+          payload: { lootId, path: filePath, newHash, newSize },
+        });
+      } catch (ledgerErr) {
+        logger.warn(
+          { ledgerErr, lootFileId, lootId },
+          'reconciler: ledger emit failed on content-changed — primary op unaffected',
+        );
+      }
     },
 
     async onAddedExternally(stashRootId, fsEntry) {

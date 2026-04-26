@@ -82,6 +82,22 @@ export type BulkPlan = {
   ownerId: string;
 };
 
+/**
+ * Discriminated outcome for the bulk-level ledger emit (V2-002 carry-forward).
+ *
+ * Replaces the earlier `ledgerEventId: string` where '' was overloaded to
+ * mean BOTH "empty bulk, no event needed" and "ledger tried but persist
+ * failed". Consumers couldn't tell the two apart — the discriminant now
+ * makes the three legitimate outcomes explicit.
+ */
+export type BulkLedgerOutcome =
+  /** lootIds was empty → no ledger event was emitted (deliberate no-op). */
+  | { outcome: 'no-event'; reason: 'empty-bulk' }
+  /** Ledger emit was attempted but returned eventId=null or threw. */
+  | { outcome: 'failed'; reason: 'ledger-error' }
+  /** Ledger event persisted successfully. */
+  | { outcome: 'persisted'; eventId: string };
+
 export type BulkReport = {
   action: BulkAction;
   appliedAt: Date;
@@ -89,20 +105,33 @@ export type BulkReport = {
   applied: string[];                                  // lootIds successfully applied
   skipped: Array<{ lootId: string; reason: string }>; // non-ready verdicts at apply time
   failed: Array<{ lootId: string; error: string }>;   // ready but threw during apply
-  ledgerEventId: string;                              // id of the single bulk ledger event; '' when lootIds was empty (no bulk event emitted for audit no-op)
+  /**
+   * Discriminated ledger outcome. Replaces the old `ledgerEventId: string`
+   * field where '' was ambiguously overloaded. V2-002 T10 carry-forward.
+   *
+   * Consumers (v2 internal only — no public API consumers exist yet; Forge
+   * and Watchlist aren't built): switch on `outcome`.
+   */
+  ledger: BulkLedgerOutcome;
 };
 
 export type BulkLedgerEmitter = {
   /**
    * ONE event per bulk action, NOT per-item ("auditability at intended granularity").
    * Default implementation persists via `persistLedgerEvent` from T13.
+   *
+   * Contract: returns `{ eventId: string | null }` where null signals the
+   * emitter tried to persist but the underlying storage layer refused.
+   * Throwing is tolerated (caller catches) but returning null is the
+   * preferred failure mode — lines up with persistLedgerEvent's fire-and-
+   * continue contract.
    */
   emitBulk(event: {
     action: BulkAction;
     actorOwnerId: string;
     manifest: { applied: string[]; skipped: string[]; failed: string[] };
     timestamp: Date;
-  }): Promise<{ eventId: string }>;
+  }): Promise<{ eventId: string | null }>;
 };
 
 export type BulkRestructureOptions = {
@@ -132,18 +161,33 @@ function createDefaultLedgerEmitter(dbUrl?: string): BulkLedgerEmitter {
   return {
     async emitBulk(event) {
       try {
-        // For move-to-collection the canonical resource is the target collection.
-        // For change-template there is no single collection (the action is multi-collection),
-        // so we use the actor as the resource id — it's still a valid, non-empty identifier.
-        const resourceId =
-          event.action.kind === 'move-to-collection'
-            ? event.action.targetCollectionId
-            : event.actorOwnerId;
+        // Choose resourceType + resourceId so `(resource_type, resource_id)`
+        // audit queries don't return cross-type false hits.
+        //
+        //   move-to-collection → resourceType='collection', resourceId=targetCollectionId
+        //     (the canonical resource acted on)
+        //   change-template    → resourceType='bulk-action', resourceId=synthetic
+        //     `bulk-${actorOwnerId}-${timestamp}`
+        //     (V2-002 T10 carry-forward: previously used actorOwnerId as
+        //      resourceId with resourceType='collection', which polluted
+        //      collection audit queries and made user-id lookups hit bulk
+        //      events by accident. 'bulk-action' is a synthetic type name
+        //      reserved for multi-collection bulks that have no single
+        //      canonical resource.)
+        let resourceType: string;
+        let resourceId: string;
+        if (event.action.kind === 'move-to-collection') {
+          resourceType = 'collection';
+          resourceId = event.action.targetCollectionId;
+        } else {
+          resourceType = 'bulk-action';
+          resourceId = `bulk-${event.actorOwnerId}-${event.timestamp.getTime()}`;
+        }
         const result = await persistLedgerEvent(
           {
             kind: `bulk.${event.action.kind}`,
             actorId: event.actorOwnerId,
-            resourceType: 'collection',
+            resourceType,
             resourceId,
             payload: {
               action: event.action,
@@ -153,12 +197,15 @@ function createDefaultLedgerEmitter(dbUrl?: string): BulkLedgerEmitter {
           },
           dbUrl,
         );
-        // persistLedgerEvent returns { eventId: null } on failure — map to sentinel.
-        return { eventId: result.eventId ?? '' };
+        // persistLedgerEvent returns { eventId: null } on failure — pass the
+        // null through to the caller so it can surface a 'failed' outcome
+        // on BulkReport.ledger rather than confusing it with a successful
+        // persist of an empty-string id.
+        return { eventId: result.eventId };
       } catch (err) {
         // Defense-in-depth: persistLedgerEvent itself never throws, but guard anyway.
         logger.warn({ err }, 'bulk-restructure: ledger persist wrapper caught — primary op unaffected');
-        return { eventId: '' };
+        return { eventId: null };
       }
     },
   };
@@ -749,7 +796,7 @@ export function createBulkRestructureEngine(
         applied,
         skipped,
         failed,
-        ledgerEventId: '',
+        ledger: { outcome: 'no-event', reason: 'empty-bulk' },
       };
     }
 
@@ -806,7 +853,7 @@ export function createBulkRestructureEngine(
     // Defense-in-depth: the default emitter delegates to persistLedgerEvent (which never throws),
     // but an injected test-only or future custom emitter may throw. Ledger failure MUST NOT
     // abort the primary op — all file moves + DB updates have already committed above.
-    let eventId = '';
+    let ledger: BulkLedgerOutcome;
     try {
       const result = await ledgerEmitter.emitBulk({
         action,
@@ -818,12 +865,19 @@ export function createBulkRestructureEngine(
         },
         timestamp: appliedAt,
       });
-      eventId = result.eventId;
+      if (result.eventId !== null && result.eventId !== undefined && result.eventId !== '') {
+        ledger = { outcome: 'persisted', eventId: result.eventId };
+      } else {
+        // Emitter returned null/undefined/'' — signals "tried but persist did
+        // not land". Distinct from the empty-bulk no-op above.
+        ledger = { outcome: 'failed', reason: 'ledger-error' };
+      }
     } catch (bulkLedgerErr) {
       logger.warn(
         { bulkLedgerErr, action: action.kind },
         'bulk-restructure: ledger emit failed — primary op unaffected',
       );
+      ledger = { outcome: 'failed', reason: 'ledger-error' };
     }
 
     const report: BulkReport = {
@@ -833,7 +887,7 @@ export function createBulkRestructureEngine(
       applied,
       skipped,
       failed,
-      ledgerEventId: eventId,
+      ledger,
     };
 
     logger.info(
@@ -842,7 +896,7 @@ export function createBulkRestructureEngine(
         applied: applied.length,
         skipped: skipped.length,
         failed: failed.length,
-        ledgerEventId: eventId,
+        ledger,
       },
       'bulk-restructure: execute complete',
     );

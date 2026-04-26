@@ -21,6 +21,17 @@ const EnvSchema = z
     OIDC_ADMIN_GROUP: z.string().optional(),
     WORKER_CONCURRENCY: z.coerce.number().int().positive().default(2),
     WORKER_PER_SOURCE_CONCURRENCY: z.coerce.number().int().positive().default(1),
+    // V2-004-T3 — Watchlist scheduler tick cadence + stale-job recovery cutoff.
+    // Tick is clamped [10, 3600] so misconfigured values don't accidentally
+    // burn CPU or starve due subscriptions.
+    WATCHLIST_TICK_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
+    WATCHLIST_STALE_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
+    // V2-004-T4 — Watchlist worker concurrency (parallel discovery jobs) and
+    // per-subscription error-streak threshold. When a subscription fires N
+    // consecutive failures (NOT auth-revoked — that cascades immediately),
+    // the worker pauses it (active=0) until the user re-activates.
+    WATCHLIST_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(2),
+    WATCHLIST_ERROR_STREAK_THRESHOLD: z.coerce.number().int().positive().default(5),
     LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
     OTEL_SERVICE_NAME: z.string().default('lootgoblin'),

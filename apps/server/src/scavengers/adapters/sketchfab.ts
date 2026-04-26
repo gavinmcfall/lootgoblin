@@ -51,6 +51,12 @@ import type {
   FetchTarget,
   NormalizedItem,
 } from '../types';
+import type {
+  SubscribableAdapter,
+  DiscoveryContext,
+  DiscoveryEvent,
+} from '../subscribable';
+import type { WatchlistSubscriptionKind } from '../../watchlist/types';
 import { nextRetry, sleep } from '../rate-limit';
 import { sanitizeFilename } from '../filename-sanitize';
 import { logger } from '../../logger';
@@ -105,6 +111,13 @@ export type SketchfabAdapterOptions = {
    * Set to 0 in tests to skip real sleep delays (T5-L1 pattern).
    */
   retryBaseMs?: number;
+  /**
+   * V2-004 T7 — first-fire bounded backfill cap (max 100). Default 20.
+   * Honors `WATCHLIST_FIRST_FIRE_BACKFILL` env var.
+   */
+  firstFireBackfill?: number;
+  /** Discovery list page size (count param). Default 24 (Sketchfab default). */
+  discoveryPageSize?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -114,6 +127,25 @@ export type SketchfabAdapterOptions = {
 const DEFAULT_API_BASE = 'https://api.sketchfab.com/v3';
 const DEFAULT_TOKEN_ENDPOINT = 'https://sketchfab.com/oauth2/token/';
 const DEFAULT_MAX_RETRIES = 6;
+
+// V2-004 T7 — discovery defaults shared across capability methods.
+const DEFAULT_FIRST_FIRE_BACKFILL = 20;
+const FIRST_FIRE_BACKFILL_HARD_CAP = 100;
+const DEFAULT_DISCOVERY_PAGE_SIZE = 24;
+
+function resolveFirstFireBackfill(optionOverride?: number): number {
+  if (typeof optionOverride === 'number' && Number.isFinite(optionOverride) && optionOverride > 0) {
+    return Math.min(Math.floor(optionOverride), FIRST_FIRE_BACKFILL_HARD_CAP);
+  }
+  const env = process.env['WATCHLIST_FIRST_FIRE_BACKFILL'];
+  if (env) {
+    const parsed = Number.parseInt(env, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(parsed, FIRST_FIRE_BACKFILL_HARD_CAP);
+    }
+  }
+  return DEFAULT_FIRST_FIRE_BACKFILL;
+}
 
 /** 1-minute safety margin: refresh OAuth tokens this far before expiry. */
 const TOKEN_REFRESH_LEAD_MS = 60_000;
@@ -292,12 +324,16 @@ function fallbackExtForFormat(format: FormatKey): string {
 /**
  * Create the Sketchfab adapter instance.
  */
-export function createSketchfabAdapter(options?: SketchfabAdapterOptions): ScavengerAdapter {
+export function createSketchfabAdapter(
+  options?: SketchfabAdapterOptions,
+): ScavengerAdapter & SubscribableAdapter {
   const apiBase = (options?.apiBase ?? DEFAULT_API_BASE).replace(/\/+$/, '');
   const tokenEndpoint = options?.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT;
   const httpFetch = options?.httpFetch ?? globalThis.fetch;
   const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
   const retryBaseMs = options?.retryBaseMs;
+  const firstFireBackfill = resolveFirstFireBackfill(options?.firstFireBackfill);
+  const discoveryPageSize = options?.discoveryPageSize ?? DEFAULT_DISCOVERY_PAGE_SIZE;
 
   return {
     id: 'sketchfab' as const,
@@ -306,6 +342,51 @@ export function createSketchfabAdapter(options?: SketchfabAdapterOptions): Scave
       displayName: 'Sketchfab',
       authMethods: ['oauth', 'api-key'],
       supports: { url: true, sourceItemId: true, raw: false },
+    },
+
+    // V2-004 T7 — SubscribableAdapter capabilities.
+    capabilities: new Set<WatchlistSubscriptionKind>(['creator', 'tag', 'saved_search']),
+
+    listCreator(context: DiscoveryContext, creatorId: string): AsyncIterable<DiscoveryEvent> {
+      return runSketchfabDiscovery({
+        context,
+        mode: { kind: 'creator', userId: creatorId },
+        apiBase,
+        tokenEndpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        pageSize: discoveryPageSize,
+      });
+    },
+
+    searchByTag(context: DiscoveryContext, tag: string): AsyncIterable<DiscoveryEvent> {
+      return runSketchfabDiscovery({
+        context,
+        mode: { kind: 'tag', tag },
+        apiBase,
+        tokenEndpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        pageSize: discoveryPageSize,
+      });
+    },
+
+    search(context: DiscoveryContext, query: string): AsyncIterable<DiscoveryEvent> {
+      return runSketchfabDiscovery({
+        context,
+        mode: { kind: 'search', query },
+        apiBase,
+        tokenEndpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        pageSize: discoveryPageSize,
+      });
     },
 
     /**
@@ -870,4 +951,416 @@ async function* requestJsonWithRetries(
       return undefined;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// V2-004 T7 — SubscribableAdapter discovery support
+// ---------------------------------------------------------------------------
+
+/**
+ * Sketchfab discovery cursor format.
+ *
+ * Sketchfab v3 search/list endpoints paginate via a `next` URL string. We
+ * pass that through opaquely on subsequent firings (`continueUrl`), AND we
+ * remember the most-recently-seen model `uid` from the prior firing so
+ * multi-page firings can stop at "we've seen this one before" without having
+ * to walk the entire feed.
+ */
+type SketchfabCursor = {
+  /** uid of the most recently yielded model from the prior firing. */
+  firstSeenSourceItemId?: string;
+};
+
+type SketchfabDiscoveryMode =
+  | { kind: 'creator'; userId: string }
+  | { kind: 'tag'; tag: string }
+  | { kind: 'search'; query: string };
+
+type RunSketchfabDiscoveryArgs = {
+  context: DiscoveryContext;
+  mode: SketchfabDiscoveryMode;
+  apiBase: string;
+  tokenEndpoint: string;
+  httpFetch: typeof fetch;
+  maxRetries: number;
+  retryBaseMs: number | undefined;
+  firstFireBackfill: number;
+  pageSize: number;
+};
+
+function parseSketchfabCursor(raw: string | undefined): SketchfabCursor | undefined {
+  if (!raw) return undefined;
+  try {
+    const obj = JSON.parse(raw) as unknown;
+    if (obj && typeof obj === 'object') {
+      const r = obj as Record<string, unknown>;
+      const out: SketchfabCursor = {};
+      if (typeof r['firstSeenSourceItemId'] === 'string') {
+        out.firstSeenSourceItemId = r['firstSeenSourceItemId'];
+      }
+      return out;
+    }
+  } catch {
+    // Malformed cursor — treat as first-fire.
+  }
+  return undefined;
+}
+
+/**
+ * Refresh OAuth credentials in-place for a discovery run. Returns either
+ * the (possibly-updated) credentials, or 'failed' if a terminal event was
+ * already yielded by the caller's wrapper.
+ *
+ * Distinct from the fetch-side path because it yields `DiscoveryEvent`
+ * shapes rather than `ScavengerEvent`. Logic mirrors the fetch-side flow.
+ */
+async function* maybeRefreshSketchfabTokenForDiscovery(
+  creds: SketchfabCredentials,
+  context: DiscoveryContext,
+  tokenEndpoint: string,
+  httpFetch: typeof fetch,
+): AsyncGenerator<DiscoveryEvent, SketchfabCredentials | 'failed', void> {
+  if (creds.kind !== 'oauth') return creds;
+  const oauthCreds = creds;
+  const remaining = oauthCreds.expiresAt - Date.now();
+  if (remaining >= TOKEN_REFRESH_LEAD_MS) return creds;
+
+  yield {
+    kind: 'progress' as const,
+    message: 'Refreshing Sketchfab OAuth token',
+    itemsSeen: 0,
+  };
+
+  const refreshBody = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: oauthCreds.refreshToken,
+    client_id: oauthCreds.clientId,
+    client_secret: oauthCreds.clientSecret,
+  });
+
+  let res: Response;
+  try {
+    res = await httpFetch(tokenEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: refreshBody.toString(),
+      signal: context.signal,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `sketchfab token refresh fetch failed: ${msg}`,
+      error: err,
+    };
+    return 'failed';
+  }
+
+  if (res.status === 400 || res.status === 401) {
+    yield {
+      kind: 'auth-required' as const,
+      reason: 'revoked' as const,
+      surfaceToUser:
+        'Sketchfab refresh token rejected. Reconnect Sketchfab in Settings > Sources.',
+    };
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'auth-revoked' as const,
+      details: `sketchfab refresh token rejected (HTTP ${res.status})`,
+    };
+    return 'failed';
+  }
+
+  if (!res.ok) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `sketchfab token endpoint responded ${res.status}`,
+    };
+    return 'failed';
+  }
+
+  let payload: unknown;
+  try {
+    payload = await res.json();
+  } catch (parseErr) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `sketchfab token response parse failed: ${(parseErr as Error).message}`,
+      error: parseErr,
+    };
+    return 'failed';
+  }
+
+  const tok = payload as {
+    access_token?: unknown;
+    refresh_token?: unknown;
+    expires_in?: unknown;
+  };
+  if (
+    typeof tok.access_token !== 'string' ||
+    !tok.access_token ||
+    typeof tok.expires_in !== 'number'
+  ) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: 'sketchfab token response missing access_token or expires_in',
+    };
+    return 'failed';
+  }
+  const newRefreshToken =
+    typeof tok.refresh_token === 'string' && tok.refresh_token
+      ? tok.refresh_token
+      : oauthCreds.refreshToken;
+  const newCreds: SketchfabOAuthCredentials = {
+    kind: 'oauth',
+    accessToken: tok.access_token,
+    refreshToken: newRefreshToken,
+    expiresAt: Date.now() + tok.expires_in * 1000,
+    clientId: oauthCreds.clientId,
+    clientSecret: oauthCreds.clientSecret,
+  };
+  if (context.onTokenRefreshed) {
+    try {
+      await context.onTokenRefreshed(newCreds as unknown as Record<string, unknown>);
+    } catch (cbErr) {
+      logger.warn(
+        { err: cbErr },
+        'sketchfab: discovery onTokenRefreshed callback failed; continuing with new creds for this request',
+      );
+    }
+  }
+  return newCreds;
+}
+
+function runSketchfabDiscovery(args: RunSketchfabDiscoveryArgs): AsyncIterable<DiscoveryEvent> {
+  const { context, mode, apiBase, tokenEndpoint, httpFetch, maxRetries, retryBaseMs, firstFireBackfill, pageSize } = args;
+
+  return {
+    [Symbol.asyncIterator]: async function* (): AsyncGenerator<DiscoveryEvent, void, void> {
+      try {
+        const credValidation = validateCredentials(context.credentials);
+        if (!credValidation.ok) {
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'auth-revoked' as const,
+            details: `sketchfab discovery: ${credValidation.reason}`,
+          };
+          return;
+        }
+
+        const refreshed = yield* maybeRefreshSketchfabTokenForDiscovery(
+          credValidation.creds,
+          context,
+          tokenEndpoint,
+          httpFetch,
+        );
+        if (refreshed === 'failed') return;
+        const creds = refreshed;
+
+        const priorCursor = parseSketchfabCursor(context.cursor);
+        const isFirstFire = priorCursor === undefined;
+        const cap = isFirstFire ? firstFireBackfill : Number.MAX_SAFE_INTEGER;
+
+        // Build the first-page URL.
+        let nextUrl: string | null;
+        if (mode.kind === 'creator') {
+          const u = new URL(`${apiBase}/users/${encodeURIComponent(mode.userId)}/models`);
+          u.searchParams.set('sort_by', '-publishedAt');
+          u.searchParams.set('count', String(pageSize));
+          nextUrl = u.toString();
+        } else if (mode.kind === 'tag') {
+          const u = new URL(`${apiBase}/search`);
+          u.searchParams.set('type', 'models');
+          u.searchParams.set('tags', mode.tag);
+          u.searchParams.set('sort_by', '-publishedAt');
+          u.searchParams.set('count', String(pageSize));
+          nextUrl = u.toString();
+        } else {
+          const u = new URL(`${apiBase}/search`);
+          u.searchParams.set('type', 'models');
+          u.searchParams.set('q', mode.query);
+          u.searchParams.set('sort_by', '-publishedAt');
+          u.searchParams.set('count', String(pageSize));
+          nextUrl = u.toString();
+        }
+
+        let itemsTotal = 0;
+        let firstSeenIdThisRun: string | undefined;
+        let stop = false;
+
+        while (!stop && nextUrl) {
+          if (context.signal?.aborted) {
+            yield {
+              kind: 'discovery-failed' as const,
+              reason: 'unknown' as const,
+              details: 'sketchfab discovery aborted by signal',
+            };
+            return;
+          }
+
+          // Fetch with rate-limit retries.
+          let attempt = 1;
+          let pageJson: unknown;
+          while (true) {
+            yield {
+              kind: 'progress' as const,
+              message: `Sketchfab ${mode.kind} discovery (attempt ${attempt})`,
+              itemsSeen: itemsTotal,
+            };
+            let res: Response;
+            try {
+              res = await httpFetch(nextUrl, {
+                headers: {
+                  Authorization: authHeaderFor(creds),
+                  Accept: 'application/json',
+                },
+                signal: context.signal,
+              });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Sketchfab discovery fetch failed: ${msg}`,
+                error: err,
+              };
+              return;
+            }
+
+            if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+              const ra = res.status === 429 ? res.headers.get('retry-after') : null;
+              const retryAfterMs = ra ? parseRetryAfter(ra) : undefined;
+              const decision = nextRetry(
+                attempt,
+                { maxAttempts: maxRetries, baseMs: retryBaseMs },
+                retryAfterMs,
+              );
+              if (!decision.retry) {
+                yield {
+                  kind: 'discovery-failed' as const,
+                  reason: 'rate-limit-exhausted' as const,
+                  details: `Sketchfab discovery retries exhausted (last status ${res.status})`,
+                };
+                return;
+              }
+              yield {
+                kind: 'rate-limited' as const,
+                retryAfterMs: decision.delayMs,
+                attempt,
+              };
+              await sleep(decision.delayMs, context.signal);
+              attempt += 1;
+              continue;
+            }
+
+            if (res.status === 401 || res.status === 403) {
+              yield {
+                kind: 'auth-required' as const,
+                reason: 'revoked' as const,
+                surfaceToUser: `Sketchfab rejected credentials (${res.status})`,
+              };
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'auth-revoked' as const,
+                details: `Sketchfab discovery rejected (${res.status})`,
+              };
+              return;
+            }
+
+            if (res.status === 404 || res.status === 410) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'content-removed' as const,
+                details: `Sketchfab discovery responded ${res.status}`,
+              };
+              return;
+            }
+
+            if (!res.ok) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Sketchfab discovery responded ${res.status}`,
+              };
+              return;
+            }
+
+            try {
+              pageJson = await res.json();
+            } catch (parseErr) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Sketchfab discovery JSON parse failed: ${(parseErr as Error).message}`,
+                error: parseErr,
+              };
+              return;
+            }
+            break;
+          }
+
+          const page = pageJson as {
+            results?: Array<{ uid?: string; name?: string; publishedAt?: string }>;
+            next?: string | null;
+          };
+
+          const results = page.results ?? [];
+          for (const m of results) {
+            if (typeof m.uid !== 'string' || !m.uid) continue;
+            if (priorCursor?.firstSeenSourceItemId && m.uid === priorCursor.firstSeenSourceItemId) {
+              stop = true;
+              break;
+            }
+            if (itemsTotal >= cap) {
+              stop = true;
+              break;
+            }
+            const ev: DiscoveryEvent = { kind: 'item-discovered' as const, sourceItemId: m.uid };
+            const hint: { title?: string; publishedAt?: Date } = {};
+            if (typeof m.name === 'string' && m.name) hint.title = m.name;
+            if (typeof m.publishedAt === 'string') {
+              const d = new Date(m.publishedAt);
+              if (!Number.isNaN(d.getTime())) hint.publishedAt = d;
+            }
+            if (hint.title || hint.publishedAt) ev.metadataHint = hint;
+            yield ev;
+            itemsTotal += 1;
+            if (firstSeenIdThisRun === undefined) firstSeenIdThisRun = m.uid;
+          }
+
+          if (stop) break;
+          nextUrl = typeof page.next === 'string' && page.next ? page.next : null;
+        }
+
+        const newCursor: SketchfabCursor | undefined = firstSeenIdThisRun
+          ? { firstSeenSourceItemId: firstSeenIdThisRun }
+          : priorCursor;
+        const completed: DiscoveryEvent = {
+          kind: 'discovery-completed' as const,
+          itemsTotal,
+        };
+        if (newCursor) completed.cursor = JSON.stringify(newCursor);
+        yield completed;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isAbort =
+          (err instanceof Error && err.name === 'AbortError') ||
+          context.signal?.aborted === true;
+        logger.warn({ err }, 'sketchfab: discovery unexpected error');
+        yield {
+          kind: 'discovery-failed' as const,
+          reason: isAbort ? 'network-error' : 'unknown',
+          details: msg,
+          error: err,
+        };
+      }
+    },
+  };
 }

@@ -25,6 +25,12 @@ import type {
   FetchTarget,
   NormalizedItem,
 } from '../types';
+import type {
+  SubscribableAdapter,
+  DiscoveryContext,
+  DiscoveryEvent,
+} from '../subscribable';
+import type { WatchlistSubscriptionKind } from '../../watchlist/types';
 import { nextRetry, sleep } from '../rate-limit';
 import { sanitizeFilename } from '../filename-sanitize';
 import { logger } from '../../logger';
@@ -52,6 +58,19 @@ export type Cults3dAdapterOptions = {
    * Default 1000. Set to 0 in tests to skip real sleep delays.
    */
   retryBaseMs?: number;
+  /**
+   * V2-004 T7 — first-fire bounded backfill cap.
+   *
+   * On a Watchlist subscription's first firing (no cursor), the discovery
+   * methods ingest at most this many items to avoid catastrophic backfill on
+   * a creator with thousands of models. Subsequent firings stop at the
+   * previously-recorded cursor regardless of this value. Honors
+   * `WATCHLIST_FIRST_FIRE_BACKFILL` env var with a 100-item ceiling.
+   * Default 20.
+   */
+  firstFireBackfill?: number;
+  /** Page size for GraphQL pagination. Default 50. */
+  pageSize?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -60,6 +79,29 @@ export type Cults3dAdapterOptions = {
 
 const DEFAULT_ENDPOINT = 'https://cults3d.com/graphql';
 const DEFAULT_MAX_RETRIES = 6;
+
+// V2-004 T7: first-fire bounded backfill defaults.
+const DEFAULT_FIRST_FIRE_BACKFILL = 20;
+const FIRST_FIRE_BACKFILL_HARD_CAP = 100;
+const DEFAULT_DISCOVERY_PAGE_SIZE = 50;
+
+/**
+ * Resolve the first-fire backfill cap honoring the env var override and the
+ * 100-item hard ceiling. Centralised so all four adapters use the same logic.
+ */
+function resolveFirstFireBackfill(optionOverride?: number): number {
+  if (typeof optionOverride === 'number' && Number.isFinite(optionOverride) && optionOverride > 0) {
+    return Math.min(Math.floor(optionOverride), FIRST_FIRE_BACKFILL_HARD_CAP);
+  }
+  const env = process.env['WATCHLIST_FIRST_FIRE_BACKFILL'];
+  if (env) {
+    const parsed = Number.parseInt(env, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(parsed, FIRST_FIRE_BACKFILL_HARD_CAP);
+    }
+  }
+  return DEFAULT_FIRST_FIRE_BACKFILL;
+}
 
 /**
  * Exact set of hostnames this adapter owns.
@@ -168,11 +210,15 @@ function deduplicateName(base: string, seen: Map<string, number>): string {
  * Accepts an optional options bag for test-seam injection (httpFetch, endpoint).
  * There should be one instance per process — register in createDefaultRegistry().
  */
-export function createCults3dAdapter(options?: Cults3dAdapterOptions): ScavengerAdapter {
+export function createCults3dAdapter(
+  options?: Cults3dAdapterOptions,
+): ScavengerAdapter & SubscribableAdapter {
   const endpoint = options?.endpoint ?? DEFAULT_ENDPOINT;
   const httpFetch = options?.httpFetch ?? globalThis.fetch;
   const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
   const retryBaseMs = options?.retryBaseMs ?? undefined; // undefined → nextRetry uses its own default
+  const firstFireBackfill = resolveFirstFireBackfill(options?.firstFireBackfill);
+  const pageSize = options?.pageSize ?? DEFAULT_DISCOVERY_PAGE_SIZE;
 
   return {
     id: 'cults3d' as const,
@@ -181,6 +227,48 @@ export function createCults3dAdapter(options?: Cults3dAdapterOptions): Scavenger
       displayName: 'Cults3D',
       authMethods: ['api-key'],
       supports: { url: true, sourceItemId: true, raw: false },
+    },
+
+    // V2-004 T7 — SubscribableAdapter capabilities.
+    capabilities: new Set<WatchlistSubscriptionKind>(['creator', 'tag', 'saved_search']),
+
+    listCreator(context: DiscoveryContext, creatorId: string): AsyncIterable<DiscoveryEvent> {
+      return runCults3dDiscovery({
+        context,
+        mode: { kind: 'creator', creatorSlug: creatorId },
+        endpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        pageSize,
+      });
+    },
+
+    searchByTag(context: DiscoveryContext, tag: string): AsyncIterable<DiscoveryEvent> {
+      return runCults3dDiscovery({
+        context,
+        mode: { kind: 'tag', tag },
+        endpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        pageSize,
+      });
+    },
+
+    search(context: DiscoveryContext, query: string): AsyncIterable<DiscoveryEvent> {
+      return runCults3dDiscovery({
+        context,
+        mode: { kind: 'search', query },
+        endpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        pageSize,
+      });
     },
 
     /**
@@ -625,6 +713,370 @@ export function createCults3dAdapter(options?: Cults3dAdapterOptions): Scavenger
           }
         },
       };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// V2-004 T7 — SubscribableAdapter discovery support
+// ---------------------------------------------------------------------------
+
+/**
+ * Cults3D Watchlist discovery cursor format.
+ *
+ * Stored on `watchlist_subscriptions.cursor` as JSON. Externally opaque —
+ * the watchlist worker round-trips the string as-is.
+ *
+ *   firstSeenSourceItemId — id of the most-recently-yielded item from the
+ *     PRIOR firing. The next firing stops paginating once it encounters this
+ *     item, so each firing only ingests truly-new items.
+ */
+type Cults3dCursor = {
+  firstSeenSourceItemId: string;
+};
+
+type DiscoveryMode =
+  | { kind: 'creator'; creatorSlug: string }
+  | { kind: 'tag'; tag: string }
+  | { kind: 'search'; query: string };
+
+type RunDiscoveryArgs = {
+  context: DiscoveryContext;
+  mode: DiscoveryMode;
+  endpoint: string;
+  httpFetch: typeof fetch;
+  maxRetries: number;
+  retryBaseMs: number | undefined;
+  firstFireBackfill: number;
+  pageSize: number;
+};
+
+const CREATOR_LISTING_QUERY = `query CreatorListing($slug: String!, $first: Int!, $after: String) {
+  creator(slug: $slug) {
+    creations(first: $first, after: $after) {
+      edges {
+        cursor
+        node { id name publishedAt }
+      }
+      pageInfo { endCursor hasNextPage }
+    }
+  }
+}`;
+
+const TAG_SEARCH_QUERY = `query TagSearch($tags: [String!]!, $first: Int!, $after: String) {
+  search(tags: $tags, first: $first, after: $after) {
+    edges {
+      cursor
+      node { id name publishedAt }
+    }
+    pageInfo { endCursor hasNextPage }
+  }
+}`;
+
+const QUERY_SEARCH_QUERY = `query QuerySearch($query: String!, $first: Int!, $after: String) {
+  search(query: $query, first: $first, after: $after) {
+    edges {
+      cursor
+      node { id name publishedAt }
+    }
+    pageInfo { endCursor hasNextPage }
+  }
+}`;
+
+type CreationNode = { id: string; name?: string; publishedAt?: string };
+type Edge = { cursor: string; node: CreationNode };
+type EdgeConnection = {
+  edges: Edge[];
+  pageInfo: { endCursor?: string | null; hasNextPage?: boolean };
+};
+
+function parseCults3dCursor(raw: string | undefined): Cults3dCursor | undefined {
+  if (!raw) return undefined;
+  try {
+    const obj = JSON.parse(raw) as unknown;
+    if (
+      obj &&
+      typeof obj === 'object' &&
+      typeof (obj as Record<string, unknown>)['firstSeenSourceItemId'] === 'string'
+    ) {
+      return { firstSeenSourceItemId: (obj as Record<string, string>)['firstSeenSourceItemId']! };
+    }
+  } catch {
+    // Malformed cursor — treat as first-fire.
+  }
+  return undefined;
+}
+
+function runCults3dDiscovery(args: RunDiscoveryArgs): AsyncIterable<DiscoveryEvent> {
+  const { context, mode, endpoint, httpFetch, maxRetries, retryBaseMs, firstFireBackfill, pageSize } = args;
+
+  return {
+    [Symbol.asyncIterator]: async function* (): AsyncGenerator<DiscoveryEvent, void, void> {
+      try {
+        // Validate credentials — same shape as fetch().
+        const creds = context.credentials as Cults3dCredentials | undefined;
+        if (
+          !creds ||
+          typeof creds.email !== 'string' ||
+          !creds.email ||
+          typeof creds.apiKey !== 'string' ||
+          !creds.apiKey
+        ) {
+          yield {
+            kind: 'auth-required' as const,
+            reason: 'missing' as const,
+            surfaceToUser:
+              'Cults3D requires email + API key. Add credentials in Settings > Sources.',
+          };
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'auth-revoked' as const,
+            details: 'Cults3D credentials missing — discovery aborted',
+          };
+          return;
+        }
+
+        const authToken = Buffer.from(`${creds.email}:${creds.apiKey}`).toString('base64');
+        const headers = {
+          Authorization: `Basic ${authToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        };
+
+        const priorCursor = parseCults3dCursor(context.cursor);
+        const isFirstFire = priorCursor === undefined;
+        const cap = isFirstFire ? firstFireBackfill : Number.MAX_SAFE_INTEGER;
+
+        let itemsTotal = 0;
+        let firstSeenIdThisRun: string | undefined;
+        let pageAfter: string | undefined;
+        let stop = false;
+
+        while (!stop) {
+          if (context.signal?.aborted) {
+            yield {
+              kind: 'discovery-failed' as const,
+              reason: 'unknown' as const,
+              details: 'cults3d discovery aborted by signal',
+            };
+            return;
+          }
+
+          // Build query + variables for this mode.
+          let query: string;
+          const variables: Record<string, unknown> = { first: pageSize };
+          if (pageAfter) variables['after'] = pageAfter;
+          if (mode.kind === 'creator') {
+            query = CREATOR_LISTING_QUERY;
+            variables['slug'] = mode.creatorSlug;
+          } else if (mode.kind === 'tag') {
+            query = TAG_SEARCH_QUERY;
+            variables['tags'] = [mode.tag];
+          } else {
+            query = QUERY_SEARCH_QUERY;
+            variables['query'] = mode.query;
+          }
+
+          const body = JSON.stringify({ query, variables });
+
+          // Rate-limit-aware POST.
+          let attempt = 1;
+          let pageJson: unknown;
+          while (true) {
+            yield {
+              kind: 'progress' as const,
+              message: `Cults3D ${mode.kind} discovery (page attempt ${attempt})`,
+              itemsSeen: itemsTotal,
+            };
+            let res: Response;
+            try {
+              res = await httpFetch(endpoint, {
+                method: 'POST',
+                headers,
+                body,
+                signal: context.signal,
+              });
+            } catch (fetchErr) {
+              const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Cults3D discovery fetch failed: ${msg}`,
+                error: fetchErr,
+              };
+              return;
+            }
+
+            if (res.status === 429) {
+              const retryAfterHeader = res.headers.get('retry-after');
+              const retryAfterMs = retryAfterHeader
+                ? parseRetryAfter(retryAfterHeader)
+                : undefined;
+              const decision = nextRetry(
+                attempt,
+                { maxAttempts: maxRetries, baseMs: retryBaseMs },
+                retryAfterMs,
+              );
+              if (!decision.retry) {
+                yield {
+                  kind: 'discovery-failed' as const,
+                  reason: 'rate-limit-exhausted' as const,
+                  details: `Cults3D discovery rate-limited after ${attempt} attempts`,
+                };
+                return;
+              }
+              yield {
+                kind: 'rate-limited' as const,
+                retryAfterMs: decision.delayMs,
+                attempt,
+              };
+              await sleep(decision.delayMs, context.signal);
+              attempt += 1;
+              continue;
+            }
+
+            if (res.status === 401 || res.status === 403) {
+              yield {
+                kind: 'auth-required' as const,
+                reason: 'revoked' as const,
+                surfaceToUser: `Cults3D rejected credentials (${res.status})`,
+              };
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'auth-revoked' as const,
+                details: `Cults3D discovery rejected (${res.status})`,
+              };
+              return;
+            }
+
+            if (!res.ok) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Cults3D discovery responded ${res.status}`,
+              };
+              return;
+            }
+
+            try {
+              pageJson = await res.json();
+            } catch (parseErr) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Cults3D discovery JSON parse failed: ${(parseErr as Error).message}`,
+                error: parseErr,
+              };
+              return;
+            }
+            break;
+          }
+
+          const gql = pageJson as {
+            data?: {
+              creator?: { creations?: EdgeConnection } | null;
+              search?: EdgeConnection | null;
+            };
+            errors?: Array<{ message: string }>;
+          };
+
+          if (Array.isArray(gql.errors) && gql.errors.length > 0) {
+            yield {
+              kind: 'discovery-failed' as const,
+              reason: 'unknown' as const,
+              details: `Cults3D GraphQL errors: ${JSON.stringify(gql.errors)}`,
+            };
+            return;
+          }
+
+          let conn: EdgeConnection | undefined;
+          if (mode.kind === 'creator') {
+            conn = gql.data?.creator?.creations ?? undefined;
+            if (!conn && gql.data?.creator === null) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'content-removed' as const,
+                details: `Cults3D creator ${mode.creatorSlug} not found`,
+              };
+              return;
+            }
+          } else {
+            conn = gql.data?.search ?? undefined;
+          }
+
+          if (!conn) {
+            yield {
+              kind: 'discovery-failed' as const,
+              reason: 'no-results' as const,
+              details: `Cults3D discovery returned no connection`,
+            };
+            return;
+          }
+
+          const edges = conn.edges ?? [];
+          for (const edge of edges) {
+            if (!edge.node?.id) continue;
+            // Stop at the first-seen item from the prior firing (rolling cursor).
+            if (priorCursor && edge.node.id === priorCursor.firstSeenSourceItemId) {
+              stop = true;
+              break;
+            }
+            // Cap at firstFireBackfill on first firing.
+            if (itemsTotal >= cap) {
+              stop = true;
+              break;
+            }
+            const event: DiscoveryEvent = {
+              kind: 'item-discovered' as const,
+              sourceItemId: edge.node.id,
+            };
+            const hint: { title?: string; publishedAt?: Date } = {};
+            if (typeof edge.node.name === 'string' && edge.node.name) hint.title = edge.node.name;
+            if (typeof edge.node.publishedAt === 'string') {
+              const d = new Date(edge.node.publishedAt);
+              if (!Number.isNaN(d.getTime())) hint.publishedAt = d;
+            }
+            if (hint.title || hint.publishedAt) event.metadataHint = hint;
+            yield event;
+            itemsTotal += 1;
+            // Record the first item we see this run — that becomes the new
+            // first-seen cursor passed to the next firing.
+            if (firstSeenIdThisRun === undefined) {
+              firstSeenIdThisRun = edge.node.id;
+            }
+          }
+
+          if (stop) break;
+
+          if (!conn.pageInfo?.hasNextPage || !conn.pageInfo.endCursor) break;
+          pageAfter = conn.pageInfo.endCursor;
+        }
+
+        // Build new cursor: prefer the first-seen id from THIS run, else
+        // preserve the prior cursor (so subsequent runs still know where to stop).
+        const newCursor: Cults3dCursor | undefined = firstSeenIdThisRun
+          ? { firstSeenSourceItemId: firstSeenIdThisRun }
+          : priorCursor;
+
+        const completed: DiscoveryEvent = {
+          kind: 'discovery-completed' as const,
+          itemsTotal,
+        };
+        if (newCursor) completed.cursor = JSON.stringify(newCursor);
+        yield completed;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isAbort =
+          (err instanceof Error && err.name === 'AbortError') ||
+          context.signal?.aborted === true;
+        logger.warn({ err }, 'cults3d: discovery unexpected error');
+        yield {
+          kind: 'discovery-failed' as const,
+          reason: isAbort ? 'network-error' : 'unknown',
+          details: msg,
+          error: err,
+        };
+      }
     },
   };
 }

@@ -46,6 +46,12 @@ import type {
   FetchTarget,
   NormalizedItem,
 } from '../types';
+import type {
+  SubscribableAdapter,
+  DiscoveryContext,
+  DiscoveryEvent,
+} from '../subscribable';
+import type { WatchlistSubscriptionKind } from '../../watchlist/types';
 import { nextRetry, sleep } from '../rate-limit';
 import { sanitizeFilename } from '../filename-sanitize';
 import { logger } from '../../logger';
@@ -118,6 +124,13 @@ export type ThingiverseAdapterOptions = {
   retryBaseMs?: number;
   /** Default caps when credentials don't carry their own. */
   defaultCaps?: ResolvedCaps;
+  /**
+   * V2-004 T7 — first-fire bounded backfill cap (max 100). Default 20.
+   * Honors `WATCHLIST_FIRST_FIRE_BACKFILL` env var.
+   */
+  firstFireBackfill?: number;
+  /** Discovery list per-page count. Default 30. */
+  discoveryPerPage?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +141,25 @@ const DEFAULT_API_BASE = 'https://api.thingiverse.com';
 const DEFAULT_OAUTH_TOKEN_ENDPOINT =
   'https://www.thingiverse.com/login/oauth/access_token';
 const DEFAULT_MAX_RETRIES = 6;
+
+// V2-004 T7 — discovery defaults shared across capability methods.
+const DEFAULT_FIRST_FIRE_BACKFILL = 20;
+const FIRST_FIRE_BACKFILL_HARD_CAP = 100;
+const DEFAULT_DISCOVERY_PER_PAGE = 30;
+
+function resolveFirstFireBackfill(optionOverride?: number): number {
+  if (typeof optionOverride === 'number' && Number.isFinite(optionOverride) && optionOverride > 0) {
+    return Math.min(Math.floor(optionOverride), FIRST_FIRE_BACKFILL_HARD_CAP);
+  }
+  const env = process.env['WATCHLIST_FIRST_FIRE_BACKFILL'];
+  if (env) {
+    const parsed = Number.parseInt(env, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.min(parsed, FIRST_FIRE_BACKFILL_HARD_CAP);
+    }
+  }
+  return DEFAULT_FIRST_FIRE_BACKFILL;
+}
 
 /** 1-minute safety margin: refresh OAuth tokens this far before expiry. */
 const TOKEN_REFRESH_LEAD_MS = 60_000;
@@ -424,13 +456,15 @@ type ThingAncestor = {
 
 export function createThingiverseAdapter(
   options?: ThingiverseAdapterOptions,
-): ScavengerAdapter {
+): ScavengerAdapter & SubscribableAdapter {
   const apiBase = (options?.apiBase ?? DEFAULT_API_BASE).replace(/\/+$/, '');
   const oauthTokenEndpoint = options?.oauthTokenEndpoint ?? DEFAULT_OAUTH_TOKEN_ENDPOINT;
   const httpFetch = options?.httpFetch ?? globalThis.fetch;
   const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
   const retryBaseMs = options?.retryBaseMs;
   const defaultCaps = options?.defaultCaps ?? DEFAULT_CAPS;
+  const firstFireBackfill = resolveFirstFireBackfill(options?.firstFireBackfill);
+  const discoveryPerPage = options?.discoveryPerPage ?? DEFAULT_DISCOVERY_PER_PAGE;
 
   return {
     id: 'thingiverse' as const,
@@ -440,6 +474,54 @@ export function createThingiverseAdapter(
       authMethods: ['oauth', 'api-key'],
       supports: { url: true, sourceItemId: true, raw: false },
       rateLimitPolicy: { baseMs: 1000, maxMs: 60_000, maxRetries: DEFAULT_MAX_RETRIES },
+    },
+
+    // V2-004 T7 — SubscribableAdapter capabilities.
+    capabilities: new Set<WatchlistSubscriptionKind>(['creator', 'tag', 'saved_search']),
+
+    listCreator(context: DiscoveryContext, creatorId: string): AsyncIterable<DiscoveryEvent> {
+      return runThingiverseDiscovery({
+        context,
+        mode: { kind: 'creator', username: creatorId },
+        apiBase,
+        oauthTokenEndpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        perPage: discoveryPerPage,
+        defaultCaps,
+      });
+    },
+
+    searchByTag(context: DiscoveryContext, tag: string): AsyncIterable<DiscoveryEvent> {
+      return runThingiverseDiscovery({
+        context,
+        mode: { kind: 'tag', tag },
+        apiBase,
+        oauthTokenEndpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        perPage: discoveryPerPage,
+        defaultCaps,
+      });
+    },
+
+    search(context: DiscoveryContext, query: string): AsyncIterable<DiscoveryEvent> {
+      return runThingiverseDiscovery({
+        context,
+        mode: { kind: 'search', query },
+        apiBase,
+        oauthTokenEndpoint,
+        httpFetch,
+        maxRetries,
+        retryBaseMs,
+        firstFireBackfill,
+        perPage: discoveryPerPage,
+        defaultCaps,
+      });
     },
 
     /**
@@ -1399,4 +1481,441 @@ async function* requestJsonWithRetries<T>(
       return { outcome: 'terminal' };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// V2-004 T7 — SubscribableAdapter discovery support
+// ---------------------------------------------------------------------------
+
+type ThingiverseCursor = {
+  /** Numeric thing.id of the most recent thing yielded by the prior firing. */
+  firstSeenSourceItemId?: string;
+};
+
+type ThingiverseDiscoveryMode =
+  | { kind: 'creator'; username: string }
+  | { kind: 'tag'; tag: string }
+  | { kind: 'search'; query: string };
+
+type RunThingiverseDiscoveryArgs = {
+  context: DiscoveryContext;
+  mode: ThingiverseDiscoveryMode;
+  apiBase: string;
+  oauthTokenEndpoint: string;
+  httpFetch: typeof fetch;
+  maxRetries: number;
+  retryBaseMs: number | undefined;
+  firstFireBackfill: number;
+  perPage: number;
+  defaultCaps: ResolvedCaps;
+};
+
+function parseThingiverseCursor(raw: string | undefined): ThingiverseCursor | undefined {
+  if (!raw) return undefined;
+  try {
+    const obj = JSON.parse(raw) as unknown;
+    if (obj && typeof obj === 'object') {
+      const r = obj as Record<string, unknown>;
+      const out: ThingiverseCursor = {};
+      if (typeof r['firstSeenSourceItemId'] === 'string') {
+        out.firstSeenSourceItemId = r['firstSeenSourceItemId'];
+      }
+      return out;
+    }
+  } catch {
+    // Malformed cursor — first-fire.
+  }
+  return undefined;
+}
+
+/**
+ * Discovery-side OAuth refresh that yields DiscoveryEvent rather than
+ * ScavengerEvent. Mirrors `maybeRefreshToken` (fetch-side) logic.
+ */
+async function* maybeRefreshThingiverseTokenForDiscovery(
+  creds: ThingiverseCredentials,
+  context: DiscoveryContext,
+  oauthTokenEndpoint: string,
+  httpFetch: typeof fetch,
+): AsyncGenerator<DiscoveryEvent, ThingiverseCredentials | 'failed', void> {
+  const oauthBag =
+    creds.kind === 'oauth'
+      ? creds
+      : creds.kind === 'oauth+api-token'
+      ? creds.oauth
+      : null;
+  if (!oauthBag) return creds;
+
+  const remaining = oauthBag.expiresAt - Date.now();
+  if (remaining >= TOKEN_REFRESH_LEAD_MS) return creds;
+
+  yield {
+    kind: 'progress' as const,
+    message: 'Refreshing Thingiverse OAuth token',
+    itemsSeen: 0,
+  };
+
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: oauthBag.refreshToken,
+    client_id: oauthBag.clientId,
+    client_secret: oauthBag.clientSecret,
+  });
+
+  let res: Response;
+  try {
+    res = await httpFetch(oauthTokenEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: body.toString(),
+      signal: context.signal,
+    });
+  } catch (err) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `thingiverse token refresh fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: err,
+    };
+    return 'failed';
+  }
+
+  if (res.status === 400 || res.status === 401) {
+    yield {
+      kind: 'auth-required' as const,
+      reason: 'revoked' as const,
+      surfaceToUser:
+        'Thingiverse refresh token rejected. Reconnect Thingiverse in Settings > Sources.',
+    };
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'auth-revoked' as const,
+      details: `thingiverse refresh token rejected (HTTP ${res.status})`,
+    };
+    return 'failed';
+  }
+
+  if (!res.ok) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `thingiverse token endpoint responded ${res.status}`,
+    };
+    return 'failed';
+  }
+
+  let payload: unknown;
+  try {
+    payload = await res.json();
+  } catch (err) {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: `thingiverse token response parse failed: ${(err as Error).message}`,
+      error: err,
+    };
+    return 'failed';
+  }
+
+  const tok = payload as { access_token?: unknown; expires_in?: unknown; refresh_token?: unknown };
+  if (typeof tok.access_token !== 'string' || !tok.access_token || typeof tok.expires_in !== 'number') {
+    yield {
+      kind: 'discovery-failed' as const,
+      reason: 'network-error' as const,
+      details: 'thingiverse token response missing access_token or expires_in',
+    };
+    return 'failed';
+  }
+  const newRefreshToken =
+    typeof tok.refresh_token === 'string' && tok.refresh_token
+      ? tok.refresh_token
+      : oauthBag.refreshToken;
+  const newExpiresAt = Date.now() + tok.expires_in * 1000;
+
+  let newCreds: ThingiverseCredentials;
+  if (creds.kind === 'oauth') {
+    newCreds = {
+      kind: 'oauth',
+      accessToken: tok.access_token,
+      refreshToken: newRefreshToken,
+      expiresAt: newExpiresAt,
+      clientId: oauthBag.clientId,
+      clientSecret: oauthBag.clientSecret,
+    };
+  } else {
+    const dual = creds as ThingiverseDualCredentials;
+    newCreds = {
+      kind: 'oauth+api-token',
+      token: dual.token,
+      oauth: {
+        accessToken: tok.access_token,
+        refreshToken: newRefreshToken,
+        expiresAt: newExpiresAt,
+        clientId: oauthBag.clientId,
+        clientSecret: oauthBag.clientSecret,
+      },
+    };
+  }
+
+  if (context.onTokenRefreshed) {
+    try {
+      await context.onTokenRefreshed(newCreds as unknown as Record<string, unknown>);
+    } catch (cbErr) {
+      logger.warn(
+        { err: cbErr },
+        'thingiverse: discovery onTokenRefreshed callback failed; continuing with new creds for this request',
+      );
+    }
+  }
+  return newCreds;
+}
+
+function runThingiverseDiscovery(args: RunThingiverseDiscoveryArgs): AsyncIterable<DiscoveryEvent> {
+  const { context, mode, apiBase, oauthTokenEndpoint, httpFetch, maxRetries, retryBaseMs, firstFireBackfill, perPage, defaultCaps } = args;
+
+  return {
+    [Symbol.asyncIterator]: async function* (): AsyncGenerator<DiscoveryEvent, void, void> {
+      try {
+        const credValidation = validateCredentials(context.credentials, defaultCaps);
+        if (!credValidation.ok) {
+          yield {
+            kind: 'discovery-failed' as const,
+            reason: 'auth-revoked' as const,
+            details: `thingiverse discovery: ${credValidation.reason}`,
+          };
+          return;
+        }
+
+        const refreshed = yield* maybeRefreshThingiverseTokenForDiscovery(
+          credValidation.creds,
+          context,
+          oauthTokenEndpoint,
+          httpFetch,
+        );
+        if (refreshed === 'failed') return;
+        const creds = refreshed;
+
+        const priorCursor = parseThingiverseCursor(context.cursor);
+        const isFirstFire = priorCursor === undefined;
+        const cap = isFirstFire ? firstFireBackfill : Number.MAX_SAFE_INTEGER;
+
+        let itemsTotal = 0;
+        let firstSeenIdThisRun: string | undefined;
+        let stop = false;
+        let page = 1;
+
+        while (!stop) {
+          if (context.signal?.aborted) {
+            yield {
+              kind: 'discovery-failed' as const,
+              reason: 'unknown' as const,
+              details: 'thingiverse discovery aborted by signal',
+            };
+            return;
+          }
+
+          // Build URL for this page.
+          let url: string;
+          if (mode.kind === 'creator') {
+            const u = new URL(`${apiBase}/users/${encodeURIComponent(mode.username)}/things`);
+            u.searchParams.set('per_page', String(perPage));
+            u.searchParams.set('page', String(page));
+            url = u.toString();
+          } else if (mode.kind === 'tag') {
+            const u = new URL(`${apiBase}/things`);
+            u.searchParams.set('tag', mode.tag);
+            u.searchParams.set('per_page', String(perPage));
+            u.searchParams.set('page', String(page));
+            u.searchParams.set('sort', 'newest');
+            url = u.toString();
+          } else {
+            const u = new URL(`${apiBase}/things`);
+            u.searchParams.set('q', mode.query);
+            u.searchParams.set('per_page', String(perPage));
+            u.searchParams.set('page', String(page));
+            u.searchParams.set('sort', 'newest');
+            url = u.toString();
+          }
+
+          // Auth selection: cascade api-token-only → oauth-only on 401/403 for dual creds.
+          const useApiTokenFirst = creds.kind === 'oauth+api-token';
+          const initialAuth = selectAuth(creds, useApiTokenFirst ? 'api-token-only' : (creds.kind === 'oauth' ? 'oauth-only' : 'api-token-only'));
+
+          let attempt = 1;
+          let pageJson: unknown;
+          let cascadedToOauth = false;
+          let currentAuth = initialAuth;
+
+          while (true) {
+            yield {
+              kind: 'progress' as const,
+              message: `Thingiverse ${mode.kind} discovery page ${page} (attempt ${attempt})`,
+              itemsSeen: itemsTotal,
+            };
+            let res: Response;
+            try {
+              res = await httpFetch(url, { headers: currentAuth.headers, signal: context.signal });
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Thingiverse discovery fetch failed: ${msg}`,
+                error: err,
+              };
+              return;
+            }
+
+            if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+              const ra = res.status === 429 ? res.headers.get('retry-after') : null;
+              const retryAfterMs = ra ? parseRetryAfter(ra) : undefined;
+              const decision = nextRetry(
+                attempt,
+                { maxAttempts: maxRetries, baseMs: retryBaseMs },
+                retryAfterMs,
+              );
+              if (!decision.retry) {
+                yield {
+                  kind: 'discovery-failed' as const,
+                  reason: 'rate-limit-exhausted' as const,
+                  details: `Thingiverse discovery retries exhausted (last status ${res.status})`,
+                };
+                return;
+              }
+              yield {
+                kind: 'rate-limited' as const,
+                retryAfterMs: decision.delayMs,
+                attempt,
+              };
+              await sleep(decision.delayMs, context.signal);
+              attempt += 1;
+              continue;
+            }
+
+            if (res.status === 401 || res.status === 403) {
+              if (creds.kind === 'oauth+api-token' && !cascadedToOauth) {
+                // Cascade to oauth-only.
+                cascadedToOauth = true;
+                currentAuth = selectAuth(creds, 'oauth-only');
+                attempt = 1;
+                continue;
+              }
+              yield {
+                kind: 'auth-required' as const,
+                reason: 'revoked' as const,
+                surfaceToUser: `Thingiverse rejected credentials (${res.status})`,
+              };
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'auth-revoked' as const,
+                details: `Thingiverse discovery rejected (${res.status})`,
+              };
+              return;
+            }
+
+            if (res.status === 404 || res.status === 410) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'content-removed' as const,
+                details: `Thingiverse discovery responded ${res.status}`,
+              };
+              return;
+            }
+
+            if (!res.ok) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Thingiverse discovery responded ${res.status}`,
+              };
+              return;
+            }
+
+            try {
+              pageJson = await res.json();
+            } catch (parseErr) {
+              yield {
+                kind: 'discovery-failed' as const,
+                reason: 'network-error' as const,
+                details: `Thingiverse discovery JSON parse failed: ${(parseErr as Error).message}`,
+                error: parseErr,
+              };
+              return;
+            }
+            break;
+          }
+
+          // Thingiverse list endpoints return either an array directly or an
+          // object with a `hits` field (varies by route). Normalise both shapes.
+          let things: Array<{ id?: number | string; name?: string; added?: string }>;
+          if (Array.isArray(pageJson)) {
+            things = pageJson as Array<{ id?: number | string; name?: string; added?: string }>;
+          } else if (pageJson && typeof pageJson === 'object') {
+            const obj = pageJson as Record<string, unknown>;
+            things = Array.isArray(obj['hits'])
+              ? (obj['hits'] as Array<{ id?: number | string; name?: string; added?: string }>)
+              : [];
+          } else {
+            things = [];
+          }
+
+          if (things.length === 0) break;
+
+          for (const t of things) {
+            if (t.id === undefined || t.id === null) continue;
+            const idStr = String(t.id);
+            if (priorCursor?.firstSeenSourceItemId && idStr === priorCursor.firstSeenSourceItemId) {
+              stop = true;
+              break;
+            }
+            if (itemsTotal >= cap) {
+              stop = true;
+              break;
+            }
+            const ev: DiscoveryEvent = { kind: 'item-discovered' as const, sourceItemId: idStr };
+            const hint: { title?: string; publishedAt?: Date } = {};
+            if (typeof t.name === 'string' && t.name) hint.title = t.name;
+            if (typeof t.added === 'string') {
+              const d = new Date(t.added);
+              if (!Number.isNaN(d.getTime())) hint.publishedAt = d;
+            }
+            if (hint.title || hint.publishedAt) ev.metadataHint = hint;
+            yield ev;
+            itemsTotal += 1;
+            if (firstSeenIdThisRun === undefined) firstSeenIdThisRun = idStr;
+          }
+
+          if (stop) break;
+          // If we got fewer items than perPage on this page, we've hit the end.
+          if (things.length < perPage) break;
+          page += 1;
+        }
+
+        const newCursor: ThingiverseCursor | undefined = firstSeenIdThisRun
+          ? { firstSeenSourceItemId: firstSeenIdThisRun }
+          : priorCursor;
+        const completed: DiscoveryEvent = {
+          kind: 'discovery-completed' as const,
+          itemsTotal,
+        };
+        if (newCursor) completed.cursor = JSON.stringify(newCursor);
+        yield completed;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isAbort =
+          (err instanceof Error && err.name === 'AbortError') ||
+          context.signal?.aborted === true;
+        logger.warn({ err }, 'thingiverse: discovery unexpected error');
+        yield {
+          kind: 'discovery-failed' as const,
+          reason: isAbort ? 'network-error' : 'unknown',
+          details: msg,
+          error: err,
+        };
+      }
+    },
+  };
 }

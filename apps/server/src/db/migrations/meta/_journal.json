@@ -162,6 +162,13 @@
       "when": 1746979200000,
       "tag": "0022_v2_007b_catalog_expand",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1747065600000,
+      "tag": "0023_v2_004b_gdrive_watch_channels",
+      "breakpoints": true
     }
   ]
 }

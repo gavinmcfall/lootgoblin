@@ -342,6 +342,15 @@ export const gdriveWatchChannels = sqliteTable(
     errorReason: text('error_reason'),
     /** Last time we refreshed (or registered). NULL until first refresh. */
     refreshedAt: integer('refreshed_at', { mode: 'timestamp_ms' }),
+    /**
+     * V2-004b-T4: highest `X-Goog-Message-Number` we have accepted on this
+     * channel. Google may retry pushes on transient 5xx; we silently drop
+     * any push whose message number is ≤ this value. NULL until the first
+     * accepted push. Updated atomically with the watchlist_job INSERT in a
+     * single transaction so a crash between the two cannot leave a missed
+     * push (the row only advances when the firing was accepted).
+     */
+    lastMessageNumber: integer('last_message_number'),
     /** ms epoch of channel-row creation. App-side default via unixepoch(). */
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()

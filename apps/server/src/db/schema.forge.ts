@@ -209,6 +209,12 @@ export const printers = sqliteTable(
     statusLastSeen: integer('status_last_seen', { mode: 'timestamp_ms' }),
     /** Soft-disable flag. The dispatch worker skips inactive printers. */
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    /**
+     * Optional Idempotency-Key (RFC 7240-style) supplied via header on POST.
+     * Partial unique index on (owner_id, idempotency_key) WHERE NOT NULL —
+     * see migration 0026.
+     */
+    idempotencyKey: text('idempotency_key'),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
@@ -279,6 +285,11 @@ export const forgeSlicers = sqliteTable(
     /** App-layer validates against SLICER_INVOCATION_METHODS. */
     invocationMethod: text('invocation_method').notNull(),
     name: text('name').notNull(),
+    /**
+     * Optional Idempotency-Key — see schema.forge `printers.idempotencyKey`
+     * + migration 0026 for the partial unique index.
+     */
+    idempotencyKey: text('idempotency_key'),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
@@ -421,6 +432,11 @@ export const dispatchJobs = sqliteTable(
     failureReason: text('failure_reason'),
     /** Human-readable detail for UI display. */
     failureDetails: text('failure_details'),
+    /**
+     * Optional Idempotency-Key — see schema.forge `printers.idempotencyKey`
+     * + migration 0026 for the partial unique index.
+     */
+    idempotencyKey: text('idempotency_key'),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),

@@ -1,0 +1,60 @@
+{
+  "brand": "ELEGOO",
+  "license_note": "Hand-keyed from elegoo.com public product pages. Recommended exposure values are typical 0.05mm-layer starting points commonly published as vendor-recommended starting profiles; tune per printer.",
+  "products": [
+    {
+      "productLine": "Standard Resin",
+      "subtype": "standard",
+      "colors": ["#808080"],
+      "colorName": "Grey",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 2.5,
+        "bottom_layers": 6,
+        "bottom_exposure_seconds": 35
+      },
+      "densityGMl": 1.1,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://www.elegoo.com/products/elegoo-resin",
+      "sourceRef": "https://www.elegoo.com/products/elegoo-resin"
+    },
+    {
+      "productLine": "Water-Washable Resin",
+      "subtype": "water-washable",
+      "colors": ["#000000"],
+      "colorName": "Black",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 3,
+        "bottom_layers": 6,
+        "bottom_exposure_seconds": 40
+      },
+      "densityGMl": 1.07,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://www.elegoo.com/products/elegoo-resin",
+      "sourceRef": "https://www.elegoo.com/products/elegoo-resin"
+    },
+    {
+      "productLine": "ABS-Like Resin",
+      "subtype": "abs-like",
+      "colors": ["#808080"],
+      "colorName": "Grey",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 2.5,
+        "bottom_layers": 6,
+        "bottom_exposure_seconds": 35
+      },
+      "densityGMl": 1.1,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://www.elegoo.com/products/elegoo-resin",
+      "sourceRef": "https://www.elegoo.com/products/elegoo-resin"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "brand": "Example Co",
+  "license_note": "Synthetic fixture for V2-007b T_B5b tests. NOT a real vendor.",
+  "products": [
+    {
+      "productLine": "Test Tough",
+      "subtype": "tough",
+      "colors": ["#FF6600"],
+      "colorName": "Sunset Orange",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 7,
+        "bottom_layers": 4,
+        "bottom_exposure_seconds": 35
+      },
+      "densityGMl": 1.13,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://example.test/tough",
+      "sourceRef": "https://example.test/tough"
+    },
+    {
+      "productLine": "Test Standard",
+      "subtype": "standard",
+      "colors": ["#808080"],
+      "colorName": "Grey",
+      "densityGMl": 1.1,
+      "bottleVolumeMl": 500,
+      "materialClass": "consumer",
+      "sourceRef": "https://example.test/standard"
+    }
+  ]
+}

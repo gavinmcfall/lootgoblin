@@ -1,0 +1,21 @@
+{
+  "brand": "Another Brand",
+  "license_note": "Synthetic fixture for V2-007b T_B5b tests. Tests subtype alias normalisation and missing colors.",
+  "products": [
+    {
+      "productLine": "Water Wash",
+      "subtype": "Water Washable",
+      "colors": ["#FFFFFF"],
+      "colorName": "Clear",
+      "densityGMl": 1.07,
+      "sourceRef": "https://another.test/wash"
+    },
+    {
+      "productLine": "Industrial Casting",
+      "subtype": "casting",
+      "colors": null,
+      "materialClass": "industrial",
+      "sourceRef": "https://another.test/casting"
+    }
+  ]
+}

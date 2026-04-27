@@ -391,6 +391,10 @@ export async function wipeWatchlistE2eState(): Promise<void> {
   await dbc.delete(schema.loot);
   await dbc.delete(schema.ingestJobs);
   await dbc.delete(schema.watchlistJobs);
+  // GDrive push channels — FK to watchlist_subscriptions, must drop before
+  // the parent subscription rows (cascade also handles this, but explicit
+  // wipe keeps test ordering predictable).
+  await dbc.delete(schema.gdriveWatchChannels);
   await dbc.delete(schema.watchlistSubscriptions);
   await dbc.delete(schema.sourceCredentials);
 }

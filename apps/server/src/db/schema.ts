@@ -40,6 +40,9 @@ export * from './schema.materials';
 // Grimoire pillar — V2-007a-T2 (slicer profiles + print settings + attachments).
 export * from './schema.grimoire';
 
+// Forge pillar — V2-005a-T1 (printers + slicers + ACLs + agents + dispatch_jobs).
+export * from './schema.forge';
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 

@@ -82,6 +82,7 @@ import {
   markClaimable,
   markConverting,
   markFailed,
+  markSlicing,
 } from '../forge/dispatch-state';
 import {
   type DispatchFailureReason,
@@ -99,6 +100,10 @@ import {
   type CompatibilityVerdict,
   type TargetKind,
 } from '../forge/target-compatibility';
+import {
+  routePostConvert,
+  type PostConvertDecision,
+} from '../forge/slicer/post-convert-router';
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -364,6 +369,104 @@ async function makeJobOutputDir(jobId: string): Promise<string> {
   return dir;
 }
 
+/**
+ * Build the printer-kind resolver for routePostConvert. Pure DB lookup —
+ * returns null when the printer row is missing (race with delete).
+ */
+function makePrinterKindResolver(
+  dbUrl?: string,
+): (printerId: string) => Promise<string | null> {
+  return async (printerId: string) => {
+    const db = getServerDb(dbUrl);
+    const rows = await db
+      .select({ kind: schema.printers.kind })
+      .from(schema.printers)
+      .where(eq(schema.printers.id, printerId))
+      .limit(1);
+    return rows[0]?.kind ?? null;
+  };
+}
+
+/**
+ * Map a router `failed` decision's reason onto a DispatchFailureReason. The
+ * schema's failure_reason enum is closed, so router-level reasons collapse:
+ *   - 'incompatible-target' → 'unsupported-format'
+ *   - 'unknown-printer'     → 'unknown'  (transient/edge case — no enum slot)
+ *
+ * The router's textual reason is preserved in failure_details for ops.
+ */
+function mapRouterFailureReason(
+  routerReason: 'incompatible-target' | 'unknown-printer',
+): DispatchFailureReason {
+  switch (routerReason) {
+    case 'incompatible-target':
+      return 'unsupported-format';
+    case 'unknown-printer':
+      return 'unknown';
+  }
+}
+
+/**
+ * Apply a post-convert router decision to the dispatch_jobs row, atomically
+ * transitioning out of `from` (either 'pending' or 'converting'). Returns
+ * 'ran' on success, 'errored' on a failed decision or transition race.
+ */
+interface RouteApplyLogger {
+  info: (obj: unknown, msg?: string) => void;
+  warn: (obj: unknown, msg?: string) => void;
+  error: (obj: unknown, msg?: string) => void;
+}
+
+async function applyPostConvertDecision(args: {
+  jobId: string;
+  from: 'pending' | 'converting';
+  decision: PostConvertDecision;
+  log: RouteApplyLogger;
+  dbUrl?: string;
+  now?: Date;
+}): Promise<'ran' | 'errored'> {
+  const { jobId, from, decision, log, dbUrl, now } = args;
+  if (decision.next === 'claimable') {
+    const r = await markClaimable({ jobId, from }, { dbUrl });
+    if (!r.ok) {
+      log.error(
+        { reason: r.reason },
+        'forge-converter: markClaimable failed after post-convert routing',
+      );
+      return 'errored';
+    }
+    log.info({ routerReason: decision.reason, from }, 'forge-converter: → claimable');
+    return 'ran';
+  }
+  if (decision.next === 'slicing') {
+    const r = await markSlicing({ jobId, from }, { dbUrl });
+    if (!r.ok) {
+      log.error(
+        { reason: r.reason },
+        'forge-converter: markSlicing failed after post-convert routing',
+      );
+      return 'errored';
+    }
+    log.info({ routerReason: decision.reason, from }, 'forge-converter: → slicing');
+    return 'ran';
+  }
+  // decision.next === 'failed'
+  const dispatchReason = mapRouterFailureReason(decision.reason);
+  log.warn(
+    { routerReason: decision.reason, details: decision.details, from },
+    'forge-converter: post-convert routing → failed',
+  );
+  await markFailed(
+    {
+      jobId,
+      reason: dispatchReason,
+      details: decision.details ?? decision.reason,
+    },
+    { dbUrl, now },
+  );
+  return 'errored';
+}
+
 // ---------------------------------------------------------------------------
 // runOneConverterTick
 // ---------------------------------------------------------------------------
@@ -453,18 +556,32 @@ export async function runOneConverterTick(
     );
 
     if (verdict.band === 'native') {
-      // Defensive — route should set initial-status='claimable' for native
-      // pairs. If we got here, it's a route bug, but the right move is just
-      // to flip the row to claimable so dispatch can proceed.
+      // No conversion needed. Route via post-convert router so we still
+      // honour the slicing fork (e.g. an STL on an FDM printer would have
+      // been 'native' nowhere — the matrix already tells us 'gcode' is the
+      // only native format — but for safety we apply the router uniformly).
+      // A native verdict on `pending` is also defensive: the dispatch route
+      // should set initial-status='claimable' for native pairs at create
+      // time (V2-005a-T6). If we got here, it's a route bug; the router
+      // will still produce a 'claimable' decision for native formats.
       log.warn(
         { format: primary.format, targetKind: targetKindStr },
-        'forge-converter: pending row had a native verdict (route bug?); flipping to claimable',
+        'forge-converter: pending row had a native verdict (route bug?); routing without conversion',
       );
-      await markClaimable(
-        { jobId: candidate.jobId, from: 'converting' },
-        { dbUrl: opts.dbUrl },
-      );
-      return 'ran';
+      const decision = await routePostConvert({
+        targetKind: candidate.targetKind,
+        targetId: candidate.targetId,
+        currentFormat: primary.format,
+        resolvePrinterKind: makePrinterKindResolver(opts.dbUrl),
+      });
+      return applyPostConvertDecision({
+        jobId: candidate.jobId,
+        from: 'converting',
+        decision,
+        log,
+        dbUrl: opts.dbUrl,
+        now: opts.now,
+      });
     }
 
     if (verdict.band === 'unsupported') {
@@ -609,26 +726,30 @@ export async function runOneConverterTick(
     });
     await setConvertedFileId(candidate.jobId, newFileId, opts.dbUrl);
 
-    // converting → claimable.
-    const claimableResult = await markClaimable(
-      { jobId: candidate.jobId, from: 'converting' },
-      { dbUrl: opts.dbUrl },
-    );
-    if (!claimableResult.ok) {
-      // Should not happen — we own the row. Surface it loudly so any race
-      // bug becomes visible in logs.
-      log.error(
-        { reason: claimableResult.reason },
-        'forge-converter: markClaimable failed after successful conversion',
-      );
-      return 'errored';
-    }
-
+    // converting → ? — let the post-convert router decide based on the
+    // *converted* format. T_c9: meshes destined for an FDM printer route
+    // to 'slicing'; everything else (native, slicer targets, gcode-already)
+    // routes straight to 'claimable'. The ARCHIVE_EXTRACT_SENTINEL output
+    // is normalized to the chosen inner file's extension, which the router
+    // then re-evaluates against the target.
+    const decision = await routePostConvert({
+      targetKind: candidate.targetKind,
+      targetId: candidate.targetId,
+      currentFormat: chosenFormat,
+      resolvePrinterKind: makePrinterKindResolver(opts.dbUrl),
+    });
     log.info(
-      { convertedFileId: newFileId, outputFormat: chosenFormat },
-      'forge-converter: pending → claimable',
+      { convertedFileId: newFileId, outputFormat: chosenFormat, next: decision.next },
+      'forge-converter: post-convert routing decision',
     );
-    return 'ran';
+    return applyPostConvertDecision({
+      jobId: candidate.jobId,
+      from: 'converting',
+      decision,
+      log,
+      dbUrl: opts.dbUrl,
+      now: opts.now,
+    });
   } catch (err) {
     const details = err instanceof Error ? err.message : String(err);
     log.error({ err }, 'forge-converter: tick threw');

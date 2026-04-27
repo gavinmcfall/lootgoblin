@@ -592,6 +592,138 @@ describe('runOneConverterTick — V2-005b-T_b4 failure paths', () => {
 });
 
 // ===========================================================================
+// runOneConverterTick — V2-005c-T_c9 post-convert routing
+// ===========================================================================
+
+describe('runOneConverterTick — V2-005c-T_c9 post-convert routing', () => {
+  it('9. STL on slicer target → status=claimable (slicer-target-just-opens-file)', async () => {
+    // Slicer-kind targets always route to claimable per the post-convert
+    // router; V2-005e dispatchers just open the file in the slicer GUI.
+    // STL is native to orcaslicer so no conversion runs — the worker
+    // takes the no-conversion routing branch.
+    const fx = await seedLoot({ format: 'stl' });
+    const slicerId = await seedSlicer(fx.ownerId, 'orcaslicer');
+    const jobId = await newPendingJob({
+      ownerId: fx.ownerId,
+      lootId: fx.lootId,
+      targetKind: 'slicer',
+      targetId: slicerId,
+    });
+    const { runOneConverterTick } = await import(
+      '../../src/workers/forge-converter-worker'
+    );
+    const result = await runOneConverterTick({ dbUrl: DB_URL });
+    expect(result).toBe('ran');
+    const row = await getDispatchRow(jobId);
+    expect(row.status).toBe('claimable');
+    expect(row.failureReason).toBeNull();
+  });
+
+  it('10. job already gcode targeting an FDM printer → status=claimable (already-gcode)', async () => {
+    // Pre-seed the job with a gcode primary file. Matrix returns 'native'
+    // for (gcode, fdm_klipper) so the worker takes the no-conversion
+    // routing branch and the router decides 'already-gcode' → claimable.
+    const fx = await seedLoot({ format: 'gcode', fileName: 'output.gcode' });
+    const printerId = await seedPrinter(fx.ownerId, 'fdm_klipper');
+    const jobId = await newPendingJob({
+      ownerId: fx.ownerId,
+      lootId: fx.lootId,
+      targetKind: 'printer',
+      targetId: printerId,
+    });
+
+    const { runOneConverterTick } = await import(
+      '../../src/workers/forge-converter-worker'
+    );
+    const result = await runOneConverterTick({ dbUrl: DB_URL });
+    expect(result).toBe('ran');
+    const row = await getDispatchRow(jobId);
+    expect(row.status).toBe('claimable');
+    expect(row.failureReason).toBeNull();
+  });
+
+  it('11. converter output is mesh format on FDM printer → status=slicing', async () => {
+    // Set up a job where the converter produces an STL (mesh) but the
+    // ultimate target is fdm_klipper (which accepts only gcode). This
+    // exercises the post-conversion routing branch: the converter
+    // succeeds, derivativ file is STL, and the router decides 'slicing'.
+    //
+    // Primary fixture: GLB on fdm_klipper. Matrix verdict (glb,
+    // fdm_klipper): glb→[stl], native of klipper is [gcode]. No
+    // intersection → 'unsupported'. The worker would fail at the matrix
+    // gate before even running the converter.
+    //
+    // Workaround: use an archive (zip) fixture targeting fdm_klipper
+    // that extracts to an STL. Matrix archive sentinel always returns
+    // 'conversion-required' → 'archive-extract'. The converter runs the
+    // 7z extract; pickUsableFromArchive iterates extracted files asking
+    // the matrix `band !== 'unsupported'` for each. STL on fdm_klipper:
+    // matrix returns 'conversion-required → gcode' → band !==
+    // 'unsupported' so the picker accepts it. Derivative is STL.
+    // Post-convert router then runs on (stl, fdm_klipper printer) →
+    // 'slicing'.
+    const fx = await seedLoot({ format: 'zip', fileName: 'pack.zip' });
+    const printerId = await seedPrinter(fx.ownerId, 'fdm_klipper');
+    const jobId = await newPendingJob({
+      ownerId: fx.ownerId,
+      lootId: fx.lootId,
+      targetKind: 'printer',
+      targetId: printerId,
+    });
+
+    const stub = makeArchiveStub({
+      extractFiles: [{ relPath: 'model.stl', body: 'solid stl' }],
+    });
+    const { runOneConverterTick } = await import(
+      '../../src/workers/forge-converter-worker'
+    );
+    const result = await runOneConverterTick({ runCommand: stub, dbUrl: DB_URL });
+    expect(result).toBe('ran');
+
+    const row = await getDispatchRow(jobId);
+    expect(row.status).toBe('slicing');
+    expect(row.convertedFileId).not.toBeNull();
+    expect(row.failureReason).toBeNull();
+  });
+
+  it('12. unknown printer (target row missing for printer-kind job) → status=failed', async () => {
+    // Seed a printer row, create the job, then DELETE the printer row to
+    // simulate a race between the dispatcher creating the job and an
+    // operator deleting the printer. The worker's existing
+    // loadTargetKind returns null in this case. Because the existing
+    // pre-conversion gate already covers that, the router's
+    // unknown-printer branch is reached only if loadTargetKind succeeds
+    // AND the post-convert resolvePrinterKind later returns null. Since
+    // they hit the same DB, in practice they agree. So this test
+    // exercises the EXISTING pre-gate which sets reason='unsupported-format'.
+    //
+    // For T_c9 we keep the existing pre-conversion safety net. The
+    // ROUTER's unknown-printer branch is exercised by the unit tests.
+    const fx = await seedLoot({ format: 'gcode' });
+    const printerId = await seedPrinter(fx.ownerId, 'fdm_klipper');
+    const jobId = await newPendingJob({
+      ownerId: fx.ownerId,
+      lootId: fx.lootId,
+      targetKind: 'printer',
+      targetId: printerId,
+    });
+    // Delete the printer row before the worker tick runs.
+    await db().delete(schema.printers).where(eq(schema.printers.id, printerId));
+
+    const { runOneConverterTick } = await import(
+      '../../src/workers/forge-converter-worker'
+    );
+    const result = await runOneConverterTick({ dbUrl: DB_URL });
+    expect(result).toBe('errored');
+    const row = await getDispatchRow(jobId);
+    expect(row.status).toBe('failed');
+    // Existing pre-conversion gate kicks in first; router unknown-printer
+    // branch is exercised by unit tests.
+    expect(['unsupported-format', 'unknown']).toContain(row.failureReason);
+  });
+});
+
+// ===========================================================================
 // startForgeConverterWorker — loop lifecycle
 // ===========================================================================
 

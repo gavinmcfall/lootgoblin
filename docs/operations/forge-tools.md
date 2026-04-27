@@ -47,3 +47,70 @@ If a tool is missing at runtime, the converter returns `{ok: false, reason: 'mis
 ## Health check
 
 The Docker build runs `7z --help` and `blender --version` as build-layer assertions in both the `forge-tools` stage and the final `runtime` stage. If a binary is missing or broken, the image build fails — you catch the problem before deploy. If you customize the Dockerfile, preserve these checks.
+
+## Slicer install (V2-005c)
+
+Slicers are NOT baked into the image. Install at runtime via the admin HTTP API:
+
+```
+POST /api/v1/forge/tools/prusaslicer/install
+POST /api/v1/forge/tools/orcaslicer/install
+POST /api/v1/forge/tools/bambustudio/install
+```
+
+Each route is admin-only and kicks off a background download + verify + extract pipeline. The response is `202 Accepted` with the install row's initial state; poll `GET /api/v1/forge/tools` until `installStatus='ready'`.
+
+Binaries land in `/data/forge-tools/<slicer>/<version>/` by default. Override the install root with `FORGE_TOOLS_ROOT`. Removal goes through `DELETE /api/v1/forge/tools/<slicer>/uninstall` — best-effort `rm -rf` of the install root + DB row delete.
+
+### Update checks
+
+`GET /api/v1/forge/tools` surfaces `update_available=true` whenever the upstream version is newer than `installed_version`. The check runs:
+
+- on server boot (one-shot) and
+- nightly (background loop)
+
+Both paths short-circuit when `FORGE_DISABLE_SLICER_AUTOUPDATE=1` is set. To pull a new version, `POST /api/v1/forge/tools/<slicer>/update` (re-runs the install pipeline against the latest release).
+
+### Disable env vars
+
+| Env var | Effect |
+|---|---|
+| `FORGE_DISABLE_SLICING=1` | The slicer worker becomes a no-op. Jobs in `slicing` stay parked until the flag clears. |
+| `FORGE_DISABLE_SLICER_AUTOUPDATE=1` | Boot + nightly update checker is a no-op. Manual `POST /update` still works. |
+
+## Slicer profile materialization
+
+Grimoire `slicer_profiles` rows hold opaque slicer-config JSON. Before slicing, the worker materializes them onto disk at:
+
+```
+<LOOTGOBLIN_DATA_ROOT or /data>/forge-slicer-configs/<profile-id>/<slicer-kind>.ini
+```
+
+One file per `(profile, slicer-kind)` pair, tracked by the `forge_slicer_profile_materializations` table.
+
+### Drift detection
+
+When a Grimoire profile is updated, the materializer hashes the new `settingsPayload` and compares against the recorded `source_profile_hash`. On drift it sets `sync_required=true`; the next `getMaterializedConfigPath` call rewrites the file and clears the flag. Operators don't need to do anything — the sync happens lazily on the next slice.
+
+## Slicer worker (V2-005c-T_c10)
+
+The forge-slicer-worker drains `dispatch_jobs WHERE status='slicing'`. For each job it:
+
+1. Resolves the input file (the converted-file derivative when present, else the loot's primary file).
+2. Maps the target printer's `kind` to a Prusa-fork slicer:
+   - `fdm_klipper` / `fdm_octoprint` → `prusaslicer`
+   - `fdm_bambu_lan` → `bambustudio`
+   - resin printers → fail with `unsupported-format`
+3. Materializes the user's slicer profile (see above).
+4. Invokes the slicer adapter (`--slice <input> --load <config> --output <dir>`).
+5. On success: copies the produced gcode to `<DATA_ROOT>/forge-artifacts/<dispatch-job-id>/`, inserts a `forge_artifacts` row with `kind='gcode'`, and transitions the job to `claimable`.
+6. On failure: maps adapter reasons to schema enum values:
+   - `disabled-by-config` / `not-installed` / `binary-missing` → `unsupported-format`
+   - `slicer-error` / `no-output` → `slicing-failed`
+7. Cleans up the per-job temp output dir.
+
+Concurrency is `1` by default (slicing is CPU-bound and minutes-scale). Override with `WORKER_FORGE_SLICER_CONCURRENCY` (clamped `[1, 4]`).
+
+### Known limitation — slicer profile selection
+
+`dispatch_jobs` does not currently carry a `slicer_profile_id` column. For the V2-005c MVP the worker picks the user's first `slicer_profiles` row (oldest by `created_at`). A future plan threads explicit profile selection through the dispatch route. Until then, multi-profile users should treat their oldest profile as the default.

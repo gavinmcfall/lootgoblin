@@ -12,6 +12,9 @@ export async function register() {
     const { startForgeClaimWorker, stopForgeClaimWorker } = await import(
       './workers/forge-claim-worker'
     );
+    const { startForgeConverterWorker, stopForgeConverterWorker } = await import(
+      './workers/forge-converter-worker'
+    );
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -96,6 +99,13 @@ export async function register() {
     void startForgeClaimWorker().catch((err) =>
       logger.error({ err }, 'forge-claim-worker crashed'),
     );
+    // V2-005b-T_b4 forge converter worker — drains dispatch_jobs WHERE
+    // status='pending' and runs format conversion (sharp/7z/Blender), then
+    // transitions pending → converting → claimable. Failures land on
+    // 'failed' with reason='conversion-failed' or 'unsupported-format'.
+    void startForgeConverterWorker().catch((err) =>
+      logger.error({ err }, 'forge-converter-worker crashed'),
+    );
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));
@@ -112,6 +122,7 @@ export async function register() {
       stopWatchlistWorker();
       stopChannelRefreshWorker();
       stopForgeClaimWorker();
+      stopForgeConverterWorker();
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));

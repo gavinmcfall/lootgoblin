@@ -35,7 +35,7 @@ import { and, eq, ne } from 'drizzle-orm';
 import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
 import type { ColorPattern, MaterialKind, MaterialUnit } from '../db/schema.materials';
-import { validateColors, validateUnitKind } from './validate';
+import { resolveCatalogProduct, validateColors, validateUnitKind } from './validate';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,8 +46,14 @@ export interface CreateMaterialInput {
   kind: MaterialKind;
   brand?: string;
   subtype?: string;
-  colors: string[];
-  colorPattern: ColorPattern;
+  /**
+   * 1-4 hex colors. Required for manual entry (productId NULL). Optional when
+   * `productId` is provided — the catalog product's `colors` is used. Caller-
+   * supplied `colors` override the catalog's (multi-section spool selection).
+   */
+  colors?: string[];
+  /** Required for manual entry; optional when `productId` denormalizes it. */
+  colorPattern?: ColorPattern;
   colorName?: string;
   density?: number;
   initialAmount: number;
@@ -107,15 +113,36 @@ const NOOP_DISPATCH_CHECKER: ActiveDispatchChecker = async () => ({
  * sync transaction. `remainingAmount` is force-set equal to `initialAmount`
  * (the caller cannot override).
  *
+ * Catalog linkage (V2-007b T_B3)
+ * ──────────────────────────────
+ * When `productId` is provided, the catalog product is loaded + validated:
+ *  - kind must allow it (filament_spool ↔ filament_products,
+ *    resin_bottle ↔ resin_products; mix_batch / recycled_spool / other reject).
+ *  - product must be visible (system row OR owned by `input.ownerId`).
+ *  - filament-vs-resin tables must match the kind.
+ *
+ * Display fields (`brand`, `subtype`, `colors`, `colorPattern`, `colorName`,
+ * `density`) are DENORMALIZED from the resolved product onto the new Material
+ * row so browse queries can filter without a JOIN. Caller-supplied values
+ * win over the resolved product — this is INTENTIONAL: when a user overrides
+ * `colors` / `colorName` while keeping `productId` set, that signals a
+ * specific section of a multi-color batch (e.g. "I'm spooling the red 50g
+ * section of this 4-section gradient batch"). Both the link and the local
+ * record of the spool's actual color are preserved.
+ *
  * Reason codes (validation):
- *   colors-*               — see validateColors
- *   color-pattern-*        — see validateColors
- *   kind-invalid           — kind not in MATERIAL_KINDS
- *   unit-invalid           — unit not in MATERIAL_UNITS
- *   unit-kind-mismatch     — incompatible (unit, kind) per matrix
- *   initial-amount-invalid — initialAmount <= 0 or non-finite
- *   owner-required         — ownerId blank
- *   persist-failed         — DB insert raised (programming/infra error)
+ *   colors-*                       — see validateColors
+ *   color-pattern-*                — see validateColors
+ *   kind-invalid                   — kind not in MATERIAL_KINDS
+ *   unit-invalid                   — unit not in MATERIAL_UNITS
+ *   unit-kind-mismatch             — incompatible (unit, kind) per matrix
+ *   initial-amount-invalid         — initialAmount <= 0 or non-finite
+ *   owner-required                 — ownerId blank
+ *   product-not-allowed-for-kind   — productId set but kind=mix/recycled/other
+ *   product-not-found              — productId missing (or cross-owner-custom; no leak)
+ *   product-kind-mismatch          — productId points at the wrong product table for kind
+ *   product-corrupt                — catalog row missing required brand/subtype/colors
+ *   persist-failed                 — DB insert raised (programming/infra error)
  */
 export async function createMaterial(
   input: CreateMaterialInput,
@@ -130,7 +157,42 @@ export async function createMaterial(
   const unitKind = validateUnitKind(input.unit, input.kind);
   if (!unitKind.ok) return unitKind;
 
-  const colorCheck = validateColors(input.colors, input.colorPattern);
+  // --- Catalog product resolution (V2-007b T_B3) --------------------------
+
+  let resolvedProduct: {
+    brand: string;
+    subtype: string;
+    colors: string[];
+    colorPattern: ColorPattern;
+    colorName: string | null;
+    density: number | null;
+  } | null = null;
+  if (input.productId !== undefined && input.productId !== null) {
+    const productResolution = await resolveCatalogProduct({
+      productId: input.productId,
+      kind: unitKind.kind,
+      ownerId: input.ownerId,
+      dbUrl: opts?.dbUrl,
+    });
+    if (!productResolution.ok) {
+      return {
+        ok: false,
+        reason: productResolution.reason,
+        details: productResolution.details,
+      };
+    }
+    resolvedProduct = productResolution.product;
+  }
+
+  // Caller-supplied fields win; otherwise fall back to the resolved product.
+  // For colors / colorPattern: caller override is INTENTIONAL signal (multi-
+  // color section selection). validateColors normalises whatever we end up
+  // passing through — the override is accepted as long as it matches its own
+  // pattern's length-rule.
+  const finalColorsInput = input.colors ?? resolvedProduct?.colors;
+  const finalColorPatternInput = input.colorPattern ?? resolvedProduct?.colorPattern;
+
+  const colorCheck = validateColors(finalColorsInput, finalColorPatternInput);
   if (!colorCheck.ok) return colorCheck;
 
   if (
@@ -143,6 +205,11 @@ export async function createMaterial(
 
   // --- Build the row -------------------------------------------------------
 
+  const finalBrand = input.brand ?? resolvedProduct?.brand ?? null;
+  const finalSubtype = input.subtype ?? resolvedProduct?.subtype ?? null;
+  const finalColorName = input.colorName ?? resolvedProduct?.colorName ?? null;
+  const finalDensity = input.density ?? resolvedProduct?.density ?? null;
+
   const id = crypto.randomUUID();
   const ledgerEventId = crypto.randomUUID();
   const now = opts?.now ?? new Date();
@@ -152,12 +219,12 @@ export async function createMaterial(
     ownerId: input.ownerId,
     kind: unitKind.kind,
     productId: input.productId ?? null,
-    brand: input.brand ?? null,
-    subtype: input.subtype ?? null,
+    brand: finalBrand,
+    subtype: finalSubtype,
     colors: colorCheck.colors,
     colorPattern: colorCheck.colorPattern,
-    colorName: input.colorName ?? null,
-    density: input.density ?? null,
+    colorName: finalColorName,
+    density: finalDensity,
     initialAmount: input.initialAmount,
     remainingAmount: input.initialAmount, // force-set: caller cannot override
     unit: unitKind.unit,
@@ -174,10 +241,11 @@ export async function createMaterial(
     initialAmount: input.initialAmount,
     unit: unitKind.unit,
     kind: unitKind.kind,
-    brand: input.brand ?? null,
-    subtype: input.subtype ?? null,
+    brand: finalBrand,
+    subtype: finalSubtype,
     colors: colorCheck.colors,
     colorPattern: colorCheck.colorPattern,
+    productId: input.productId ?? null,
   };
 
   // --- Atomic insert (Material + ledger event) ----------------------------

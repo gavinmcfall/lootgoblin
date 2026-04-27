@@ -212,6 +212,157 @@ describe('POST /api/v1/materials', () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe('idempotency-mismatch');
   });
+
+  // -------------------------------------------------------------------------
+  // V2-007b T_B3 — catalog linkage via productId
+  // -------------------------------------------------------------------------
+
+  async function seedCatalogFilament(adminId: string): Promise<string> {
+    const { createFilamentProduct } = await import('../../src/materials/catalog');
+    const r = await createFilamentProduct(
+      {
+        brand: 'Polymaker',
+        subtype: 'PLA',
+        colors: ['#33AAFF'],
+        colorPattern: 'solid',
+        colorName: 'Tropical Blue',
+        density: 1.24,
+        source: 'system:spoolmandb',
+        ownerId: null,
+        actorUserId: adminId,
+        actorRole: 'admin',
+      },
+      { dbUrl: DB_URL },
+    );
+    if (!r.ok) throw new Error(`seedCatalogFilament failed: ${r.reason}`);
+    return r.productId;
+  }
+
+  async function seedCatalogResin(adminId: string): Promise<string> {
+    const { createResinProduct } = await import('../../src/materials/catalog');
+    const r = await createResinProduct(
+      {
+        brand: 'Anycubic',
+        subtype: 'standard',
+        colors: ['#777777'],
+        colorName: 'Industrial Grey',
+        densityGMl: 1.1,
+        source: 'system:spoolmandb',
+        ownerId: null,
+        actorUserId: adminId,
+        actorRole: 'admin',
+      },
+      { dbUrl: DB_URL },
+    );
+    if (!r.ok) throw new Error(`seedCatalogResin failed: ${r.reason}`);
+    return r.productId;
+  }
+
+  it('POST with productId → 201 + Material has productId set', async () => {
+    const userId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedCatalogFilament(adminId);
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/materials/route');
+    const res = await POST(
+      makePost('http://local/api/v1/materials', {
+        kind: 'filament_spool',
+        productId,
+        initialAmount: 1000,
+        unit: 'g',
+      }),
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      material: {
+        id: string;
+        productId: string | null;
+        brand: string | null;
+        subtype: string | null;
+        colors: string[] | null;
+        colorPattern: string | null;
+      };
+    };
+    expect(body.material.productId).toBe(productId);
+    expect(body.material.brand).toBe('Polymaker');
+    expect(body.material.subtype).toBe('PLA');
+    expect(body.material.colors).toEqual(['#33AAFF']);
+    expect(body.material.colorPattern).toBe('solid');
+  });
+
+  it('POST with non-existent productId → 400 product-not-found', async () => {
+    const userId = await seedUser();
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/materials/route');
+    const res = await POST(
+      makePost('http://local/api/v1/materials', {
+        kind: 'filament_spool',
+        productId: uid(),
+        initialAmount: 1000,
+        unit: 'g',
+      }),
+    );
+    // statusForReason has no special-case for product-not-found → 400 (validation
+    // class). 404 would be reasonable too, but the existing convention treats
+    // domain validation rejections as 400.
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('product-not-found');
+  });
+
+  it('POST with kind/product mismatch (filament product, resin kind) → 400 product-kind-mismatch', async () => {
+    const userId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedCatalogFilament(adminId);
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/materials/route');
+    const res = await POST(
+      makePost('http://local/api/v1/materials', {
+        kind: 'resin_bottle',
+        productId,
+        initialAmount: 500,
+        unit: 'ml',
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('product-kind-mismatch');
+  });
+
+  it('POST with productId but no inline brand/colors → fields populated from catalog', async () => {
+    const userId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedCatalogResin(adminId);
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/materials/route');
+    const res = await POST(
+      makePost('http://local/api/v1/materials', {
+        kind: 'resin_bottle',
+        productId,
+        initialAmount: 500,
+        unit: 'ml',
+      }),
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      material: {
+        productId: string | null;
+        brand: string | null;
+        subtype: string | null;
+        colors: string[] | null;
+        density: number | null;
+      };
+    };
+    expect(body.material.productId).toBe(productId);
+    expect(body.material.brand).toBe('Anycubic');
+    expect(body.material.subtype).toBe('standard');
+    expect(body.material.colors).toEqual(['#777777']);
+    expect(body.material.density).toBe(1.1);
+  });
 });
 
 // ===========================================================================

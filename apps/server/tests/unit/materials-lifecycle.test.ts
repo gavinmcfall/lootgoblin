@@ -23,6 +23,10 @@ import {
   loadInPrinter,
   unloadFromPrinter,
 } from '../../src/materials/lifecycle';
+import {
+  createFilamentProduct,
+  createResinProduct,
+} from '../../src/materials/catalog';
 
 // ---------------------------------------------------------------------------
 // DB setup
@@ -759,5 +763,351 @@ describe('unloadFromPrinter', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe('not-loaded');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createMaterial — catalog product linkage (V2-007b T_B3)
+// ---------------------------------------------------------------------------
+
+async function seedSystemFilament(opts: {
+  brand?: string;
+  subtype?: string;
+  colors?: string[];
+  colorPattern?: 'solid' | 'dual-tone' | 'gradient' | 'multi-section';
+  colorName?: string | null;
+  density?: number | null;
+  adminId: string;
+} = { adminId: '' }): Promise<string> {
+  const r = await createFilamentProduct(
+    {
+      brand: opts.brand ?? 'Polymaker',
+      subtype: opts.subtype ?? 'PLA',
+      colors: opts.colors ?? ['#123ABC'],
+      colorPattern: opts.colorPattern ?? 'solid',
+      colorName: opts.colorName ?? 'Sky Blue',
+      density: opts.density ?? 1.24,
+      source: 'system:spoolmandb',
+      ownerId: null,
+      actorUserId: opts.adminId,
+      actorRole: 'admin',
+    },
+    { dbUrl: DB_URL },
+  );
+  if (!r.ok) throw new Error(`seedSystemFilament failed: ${r.reason}`);
+  return r.productId;
+}
+
+async function seedUserCustomFilament(ownerId: string): Promise<string> {
+  const r = await createFilamentProduct(
+    {
+      brand: 'Homebrew Co',
+      subtype: 'PETG',
+      colors: ['#FF8800'],
+      colorPattern: 'solid',
+      colorName: 'Orange Workshop Mix',
+      density: 1.27,
+      source: 'user',
+      ownerId,
+      actorUserId: ownerId,
+      actorRole: 'user',
+    },
+    { dbUrl: DB_URL },
+  );
+  if (!r.ok) throw new Error(`seedUserCustomFilament failed: ${r.reason}`);
+  return r.productId;
+}
+
+async function seedSystemResin(adminId: string): Promise<string> {
+  const r = await createResinProduct(
+    {
+      brand: 'ELEGOO',
+      subtype: 'standard',
+      colors: ['#222222'],
+      colorName: 'Skull Grey',
+      densityGMl: 1.1,
+      source: 'system:spoolmandb',
+      ownerId: null,
+      actorUserId: adminId,
+      actorRole: 'admin',
+    },
+    { dbUrl: DB_URL },
+  );
+  if (!r.ok) throw new Error(`seedSystemResin failed: ${r.reason}`);
+  return r.productId;
+}
+
+describe('createMaterial — catalog linkage (T_B3)', () => {
+  it('27. filament_spool linked to system filament_products → denormalized fields', async () => {
+    const ownerId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedSystemFilament({
+      brand: 'Bambu Lab',
+      subtype: 'PLA',
+      colors: ['#E6F0FF'],
+      colorPattern: 'solid',
+      colorName: 'Galaxy Blue',
+      density: 1.24,
+      adminId,
+    });
+
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'filament_spool',
+        productId,
+        initialAmount: 1000,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.material.productId).toBe(productId);
+    expect(result.material.brand).toBe('Bambu Lab');
+    expect(result.material.subtype).toBe('PLA');
+    expect(result.material.colors).toEqual(['#E6F0FF']);
+    expect(result.material.colorPattern).toBe('solid');
+    expect(result.material.colorName).toBe('Galaxy Blue');
+    expect(result.material.density).toBe(1.24);
+  });
+
+  it('28. linked to caller’s own custom filament product → denormalized fields', async () => {
+    const ownerId = await seedUser();
+    const productId = await seedUserCustomFilament(ownerId);
+
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'filament_spool',
+        productId,
+        initialAmount: 750,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.material.productId).toBe(productId);
+    expect(result.material.brand).toBe('Homebrew Co');
+    expect(result.material.subtype).toBe('PETG');
+    expect(result.material.colors).toEqual(['#FF8800']);
+  });
+
+  it('29. caller-supplied colors override the catalog product (multi-section section pick)', async () => {
+    const ownerId = await seedUser();
+    const adminId = await seedUser();
+    // Catalog entry is a 4-color multi-section batch.
+    const productId = await seedSystemFilament({
+      brand: 'GradientCo',
+      subtype: 'PLA-Silk',
+      colors: ['#FF0000', '#00FF00', '#0000FF', '#FFFF00'],
+      colorPattern: 'multi-section',
+      colorName: '4-Tone Carnival',
+      density: 1.24,
+      adminId,
+    });
+
+    // User is spooling JUST the red section.
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'filament_spool',
+        productId,
+        colors: ['#FF0000'],
+        colorPattern: 'solid',
+        initialAmount: 250,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.material.productId).toBe(productId);
+    expect(result.material.colors).toEqual(['#FF0000']);
+    expect(result.material.colorPattern).toBe('solid');
+    // brand/subtype STILL come from the catalog product.
+    expect(result.material.brand).toBe('GradientCo');
+    expect(result.material.subtype).toBe('PLA-Silk');
+  });
+
+  it('30. resin_bottle linked to a resin_products entry', async () => {
+    const ownerId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedSystemResin(adminId);
+
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'resin_bottle',
+        productId,
+        initialAmount: 500,
+        unit: 'ml',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.material.productId).toBe(productId);
+    expect(result.material.brand).toBe('ELEGOO');
+    expect(result.material.subtype).toBe('standard');
+    expect(result.material.colors).toEqual(['#222222']);
+    expect(result.material.density).toBe(1.1);
+  });
+
+  it('31. productId points to filament but kind=resin_bottle → product-kind-mismatch', async () => {
+    const ownerId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedSystemFilament({ adminId });
+
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'resin_bottle',
+        productId,
+        initialAmount: 500,
+        unit: 'ml',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('product-kind-mismatch');
+  });
+
+  it('32. productId points to resin but kind=filament_spool → product-kind-mismatch', async () => {
+    const ownerId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedSystemResin(adminId);
+
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'filament_spool',
+        productId,
+        initialAmount: 1000,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('product-kind-mismatch');
+  });
+
+  it('33. productId set + kind=mix_batch → product-not-allowed-for-kind', async () => {
+    const ownerId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedSystemFilament({ adminId });
+
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'mix_batch',
+        productId,
+        colors: ['#AAAAAA'],
+        colorPattern: 'solid',
+        initialAmount: 250,
+        unit: 'ml',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('product-not-allowed-for-kind');
+  });
+
+  it('34. productId does not exist → product-not-found', async () => {
+    const ownerId = await seedUser();
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'filament_spool',
+        productId: crypto.randomUUID(),
+        initialAmount: 1000,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('product-not-found');
+  });
+
+  it('35. productId points to another user’s custom entry → product-not-found (no leak)', async () => {
+    const otherUserId = await seedUser();
+    const ownerId = await seedUser();
+    const productId = await seedUserCustomFilament(otherUserId);
+
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'filament_spool',
+        productId,
+        initialAmount: 1000,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Same reason as truly-missing — no information leak.
+    expect(result.reason).toBe('product-not-found');
+  });
+
+  it('36. recycled_spool with productId set → product-not-allowed-for-kind', async () => {
+    const ownerId = await seedUser();
+    const adminId = await seedUser();
+    const productId = await seedSystemFilament({ adminId });
+
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'recycled_spool',
+        productId,
+        colors: ['#888888'],
+        colorPattern: 'solid',
+        initialAmount: 800,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('product-not-allowed-for-kind');
+  });
+
+  it('37. productId NULL with full inline fields → identical to T4 manual-entry behavior', async () => {
+    // Backward-compat sanity: this is the manual-entry path.
+    const ownerId = await seedUser();
+    const result = await createMaterial(
+      {
+        ownerId,
+        kind: 'filament_spool',
+        productId: null,
+        brand: 'Manual Brand',
+        subtype: 'Manual PLA',
+        colors: ['#ABCDEF'],
+        colorPattern: 'solid',
+        initialAmount: 1000,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.material.productId).toBeNull();
+    expect(result.material.brand).toBe('Manual Brand');
   });
 });

@@ -60,14 +60,17 @@ const CreateBodySchema = z.object({
   kind: z.enum(MATERIAL_KINDS),
   brand: z.string().min(1).max(200).optional(),
   subtype: z.string().min(1).max(200).optional(),
-  colors: z.array(z.string().regex(HEX)).min(1).max(4),
-  colorPattern: z.enum(COLOR_PATTERNS),
+  // colors/colorPattern are optional at the route boundary — when productId is
+  // supplied the domain layer denormalizes them from the catalog product.
+  // Domain `validateColors` enforces the 1-4 hex / pattern-length rules.
+  colors: z.array(z.string().regex(HEX)).min(1).max(4).optional(),
+  colorPattern: z.enum(COLOR_PATTERNS).optional(),
   colorName: z.string().min(1).max(200).optional(),
   density: z.number().positive().finite().optional(),
   initialAmount: z.number().positive().finite(),
   unit: z.enum(MATERIAL_UNITS),
   purchaseData: z.record(z.string(), z.unknown()).optional(),
-  productId: z.string().min(1).optional(),
+  productId: z.string().min(1).nullable().optional(),
   extra: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -94,8 +97,8 @@ function normalizeBody(body: CreateBody, ownerId: string): string {
     kind: body.kind,
     brand: body.brand ?? null,
     subtype: body.subtype ?? null,
-    colors: body.colors.map((c) => c.toUpperCase()),
-    colorPattern: body.colorPattern,
+    colors: body.colors ? body.colors.map((c) => c.toUpperCase()) : null,
+    colorPattern: body.colorPattern ?? null,
     colorName: body.colorName ?? null,
     density: body.density ?? null,
     initialAmount: body.initialAmount,

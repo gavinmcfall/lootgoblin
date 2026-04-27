@@ -15,6 +15,9 @@ export async function register() {
     const { startForgeConverterWorker, stopForgeConverterWorker } = await import(
       './workers/forge-converter-worker'
     );
+    const { startForgeSlicerWorker, stopForgeSlicerWorker } = await import(
+      './workers/forge-slicer-worker'
+    );
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -106,6 +109,12 @@ export async function register() {
     void startForgeConverterWorker().catch((err) =>
       logger.error({ err }, 'forge-converter-worker crashed'),
     );
+    // V2-005c-T_c10 forge slicer worker — drains dispatch_jobs WHERE
+    // status='slicing' and runs the Prusa-fork SlicerAdapter against a
+    // materialized Grimoire profile. On success: writes a forge_artifacts
+    // gcode row + transitions slicing → claimable. On failure: maps the
+    // adapter reason to a DispatchFailureReason and markFailed.
+    startForgeSlicerWorker();
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));
@@ -123,6 +132,7 @@ export async function register() {
       stopChannelRefreshWorker();
       stopForgeClaimWorker();
       stopForgeConverterWorker();
+      stopForgeSlicerWorker();
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));

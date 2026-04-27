@@ -2,7 +2,8 @@
  * POST /api/v1/forge/dispatch — create a DispatchJob
  * GET  /api/v1/forge/dispatch — list caller's dispatch jobs (admin: all)
  *
- * V2-005a-T5.
+ * V2-005a-T5; initial-status heuristic replaced by TargetCompatibilityMatrix
+ * in V2-005a-T6.
  *
  * Body for POST:
  *   { lootId: string, targetKind: 'printer' | 'slicer', targetId: string }
@@ -10,20 +11,21 @@
  * Returns:
  *   `{ job: <DispatchJobDto>, jobId: string, status: <initialStatus> }`
  *
- * Initial-status heuristic (T6 will refine via the TargetCompatibilityMatrix):
- *   - slicer-target → 'claimable' (slicers natively accept their input formats;
- *     no conversion or pre-slicing needed for the job to become claimable).
- *   - printer-target → 'pending' (V2-005b-c will determine whether conversion
- *     and/or slicing are needed and progress the row).
- *
- *   TODO(V2-005a-T6): replace this heuristic with the real format/target
- *   compatibility matrix.
+ * Initial-status logic (V2-005a-T6):
+ *   - Detect the loot's primary file format.
+ *   - Look up the target's `kind` (e.g. 'orcaslicer', 'fdm_klipper').
+ *   - Ask getCompatibility(format, kind):
+ *       'native'              → status = 'claimable' (no conversion needed)
+ *       'conversion-required' → status = 'pending'   (V2-005b/c will convert/slice)
+ *       'unsupported'         → 422 reject (can't dispatch a Loot the target
+ *                               can't handle, even after conversion)
  *
  * Validation:
  *   - lootId belongs to the actor (cross-owner → not-found)
  *   - target exists in the right table (printer / forge_slicer)
  *   - target belongs to the actor (cross-owner → not-found, unless admin)
  *   - actor has `push` ACL on the target
+ *   - matrix says the target can handle the loot's format
  *
  * Idempotency-Key supported on POST.
  */
@@ -37,8 +39,12 @@ import { logger } from '@/logger';
 import {
   DISPATCH_TARGET_KINDS,
   type DispatchJobStatus,
+  type ForgePrinterKind,
+  type ForgeSlicerKind,
 } from '@/db/schema.forge';
 import { createDispatchJob } from '@/forge/dispatch-jobs';
+import { detectLootPrimaryFormat } from '@/forge/loot-format';
+import { getCompatibility } from '@/forge/target-compatibility';
 import { resolveAcl } from '@/acl/resolver';
 
 import {
@@ -145,13 +151,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Push-ACL gate: load the target's owner + grantees, ask the resolver.
+  // Push-ACL gate + capture the target's `kind` for the compatibility lookup.
   // Cross-owner → 404 not-found (don't leak existence). The push-ACL gate
   // honours the consent model — admins NOT exempt unless they're an explicit
   // grantee or owner.
+  let targetKindForMatrix: ForgePrinterKind | ForgeSlicerKind;
   if (body.targetKind === 'printer') {
     const printerRows = await db
-      .select({ ownerId: schema.printers.ownerId })
+      .select({ ownerId: schema.printers.ownerId, kind: schema.printers.kind })
       .from(schema.printers)
       .where(eq(schema.printers.id, body.targetId))
       .limit(1);
@@ -177,10 +184,11 @@ export async function POST(req: NextRequest) {
       // watchlist patterns).
       return errorResponse('not-found', 'target-not-found', 404);
     }
+    targetKindForMatrix = printerRows[0]!.kind as ForgePrinterKind;
   } else {
     // 'slicer'
     const slicerRows = await db
-      .select({ ownerId: schema.forgeSlicers.ownerId })
+      .select({ ownerId: schema.forgeSlicers.ownerId, kind: schema.forgeSlicers.kind })
       .from(schema.forgeSlicers)
       .where(eq(schema.forgeSlicers.id, body.targetId))
       .limit(1);
@@ -204,12 +212,36 @@ export async function POST(req: NextRequest) {
     if (!decision.allowed) {
       return errorResponse('not-found', 'target-not-found', 404);
     }
+    targetKindForMatrix = slicerRows[0]!.kind as ForgeSlicerKind;
   }
 
-  // Initial-status heuristic (V2-005a-T5): slicer → claimable, printer →
-  // pending. T6's TargetCompatibilityMatrix will refine.
-  const initialStatus: DispatchJobStatus =
-    body.targetKind === 'slicer' ? 'claimable' : 'pending';
+  // Compatibility matrix gate (V2-005a-T6): inspect the loot's primary file
+  // format and the target's runtime kind.
+  //
+  // - Native band → 'claimable' immediately (no preprocessing needed).
+  // - Conversion-required → 'pending' (V2-005b/c will convert + slice).
+  // - Unsupported → 422 reject; can't dispatch a Loot the target can never
+  //   accept, even with conversion.
+  //
+  // If the loot has no files at all, fall back to 'pending' (don't 422 here —
+  // that's the dispatch route's contract; the compatibility endpoint owns
+  // that error). This avoids breaking T5's tests that seed a loot with no
+  // files and expect printer → pending.
+  const detection = await detectLootPrimaryFormat(body.lootId);
+  let initialStatus: DispatchJobStatus;
+  if (detection.noFiles || !detection.format) {
+    initialStatus = body.targetKind === 'slicer' ? 'claimable' : 'pending';
+  } else {
+    const verdict = getCompatibility(detection.format, targetKindForMatrix);
+    if (verdict.band === 'unsupported') {
+      return errorResponse(
+        'unsupported-format',
+        verdict.reason ?? `Format '${detection.format}' is not supported by ${targetKindForMatrix}`,
+        422,
+      );
+    }
+    initialStatus = verdict.band === 'native' ? 'claimable' : 'pending';
+  }
 
   // createDispatchJob also validates loot ownership + target existence; if
   // the push gate above missed anything, the domain layer's

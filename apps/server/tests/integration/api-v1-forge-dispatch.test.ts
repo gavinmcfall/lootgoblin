@@ -353,6 +353,139 @@ describe('POST /api/v1/forge/dispatch', () => {
 });
 
 // ===========================================================================
+// POST — TargetCompatibilityMatrix integration (V2-005a-T6)
+// ===========================================================================
+
+/** Seed a loot file for a given loot id; defaults format='stl'. */
+async function seedLootFile(
+  lootId: string,
+  format: string,
+  path?: string,
+): Promise<string> {
+  const id = uid();
+  await db().insert(schema.lootFiles).values({
+    id,
+    lootId,
+    path: path ?? `model.${format}`,
+    format,
+    size: 1024,
+    hash: `sha256-${id}`,
+    origin: 'manual',
+    createdAt: new Date(),
+  });
+  return id;
+}
+
+describe('POST /api/v1/forge/dispatch — matrix-driven status', () => {
+  it('STL loot + orcaslicer → 201 status=claimable (native)', async () => {
+    const userId = await seedUser();
+    const lootId = await seedLoot(userId);
+    await seedLootFile(lootId, 'stl');
+    const slicerId = await seedSlicer(userId);
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/forge/dispatch/route');
+    const res = await POST(
+      makePost('http://local/api/v1/forge/dispatch', {
+        lootId,
+        targetKind: 'slicer',
+        targetId: slicerId,
+      }),
+    );
+    expect(res.status).toBe(201);
+    const json = await res.json();
+    expect(json.status).toBe('claimable');
+  });
+
+  it('STL loot + fdm_klipper printer → 201 status=pending (conversion-required to gcode)', async () => {
+    const userId = await seedUser();
+    const lootId = await seedLoot(userId);
+    await seedLootFile(lootId, 'stl');
+    const printerId = await seedPrinter(userId);
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/forge/dispatch/route');
+    const res = await POST(
+      makePost('http://local/api/v1/forge/dispatch', {
+        lootId,
+        targetKind: 'printer',
+        targetId: printerId,
+      }),
+    );
+    expect(res.status).toBe(201);
+    const json = await res.json();
+    expect(json.status).toBe('pending');
+  });
+
+  it('gcode loot + fdm_klipper printer → 201 status=claimable (native)', async () => {
+    const userId = await seedUser();
+    const lootId = await seedLoot(userId);
+    await seedLootFile(lootId, 'gcode');
+    const printerId = await seedPrinter(userId);
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/forge/dispatch/route');
+    const res = await POST(
+      makePost('http://local/api/v1/forge/dispatch', {
+        lootId,
+        targetKind: 'printer',
+        targetId: printerId,
+      }),
+    );
+    expect(res.status).toBe(201);
+    const json = await res.json();
+    expect(json.status).toBe('claimable');
+  });
+
+  it('jpeg loot + slicer → 422 unsupported-format', async () => {
+    const userId = await seedUser();
+    const lootId = await seedLoot(userId);
+    await seedLootFile(lootId, 'jpeg', 'cover.jpeg');
+    const slicerId = await seedSlicer(userId);
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/forge/dispatch/route');
+    const res = await POST(
+      makePost('http://local/api/v1/forge/dispatch', {
+        lootId,
+        targetKind: 'slicer',
+        targetId: slicerId,
+      }),
+    );
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json.error).toBe('unsupported-format');
+    expect(json.message).toMatch(/image/i);
+  });
+
+  it('gcode loot + resin_sdcp printer → 422 unsupported-format', async () => {
+    const userId = await seedUser();
+    const lootId = await seedLoot(userId);
+    await seedLootFile(lootId, 'gcode');
+    // Seed a resin printer (different kind from default helper).
+    const printerId = uid();
+    await db().insert(schema.printers).values({
+      id: printerId,
+      ownerId: userId,
+      kind: 'resin_sdcp',
+      name: 'mars',
+      connectionConfig: { ip: '1.2.3.4' },
+      active: true,
+      createdAt: new Date(),
+    });
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import('../../src/app/api/v1/forge/dispatch/route');
+    const res = await POST(
+      makePost('http://local/api/v1/forge/dispatch', {
+        lootId,
+        targetKind: 'printer',
+        targetId: printerId,
+      }),
+    );
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json.error).toBe('unsupported-format');
+    expect(json.message).toMatch(/resin/i);
+  });
+});
+
+// ===========================================================================
 // GET list
 // ===========================================================================
 

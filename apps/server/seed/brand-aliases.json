@@ -1,0 +1,18 @@
+{
+  "_note": "Maps known brand-name variants to canonical spelling. Update via PR.",
+  "aliases": {
+    "eSUN 3D": "eSUN",
+    "Esun": "eSUN",
+    "ESUN": "eSUN",
+    "Bambu": "Bambu Lab",
+    "BambuLab": "Bambu Lab",
+    "Bambulab": "Bambu Lab",
+    "PolyMaker": "Polymaker",
+    "polymaker": "Polymaker",
+    "ELEGOO": "Elegoo",
+    "elegoo": "Elegoo",
+    "ANYCUBIC": "Anycubic",
+    "Sun Lu": "SUNLU",
+    "Sunlu": "SUNLU"
+  }
+}

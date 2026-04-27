@@ -30,6 +30,11 @@ import {
   type CreateFilamentProductInput,
 } from '../materials/catalog';
 import {
+  canonicalizeBrand,
+  loadBrandAliases,
+  type BrandAliases,
+} from './_brand-canonicalize';
+import {
   fetchSpoolmanDbBrandManifest,
   fetchSpoolmanDbBrandFile,
 } from './_spoolmandb-fetch';
@@ -225,11 +230,25 @@ async function processBrand(
   parsed: unknown,
   opts: ImportOptions,
   stats: ImportStats,
+  aliases: BrandAliases,
 ): Promise<void> {
   if (!isSpoolmanDbBrandFile(parsed)) {
     logger.warn({ brandFilename }, 'spoolmandb-import: brand file shape invalid; skipping');
     stats.errors++;
     return;
+  }
+
+  // Canonicalise the manufacturer once at the file level — the transform
+  // reads brandFile.manufacturer for every filament + variant.
+  if (typeof parsed.manufacturer === 'string') {
+    const canonical = canonicalizeBrand(parsed.manufacturer, aliases);
+    if (canonical !== parsed.manufacturer.trim()) {
+      logger.info(
+        { from: parsed.manufacturer, to: canonical },
+        'spoolmandb-import: canonicalised manufacturer',
+      );
+    }
+    parsed.manufacturer = canonical;
   }
 
   stats.brandsProcessed++;
@@ -349,6 +368,11 @@ export async function runImport(opts: ImportOptions): Promise<ImportStats> {
     manifest = manifest.slice(0, opts.limit);
   }
 
+  // Load brand aliases (lazy — empty if seed/brand-aliases.json missing).
+  const repoRootForAliases = opts.repoRoot ?? findRepoRoot();
+  const seedRoot = path.join(repoRootForAliases, 'apps', 'server', 'seed');
+  const aliases = await loadBrandAliases(seedRoot);
+
   for (const brandFilename of manifest) {
     let parsed: unknown;
     try {
@@ -361,7 +385,7 @@ export async function runImport(opts: ImportOptions): Promise<ImportStats> {
       stats.errors++;
       continue;
     }
-    await processBrand(brandFilename, parsed, opts, stats);
+    await processBrand(brandFilename, parsed, opts, stats, aliases);
   }
 
   // Update license file (only on real runs).

@@ -34,6 +34,7 @@ import {
   updateResinProduct,
   type CreateResinProductInput,
 } from '../materials/catalog';
+import { canonicalizeBrand, loadBrandAliases } from './_brand-canonicalize';
 import { loadResinSeedFiles, type LoadedResinSeedFile } from './_resin-seed-load';
 import { transformResinSeed } from './_resin-seed-transform';
 
@@ -323,11 +324,29 @@ export async function runImport(opts: ImportOptions): Promise<ImportStats> {
     }
   }
 
+  // Load brand alias map (lazy — empty if seed/brand-aliases.json doesn't exist).
+  // The aliases file lives at the seed root (one dir up from seed/resins/).
+  const aliases = await loadBrandAliases(path.dirname(opts.seedDir));
+
   // Track brand → source URLs for the license file aggregate.
   const brandSources: Array<{ brand: string; sourceUrls: string[] }> = [];
 
   for (const f of files) {
     stats.filesProcessed++;
+    // Canonicalise the brand once at the file level. The transform reads
+    // brandFile.brand for every product, so mutating the in-memory file
+    // object is the cheapest insertion point and avoids a parallel data
+    // path through the transform.
+    if (typeof f.file?.brand === 'string') {
+      const canonical = canonicalizeBrand(f.file.brand, aliases);
+      if (canonical !== f.file.brand.trim()) {
+        logger.info(
+          { from: f.file.brand, to: canonical },
+          'resin-seed-import: canonicalised brand',
+        );
+      }
+      f.file.brand = canonical;
+    }
     const transformed = transformResinSeed(f.file, opts.actorUserId);
     const collectedSources: string[] = [];
     for (const r of transformed) {

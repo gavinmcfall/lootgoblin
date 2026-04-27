@@ -54,6 +54,22 @@ export async function register() {
       logger.error({ err }, 'instance identity bootstrap failed');
     }
 
+    // ── Forge central_worker bootstrap (V2-005a-T2) ────────────────────
+    // Ensures the in-process central_worker Agent row exists. Runs after
+    // migrations (schema must exist) and after instance-identity bootstrap
+    // (so logs show identity context first). Idempotent — no-op if the row
+    // already exists. Failures are non-fatal — the future Forge claim loop
+    // (V2-005a-T4) will re-run the bootstrap on its own startup.
+    try {
+      const { bootstrapCentralWorker } = await import('./forge/agent-bootstrap');
+      const result = await bootstrapCentralWorker();
+      if (result.created) {
+        logger.info({ agentId: result.agentId }, 'forge central_worker bootstrapped');
+      }
+    } catch (err) {
+      logger.error({ err }, 'forge central_worker bootstrap failed');
+    }
+
     startWorkers();
     // V2-003-T9 ingest worker — drains ingest_jobs WHERE status='queued'.
     startIngestWorker();

@@ -8,7 +8,7 @@
  * Uses a temp dir for FORGE_TOOLS_ROOT so tests don't touch real /data and
  * a temp sqlite file so tests don't share state with other suites.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -62,10 +62,6 @@ beforeEach(() => {
   // Wipe install rows between tests so each starts clean.
   const db = getDb(DB_URL) as any;
   db.run(sql`DELETE FROM forge_slicer_installs`);
-});
-
-afterAll(() => {
-  delete process.env.FORGE_TOOLS_ROOT;
 });
 
 describe('installSlicer — AppImage happy path', () => {
@@ -158,6 +154,50 @@ describe('installSlicer — sha256 mismatch', () => {
 
     expect(result.installStatus).toBe('failed');
     expect(result.failureReason).toMatch(/sha256/i);
+
+    // Tempfile cleaned up even on failure.
+    const tmpDir = path.join(toolsRoot, '.tmp');
+    if (existsSync(tmpDir)) {
+      const remaining = await fsp.readdir(tmpDir);
+      expect(remaining).toHaveLength(0);
+    }
+  });
+});
+
+describe('installSlicer — unknown asset type', () => {
+  // The probe rejects non-AppImage/non-tar assets before they reach the
+  // installer's extract switch, so we mock the probe directly to exercise
+  // the defensive unknown-extension branch in the installer.
+  it('marks install_status=failed when asset extension is unrecognized', async () => {
+    const probeMod = await import('@/forge/slicer/github-releases');
+    const probeSpy = vi.spyOn(probeMod, 'probeLatestRelease').mockResolvedValue({
+      version: '2.7.4',
+      assetUrl: 'https://gh/prusa.zip',
+      assetName: 'PrusaSlicer-2.7.4-linux-x64.zip',
+      sha256: '',
+      sizeBytes: 16,
+    });
+
+    const payload = Buffer.from('FAKE-ZIP-PAYLOAD');
+    const http: HttpClient = {
+      fetchJson: async () => ({}),
+      fetchText: async () => '',
+      fetchBytes: async () => new Uint8Array(payload),
+    };
+
+    try {
+      const result = await installSlicer({
+        slicerKind: 'prusaslicer',
+        http,
+        run: nullRunCommand(),
+        dbUrl: DB_URL,
+      });
+
+      expect(result.installStatus).toBe('failed');
+      expect(result.failureReason).toMatch(/unknown.*ext|unsupported|unknown asset/i);
+    } finally {
+      probeSpy.mockRestore();
+    }
   });
 });
 
@@ -284,10 +324,11 @@ describe('installSlicer — re-install idempotency', () => {
 });
 
 afterAll(() => {
-  // Best-effort cleanup of temp tools roots created in beforeEach.
+  // Best-effort cleanup of temp tools roots created in beforeEach + env var.
   try {
     if (toolsRoot && existsSync(toolsRoot)) rmSync(toolsRoot, { recursive: true, force: true });
   } catch {
     // Ignore cleanup errors.
   }
+  delete process.env.FORGE_TOOLS_ROOT;
 });

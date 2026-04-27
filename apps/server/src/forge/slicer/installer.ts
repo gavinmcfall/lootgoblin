@@ -113,16 +113,26 @@ export async function installSlicer(
     // -- 4. Verify sha256 -------------------------------------------------
     await upsertInstallRow(db, opts.slicerKind, { installStatus: 'verifying' });
     const computed = createHash('sha256').update(bytes).digest('hex');
-    if (release.sha256 && release.sha256.toLowerCase() !== computed.toLowerCase()) {
-      const reason = `sha256 mismatch: expected ${release.sha256}, got ${computed}`;
+    if (release.sha256) {
+      if (release.sha256.toLowerCase() !== computed.toLowerCase()) {
+        const reason = `sha256 mismatch: expected ${release.sha256}, got ${computed}`;
+        logger.warn(
+          { slicerKind: opts.slicerKind, expected: release.sha256, got: computed },
+          'slicer install sha256 mismatch',
+        );
+        const row = await upsertInstallRow(db, opts.slicerKind, {
+          installStatus: 'failed',
+        });
+        return { ...row, failureReason: reason };
+      }
+    } else {
+      // No SHA256SUMS file published upstream — Bambu Studio and others
+      // sometimes ship without one. We fail open (proceed with install) but
+      // emit a warn-log so the bypass is observable.
       logger.warn(
-        { slicerKind: opts.slicerKind, expected: release.sha256, got: computed },
-        'slicer install sha256 mismatch',
+        { slicerKind: opts.slicerKind, version: release.version, assetUrl: release.assetUrl },
+        'forge.slicer.install: sha256 verification skipped — upstream did not publish a SHA256SUMS file',
       );
-      const row = await upsertInstallRow(db, opts.slicerKind, {
-        installStatus: 'failed',
-      });
-      return { ...row, failureReason: reason };
     }
 
     // -- 5. Extract -------------------------------------------------------
@@ -143,6 +153,11 @@ export async function installSlicer(
       await fsp.chmod(binaryPath, 0o755);
     } else if (lowerName.endsWith('.tar.gz') || lowerName.endsWith('.tar.xz')) {
       const flag = lowerName.endsWith('.tar.gz') ? '-xzf' : '-xJf';
+      // Trust assumption: tarballs come from official GitHub Releases of known
+      // projects (PrusaSlicer/Orca/Bambu). We rely on upstream signing + sha256
+      // verification (when SHA256SUMS is published — see warn-log earlier in
+      // this function for the fallback). If we expand to user-supplied tarball
+      // URLs, harden with --no-same-owner + path traversal guards.
       const tarResult = await opts.run('tar', [flag, tmpFile, '-C', installRoot]);
       if (tarResult.code !== 0) {
         const reason = `tar exit ${tarResult.code}: ${tarResult.stderr.trim() || '(no stderr)'}`;
@@ -227,16 +242,22 @@ async function upsertInstallRow(
   slicerKind: ForgeSlicerKindInstallable,
   patch: RowPatch,
 ): Promise<InstallSlicerResult> {
-  const existing = await db
-    .select()
-    .from(forgeSlicerInstalls)
-    .where(eq(forgeSlicerInstalls.slicerKind, slicerKind))
-    .limit(1);
+  // Atomic upsert via INSERT ... ON CONFLICT DO UPDATE. The UNIQUE constraint
+  // on slicer_kind makes this race-safe (vs the previous select-then-write
+  // pattern which had a window where two callers could both decide to
+  // INSERT). Only patched fields land in `set` so unspecified columns keep
+  // their existing values on update.
+  const updates: Record<string, unknown> = { installStatus: patch.installStatus };
+  if (patch.installedVersion !== undefined) updates.installedVersion = patch.installedVersion;
+  if (patch.binaryPath !== undefined) updates.binaryPath = patch.binaryPath;
+  if (patch.installRoot !== undefined) updates.installRoot = patch.installRoot;
+  if (patch.installedAt !== undefined) updates.installedAt = patch.installedAt;
+  if (patch.sha256 !== undefined) updates.sha256 = patch.sha256;
 
-  if (existing.length === 0) {
-    const id = randomUUID();
-    await db.insert(forgeSlicerInstalls).values({
-      id,
+  await db
+    .insert(forgeSlicerInstalls)
+    .values({
+      id: randomUUID(),
       slicerKind,
       installStatus: patch.installStatus,
       installedVersion: patch.installedVersion ?? null,
@@ -244,19 +265,11 @@ async function upsertInstallRow(
       installRoot: patch.installRoot ?? null,
       installedAt: patch.installedAt ?? null,
       sha256: patch.sha256 ?? null,
+    })
+    .onConflictDoUpdate({
+      target: forgeSlicerInstalls.slicerKind,
+      set: updates,
     });
-  } else {
-    const updates: Record<string, unknown> = { installStatus: patch.installStatus };
-    if (patch.installedVersion !== undefined) updates.installedVersion = patch.installedVersion;
-    if (patch.binaryPath !== undefined) updates.binaryPath = patch.binaryPath;
-    if (patch.installRoot !== undefined) updates.installRoot = patch.installRoot;
-    if (patch.installedAt !== undefined) updates.installedAt = patch.installedAt;
-    if (patch.sha256 !== undefined) updates.sha256 = patch.sha256;
-    await db
-      .update(forgeSlicerInstalls)
-      .set(updates)
-      .where(eq(forgeSlicerInstalls.slicerKind, slicerKind));
-  }
 
   const rows = await db
     .select()
@@ -265,7 +278,7 @@ async function upsertInstallRow(
     .limit(1);
   const row = rows[0];
   if (!row) {
-    // Should be unreachable: we just inserted-or-updated above.
+    // Should be unreachable: we just upserted above.
     throw new Error(`forge_slicer_installs row missing post-write for ${slicerKind}`);
   }
 

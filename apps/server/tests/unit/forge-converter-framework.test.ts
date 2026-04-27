@@ -88,7 +88,11 @@ describe('convertFile — dispatch rejections', () => {
     }
   });
 
-  it('mesh pair routes to Blender stub → not-implemented', async () => {
+  it('mesh pair outside SUPPORTED_BLENDER_PAIRS → unsupported-pair (T_b3 backend)', async () => {
+    // stl→gcode is not in SUPPORTED_BLENDER_PAIRS (gcode is a slicer
+    // output, not a Blender export). The mesh dispatcher routes to the
+    // Blender backend, which short-circuits with unsupported-pair before
+    // trying to invoke the binary.
     const result = await convertFile({
       inputPath: '/tmp/x.stl',
       inputFormat: 'stl',
@@ -96,8 +100,7 @@ describe('convertFile — dispatch rejections', () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.reason).toBe('not-implemented');
-      expect(result.details).toContain('T_b2');
+      expect(result.reason).toBe('unsupported-pair');
     }
   });
 

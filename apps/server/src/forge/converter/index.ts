@@ -27,7 +27,7 @@ import path from 'node:path';
 
 import { convertImage, isSupportedImageFormat } from './sharp-images';
 import { extractArchive } from './sevenzip-archives';
-import { convertMesh, isMeshFormat } from './blender-mesh-stub';
+import { convertMeshViaBlender, isMeshFormat } from './blender-mesh';
 import { runCommand as defaultRunCommand, type RunCommand } from './run-command';
 import type { ConversionResult } from './types';
 
@@ -119,14 +119,17 @@ export async function convertFile(
     });
   }
 
-  // ---- Mesh conversion (stubbed in T_b1) ---------------------------------
+  // ---- Mesh conversion (Blender CLI, T_b3) -------------------------------
   if (isMeshFormat(inputFormat) || isMeshFormat(outputFormat)) {
-    return convertMesh({
-      inputPath: input.inputPath,
-      inputFormat,
-      outputFormat,
-      outputDir,
-    });
+    return convertMeshViaBlender(
+      {
+        inputPath: input.inputPath,
+        inputFormat,
+        outputFormat,
+        outputDir,
+      },
+      { runCommand: runCmd },
+    );
   }
 
   // ---- No matching backend -----------------------------------------------

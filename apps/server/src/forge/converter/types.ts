@@ -41,7 +41,9 @@ export type ConversionFailureReason =
   /** Stub backend (e.g. Blender mesh in T_b1 before T_b2 lands). */
   | 'not-implemented'
   /** Archive extracted but only system metadata files came out. */
-  | 'archive-no-usable-content';
+  | 'archive-no-usable-content'
+  /** Operator turned this backend off via env (e.g. FORGE_DISABLE_MESH_CONVERSION=1). */
+  | 'disabled-by-config';
 
 export type ConversionResult =
   | {

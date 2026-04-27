@@ -113,6 +113,11 @@ COPY --from=build --chown=65534:65534 /app/apps/server/.next/standalone/ /app/
 COPY --from=build --chown=65534:65534 /app/apps/server/.next/static /app/apps/server/.next/static
 COPY --from=build --chown=65534:65534 /app/apps/server/public /app/apps/server/public
 COPY --from=build --chown=65534:65534 /app/apps/server/src/db/migrations /app/apps/server/src/db/migrations
+# Blender helper Python script — Next.js standalone doesn't trace .py
+# files, so the converter resolves it via the same multi-candidate path
+# strategy as migrations. Ship it at the location the cwd-rooted candidate
+# expects.
+COPY --from=build --chown=65534:65534 /app/apps/server/src/forge/converter/blender-scripts /app/apps/server/src/forge/converter/blender-scripts
 
 # Final build-time health check. If any tool went missing during the COPY/
 # symlink dance, fail the build now rather than at first dispatch.

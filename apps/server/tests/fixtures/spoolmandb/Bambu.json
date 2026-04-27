@@ -1,0 +1,56 @@
+{
+  "manufacturer": "Bambu Lab",
+  "filaments": [
+    {
+      "name": "PLA Basic",
+      "material": "PLA",
+      "density": 1.24,
+      "weights": [
+        { "weight": 1000, "spool_weight": 250 }
+      ],
+      "diameters": [1.75],
+      "extruder_temp": 220,
+      "bed_temp": 60,
+      "finish": "matte",
+      "colors": [
+        { "name": "Red",   "hex": "FF0000" },
+        { "name": "Black", "hex": "000000" },
+        { "name": "Green", "hex": "00AE42" }
+      ]
+    },
+    {
+      "name": "PLA Silk Dual Color",
+      "material": "PLA Silk",
+      "density": 1.24,
+      "weights": [
+        { "weight": 1000, "spool_weight": 250 }
+      ],
+      "diameters": [1.75],
+      "extruder_temp": 215,
+      "bed_temp": 55,
+      "multi_color_direction": "coaxial",
+      "colors": [
+        { "name": "Velvet Eclipse", "hexes": ["000000", "A34342"] },
+        { "name": "Aurora Forest",  "hexes": ["00AE42", "0066FF"] }
+      ]
+    },
+    {
+      "name": "PLA Galaxy",
+      "material": "PLA",
+      "density": 1.24,
+      "weights": [
+        { "weight": 1000, "spool_weight": 250 }
+      ],
+      "diameters": [1.75],
+      "extruder_temp": 220,
+      "bed_temp": 60,
+      "multi_color_direction": "longitudinal",
+      "colors": [
+        {
+          "name": "Rainbow Quad",
+          "hexes": ["FF0000", "00AE42", "0066FF", "FFFF00"]
+        }
+      ]
+    }
+  ]
+}

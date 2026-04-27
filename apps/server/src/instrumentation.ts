@@ -9,6 +9,9 @@ export async function register() {
     const { startChannelRefreshWorker, stopChannelRefreshWorker } = await import(
       './workers/gdrive-channel-refresh-worker'
     );
+    const { startForgeClaimWorker, stopForgeClaimWorker } = await import(
+      './workers/forge-claim-worker'
+    );
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -87,6 +90,12 @@ export async function register() {
     void startChannelRefreshWorker().catch((err) =>
       logger.error({ err }, 'gdrive-channel-refresh: loop crashed'),
     );
+    // V2-005a-T4 forge claim worker — drains dispatch_jobs WHERE status='claimable'
+    // for the in-process central_worker agent. Stub dispatcher today; V2-005d/e
+    // inject real printer/slicer dispatch handlers.
+    void startForgeClaimWorker().catch((err) =>
+      logger.error({ err }, 'forge-claim-worker crashed'),
+    );
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));
@@ -102,6 +111,7 @@ export async function register() {
       stopWatchlistScheduler();
       stopWatchlistWorker();
       stopChannelRefreshWorker();
+      stopForgeClaimWorker();
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));

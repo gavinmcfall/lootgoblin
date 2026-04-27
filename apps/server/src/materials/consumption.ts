@@ -51,6 +51,7 @@ import { z } from 'zod';
 
 import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
+import { persistLedgerEventInTx, type LedgerTxHandle } from '../stash/ledger';
 
 // ---------------------------------------------------------------------------
 // Event contract (V2-005 will conform)
@@ -218,7 +219,6 @@ export async function handleMaterialConsumed(
     e.attributedTo.kind === 'print' ? undefined : 'waste';
 
   const now = opts?.now ?? new Date();
-  const ledgerEventId = crypto.randomUUID();
 
   const relatedResources: Array<{ kind: string; id: string; role: string }> = [];
   if (e.attributedTo.jobId !== undefined) {
@@ -249,26 +249,27 @@ export async function handleMaterialConsumed(
   // --- Atomic apply --------------------------------------------------------
 
   try {
-    (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction((tx) => {
+    const ledgerEventId = (
+      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
       const t = tx as ReturnType<typeof getServerDb>;
       t.update(schema.materials)
         .set({ remainingAmount: sql`remaining_amount - ${e.weightConsumed}` })
         .where(eq(schema.materials.id, e.materialId))
         .run();
-      t.insert(schema.ledgerEvents)
-        .values({
-          id: ledgerEventId,
-          kind: 'material.consumed',
-          actorUserId: null,
-          subjectType: 'material',
-          subjectId: e.materialId,
-          relatedResources: relatedResources.length === 0 ? null : relatedResources,
-          payload: JSON.stringify(ledgerPayload),
-          provenanceClass: e.provenanceClass,
-          occurredAt: e.occurredAt,
-          ingestedAt: now,
-        })
-        .run();
+      // G-CF-1: route through helper so Zod schema runs at boundary.
+      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
+        kind: 'material.consumed',
+        actorUserId: null,
+        subjectType: 'material',
+        subjectId: e.materialId,
+        relatedResources: relatedResources.length === 0 ? undefined : relatedResources,
+        payload: ledgerPayload,
+        provenanceClass: e.provenanceClass,
+        occurredAt: e.occurredAt,
+        ingestedAt: now,
+      });
+      return eventId;
     });
     return {
       ok: true,

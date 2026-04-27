@@ -52,6 +52,7 @@ import { logger } from '../logger';
 import type { ColorPattern } from '../db/schema.materials';
 import { validateColors } from './validate';
 import type { LifecycleFailure } from './lifecycle';
+import { persistLedgerEventInTx, type LedgerTxHandle } from '../stash/ledger';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -264,7 +265,6 @@ export async function applyRecycleEvent(
 
   const newMaterialId = crypto.randomUUID();
   const newRecycleEventId = crypto.randomUUID();
-  const ledgerEventId = crypto.randomUUID();
   const now = opts?.now ?? new Date();
 
   // Provenance: weakest-link across inputs, then downgrade one notch on
@@ -331,7 +331,9 @@ export async function applyRecycleEvent(
   // --- Atomic apply --------------------------------------------------------
 
   try {
-    (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction((tx) => {
+    const ledgerEventId = (
+      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
       const t = tx as ReturnType<typeof getServerDb>;
       // 1. Decrement each TRACKED source. Use sql template so the decrement
       //    is atomic against the row even within the tx (defense-in-depth).
@@ -355,21 +357,19 @@ export async function applyRecycleEvent(
           createdAt: now,
         })
         .run();
-      // 4. Record ledger event.
-      t.insert(schema.ledgerEvents)
-        .values({
-          id: ledgerEventId,
-          kind: 'material.recycled',
-          actorUserId: input.actorUserId,
-          subjectType: 'material',
-          subjectId: newMaterialId,
-          relatedResources: ledgerRelatedResources,
-          payload: JSON.stringify(ledgerPayload),
-          provenanceClass: batchProvenance,
-          occurredAt: null,
-          ingestedAt: now,
-        })
-        .run();
+      // 4. Record ledger event via helper so payload Zod schema runs at the
+      //    boundary (G-CF-1). LedgerValidationError → tx rollback.
+      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
+        kind: 'material.recycled',
+        actorUserId: input.actorUserId,
+        subjectType: 'material',
+        subjectId: newMaterialId,
+        relatedResources: ledgerRelatedResources,
+        payload: ledgerPayload,
+        provenanceClass: batchProvenance,
+        ingestedAt: now,
+      });
+      return eventId;
     });
 
     return {

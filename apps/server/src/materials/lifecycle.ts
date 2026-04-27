@@ -36,6 +36,7 @@ import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
 import type { ColorPattern, MaterialKind, MaterialUnit } from '../db/schema.materials';
 import { resolveCatalogProduct, validateColors, validateUnitKind } from './validate';
+import { persistLedgerEventInTx, type LedgerTxHandle } from '../stash/ledger';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -211,7 +212,6 @@ export async function createMaterial(
   const finalDensity = input.density ?? resolvedProduct?.density ?? null;
 
   const id = crypto.randomUUID();
-  const ledgerEventId = crypto.randomUUID();
   const now = opts?.now ?? new Date();
 
   const row: typeof schema.materials.$inferInsert = {
@@ -252,34 +252,33 @@ export async function createMaterial(
 
   try {
     const db = getServerDb(opts?.dbUrl);
-    const inserted = (
+    const result = (
       db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
     ).transaction((tx) => {
       const t = tx as ReturnType<typeof getServerDb>;
       t.insert(schema.materials).values(row).run();
-      t.insert(schema.ledgerEvents)
-        .values({
-          id: ledgerEventId,
-          kind: 'material.added',
-          actorUserId: input.ownerId,
-          subjectType: 'material',
-          subjectId: id,
-          relatedResources: null,
-          payload: JSON.stringify(ledgerPayload),
-          provenanceClass: 'entered',
-          occurredAt: null,
-          ingestedAt: now,
-        })
-        .run();
+      // G-CF-1: route the ledger insert through persistLedgerEventInTx so
+      // payload Zod validation runs at the boundary. Validation failure
+      // throws LedgerValidationError → outer try/catch turns it into
+      // `persist-failed` and the Material insert rolls back.
+      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
+        kind: 'material.added',
+        actorUserId: input.ownerId,
+        subjectType: 'material',
+        subjectId: id,
+        payload: ledgerPayload,
+        provenanceClass: 'entered',
+        ingestedAt: now,
+      });
       const fetched = t
         .select()
         .from(schema.materials)
         .where(eq(schema.materials.id, id))
         .all();
-      return fetched[0]!;
+      return { material: fetched[0]!, ledgerEventId: eventId };
     });
 
-    return { ok: true, material: inserted, ledgerEventId };
+    return { ok: true, material: result.material, ledgerEventId: result.ledgerEventId };
   } catch (err) {
     logger.warn(
       {
@@ -363,7 +362,6 @@ export async function retireMaterial(
   }
 
   const now = opts?.now ?? new Date();
-  const ledgerEventId = crypto.randomUUID();
 
   const ledgerPayload = {
     retirementReason: input.retirementReason,
@@ -372,7 +370,9 @@ export async function retireMaterial(
   };
 
   try {
-    (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction((tx) => {
+    const ledgerEventId = (
+      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
       const t = tx as ReturnType<typeof getServerDb>;
       t.update(schema.materials)
         .set({
@@ -382,20 +382,17 @@ export async function retireMaterial(
         })
         .where(eq(schema.materials.id, input.materialId))
         .run();
-      t.insert(schema.ledgerEvents)
-        .values({
-          id: ledgerEventId,
-          kind: 'material.retired',
-          actorUserId: input.actorUserId,
-          subjectType: 'material',
-          subjectId: input.materialId,
-          relatedResources: null,
-          payload: JSON.stringify(ledgerPayload),
-          provenanceClass: 'entered',
-          occurredAt: null,
-          ingestedAt: now,
-        })
-        .run();
+      // G-CF-1: validate at boundary; throw → tx rollback.
+      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
+        kind: 'material.retired',
+        actorUserId: input.actorUserId,
+        subjectType: 'material',
+        subjectId: input.materialId,
+        payload: ledgerPayload,
+        provenanceClass: 'entered',
+        ingestedAt: now,
+      });
+      return eventId;
     });
     return { ok: true, ledgerEventId };
   } catch (err) {
@@ -480,29 +477,26 @@ export async function loadInPrinter(
   }
 
   const now = opts?.now ?? new Date();
-  const ledgerEventId = crypto.randomUUID();
 
   try {
-    (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction((tx) => {
+    const ledgerEventId = (
+      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
       const t = tx as ReturnType<typeof getServerDb>;
       t.update(schema.materials)
         .set({ loadedInPrinterRef: input.printerRef })
         .where(eq(schema.materials.id, input.materialId))
         .run();
-      t.insert(schema.ledgerEvents)
-        .values({
-          id: ledgerEventId,
-          kind: 'material.loaded',
-          actorUserId: input.actorUserId,
-          subjectType: 'material',
-          subjectId: input.materialId,
-          relatedResources: null,
-          payload: JSON.stringify({ printerRef: input.printerRef }),
-          provenanceClass: 'entered',
-          occurredAt: null,
-          ingestedAt: now,
-        })
-        .run();
+      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
+        kind: 'material.loaded',
+        actorUserId: input.actorUserId,
+        subjectType: 'material',
+        subjectId: input.materialId,
+        payload: { printerRef: input.printerRef },
+        provenanceClass: 'entered',
+        ingestedAt: now,
+      });
+      return eventId;
     });
     return { ok: true, ledgerEventId };
   } catch (err) {
@@ -560,29 +554,26 @@ export async function unloadFromPrinter(
 
   const previous = current.loadedInPrinterRef;
   const now = opts?.now ?? new Date();
-  const ledgerEventId = crypto.randomUUID();
 
   try {
-    (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction((tx) => {
+    const ledgerEventId = (
+      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
       const t = tx as ReturnType<typeof getServerDb>;
       t.update(schema.materials)
         .set({ loadedInPrinterRef: null })
         .where(eq(schema.materials.id, input.materialId))
         .run();
-      t.insert(schema.ledgerEvents)
-        .values({
-          id: ledgerEventId,
-          kind: 'material.unloaded',
-          actorUserId: input.actorUserId,
-          subjectType: 'material',
-          subjectId: input.materialId,
-          relatedResources: null,
-          payload: JSON.stringify({ printerRef: previous }),
-          provenanceClass: 'entered',
-          occurredAt: null,
-          ingestedAt: now,
-        })
-        .run();
+      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
+        kind: 'material.unloaded',
+        actorUserId: input.actorUserId,
+        subjectType: 'material',
+        subjectId: input.materialId,
+        payload: { printerRef: previous },
+        provenanceClass: 'entered',
+        ingestedAt: now,
+      });
+      return eventId;
     });
     return { ok: true, ledgerEventId, previousPrinterRef: previous };
   } catch (err) {

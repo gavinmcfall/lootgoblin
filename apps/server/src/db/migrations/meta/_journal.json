@@ -176,6 +176,20 @@
       "when": 1747152000000,
       "tag": "0024_v2_004b_gdrive_message_dedup",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1747238400000,
+      "tag": "0025_v2_005a_forge_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1747324800000,
+      "tag": "0026_v2_005a_forge_idempotency_keys",
+      "breakpoints": true
     }
   ]
 }

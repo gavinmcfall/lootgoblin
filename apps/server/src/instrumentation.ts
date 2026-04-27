@@ -9,6 +9,9 @@ export async function register() {
     const { startChannelRefreshWorker, stopChannelRefreshWorker } = await import(
       './workers/gdrive-channel-refresh-worker'
     );
+    const { startForgeClaimWorker, stopForgeClaimWorker } = await import(
+      './workers/forge-claim-worker'
+    );
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -54,6 +57,22 @@ export async function register() {
       logger.error({ err }, 'instance identity bootstrap failed');
     }
 
+    // ── Forge central_worker bootstrap (V2-005a-T2) ────────────────────
+    // Ensures the in-process central_worker Agent row exists. Runs after
+    // migrations (schema must exist) and after instance-identity bootstrap
+    // (so logs show identity context first). Idempotent — no-op if the row
+    // already exists. Failures are non-fatal — the future Forge claim loop
+    // (V2-005a-T4) will re-run the bootstrap on its own startup.
+    try {
+      const { bootstrapCentralWorker } = await import('./forge/agent-bootstrap');
+      const result = await bootstrapCentralWorker();
+      if (result.created) {
+        logger.info({ agentId: result.agentId }, 'forge central_worker bootstrapped');
+      }
+    } catch (err) {
+      logger.error({ err }, 'forge central_worker bootstrap failed');
+    }
+
     startWorkers();
     // V2-003-T9 ingest worker — drains ingest_jobs WHERE status='queued'.
     startIngestWorker();
@@ -71,6 +90,12 @@ export async function register() {
     void startChannelRefreshWorker().catch((err) =>
       logger.error({ err }, 'gdrive-channel-refresh: loop crashed'),
     );
+    // V2-005a-T4 forge claim worker — drains dispatch_jobs WHERE status='claimable'
+    // for the in-process central_worker agent. Stub dispatcher today; V2-005d/e
+    // inject real printer/slicer dispatch handlers.
+    void startForgeClaimWorker().catch((err) =>
+      logger.error({ err }, 'forge-claim-worker crashed'),
+    );
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));
@@ -86,6 +111,7 @@ export async function register() {
       stopWatchlistScheduler();
       stopWatchlistWorker();
       stopChannelRefreshWorker();
+      stopForgeClaimWorker();
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));

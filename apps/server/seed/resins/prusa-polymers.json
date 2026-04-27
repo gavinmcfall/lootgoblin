@@ -1,0 +1,60 @@
+{
+  "brand": "Prusa Polymers",
+  "license_note": "Hand-keyed from Prusa3D public product pages. Factual data only (color, density, recommended exposure starting points are commonly published and non-copyrightable). Recommended exposure values are typical 0.05mm-layer starting points; tune per printer. PrusaSlicerSLA preset library NOT used as a source — see planning/odad/research/v2-007b-catalog-seed.md Q5.",
+  "products": [
+    {
+      "productLine": "Prusament Resin Tough",
+      "subtype": "tough",
+      "colors": ["#FF6600"],
+      "colorName": "Prusa Orange",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 7,
+        "bottom_layers": 4,
+        "bottom_exposure_seconds": 35
+      },
+      "densityGMl": 1.13,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://www.prusa3d.com/category/resin/",
+      "sourceRef": "https://www.prusa3d.com/category/resin/"
+    },
+    {
+      "productLine": "Prusament Resin Tough",
+      "subtype": "tough",
+      "colors": ["#3A3A3A"],
+      "colorName": "Anthracite Grey",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 7,
+        "bottom_layers": 4,
+        "bottom_exposure_seconds": 35
+      },
+      "densityGMl": 1.13,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://www.prusa3d.com/category/resin/",
+      "sourceRef": "https://www.prusa3d.com/category/resin/"
+    },
+    {
+      "productLine": "Prusament Resin Model",
+      "subtype": "model",
+      "colors": ["#C0C0C0"],
+      "colorName": "Skull Grey",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 6,
+        "bottom_layers": 4,
+        "bottom_exposure_seconds": 30
+      },
+      "densityGMl": 1.12,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://www.prusa3d.com/category/resin/",
+      "sourceRef": "https://www.prusa3d.com/category/resin/"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "brand": "Siraya Tech",
+  "license_note": "Hand-keyed from siraya.tech public product pages. Recommended exposure values are typical 0.05mm-layer starting points sourced from the vendor's public starting-profile guidance; tune per printer.",
+  "products": [
+    {
+      "productLine": "Blu Tough",
+      "subtype": "tough",
+      "colors": ["#1F4E8C"],
+      "colorName": "Blu",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 8,
+        "bottom_layers": 6,
+        "bottom_exposure_seconds": 40
+      },
+      "densityGMl": 1.1,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://siraya.tech/",
+      "sourceRef": "https://siraya.tech/"
+    },
+    {
+      "productLine": "Fast ABS-Like",
+      "subtype": "abs-like",
+      "colors": ["#000000"],
+      "colorName": "Black",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 2,
+        "bottom_layers": 5,
+        "bottom_exposure_seconds": 25
+      },
+      "densityGMl": 1.1,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://siraya.tech/",
+      "sourceRef": "https://siraya.tech/"
+    },
+    {
+      "productLine": "Simple",
+      "subtype": "standard",
+      "colors": ["#808080"],
+      "colorName": "Grey",
+      "defaultExposure": {
+        "layer_height_mm": 0.05,
+        "exposure_seconds": 2,
+        "bottom_layers": 5,
+        "bottom_exposure_seconds": 30
+      },
+      "densityGMl": 1.1,
+      "bottleVolumeMl": 1000,
+      "compatibility": { "wavelength_nm": 405 },
+      "materialClass": "consumer",
+      "retailUrl": "https://siraya.tech/",
+      "sourceRef": "https://siraya.tech/"
+    }
+  ]
+}

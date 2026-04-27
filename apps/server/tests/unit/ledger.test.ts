@@ -16,7 +16,12 @@ import { describe, it, expect, beforeAll, vi, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 
 import { runMigrations, resetDbCache, getDb, schema } from '../../src/db/client';
-import { persistLedgerEvent } from '../../src/stash/ledger';
+import {
+  persistLedgerEvent,
+  persistLedgerEventInTx,
+  LedgerValidationError,
+  type LedgerTxHandle,
+} from '../../src/stash/ledger';
 import { eq } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
@@ -363,4 +368,98 @@ describe('persistLedgerEvent — V2-007a-T3 provenanceClass values', () => {
       expect(rows[0]!.provenanceClass).toBe(provenance);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// G-CF-1 — persistLedgerEventInTx: atomic-caller mode
+// ---------------------------------------------------------------------------
+
+describe('persistLedgerEventInTx — atomic-caller mode (G-CF-1)', () => {
+  it('writes a row through the caller tx handle and returns the eventId', () => {
+    const d = db();
+    let eventId: string | null = null;
+    (
+      d as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
+      const result = persistLedgerEventInTx(tx as LedgerTxHandle, {
+        kind: 'material.added',
+        actorUserId: 'user-tx',
+        subjectType: 'material',
+        subjectId: 'mat-tx-happy',
+        payload: {
+          initialAmount: 100,
+          unit: 'g',
+          kind: 'filament_spool',
+        },
+        provenanceClass: 'entered',
+      });
+      eventId = result.eventId;
+    });
+
+    expect(eventId).toBeTruthy();
+    const rows = d
+      .select()
+      .from(schema.ledgerEvents)
+      .where(eq(schema.ledgerEvents.id, eventId!))
+      .all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.kind).toBe('material.added');
+    expect(rows[0]!.actorUserId).toBe('user-tx');
+  });
+
+  it('throws LedgerValidationError on a payload that violates the registered Zod schema', () => {
+    const d = db();
+    expect(() => {
+      (
+        d as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+      ).transaction((tx) => {
+        // material.added requires `initialAmount: positive number`. Passing a
+        // negative number must trip the Zod schema and throw before INSERT.
+        persistLedgerEventInTx(tx as LedgerTxHandle, {
+          kind: 'material.added',
+          subjectType: 'material',
+          subjectId: 'mat-tx-bad-payload',
+          payload: {
+            initialAmount: -42, // invalid
+            unit: 'g',
+            kind: 'filament_spool',
+          },
+        });
+      });
+    }).toThrow(LedgerValidationError);
+
+    // No row was written for that subject id (the throw rolled back the tx).
+    const rows = d
+      .select()
+      .from(schema.ledgerEvents)
+      .where(eq(schema.ledgerEvents.subjectId, 'mat-tx-bad-payload'))
+      .all();
+    expect(rows).toHaveLength(0);
+  });
+
+  it('honours caller-supplied ingestedAt (so atomic callers can match the row createdAt)', () => {
+    const d = db();
+    const fixed = new Date('2026-04-25T10:00:00.000Z');
+    let eventId: string | null = null;
+    (
+      d as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
+      const result = persistLedgerEventInTx(tx as LedgerTxHandle, {
+        kind: 'material.loaded',
+        actorUserId: 'user-tx-now',
+        subjectType: 'material',
+        subjectId: 'mat-tx-now',
+        payload: { printerRef: 'printer-1' },
+        ingestedAt: fixed,
+      });
+      eventId = result.eventId;
+    });
+
+    const rows = d
+      .select()
+      .from(schema.ledgerEvents)
+      .where(eq(schema.ledgerEvents.id, eventId!))
+      .all();
+    expect(rows[0]!.ingestedAt!.getTime()).toBe(fixed.getTime());
+  });
 });

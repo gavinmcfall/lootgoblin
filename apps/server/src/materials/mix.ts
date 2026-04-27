@@ -49,6 +49,7 @@ import { logger } from '../logger';
 import type { ColorPattern } from '../db/schema.materials';
 import { validateColors } from './validate';
 import type { LifecycleFailure } from './lifecycle';
+import { persistLedgerEventInTx, type LedgerTxHandle } from '../stash/ledger';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -338,7 +339,6 @@ export async function applyMixBatch(
 
   const newMaterialId = crypto.randomUUID();
   const newMixBatchId = crypto.randomUUID();
-  const ledgerEventId = crypto.randomUUID();
   const now = opts?.now ?? new Date();
 
   const batchProvenance = escalateProvenance(draws);
@@ -384,7 +384,9 @@ export async function applyMixBatch(
   // --- Atomic apply --------------------------------------------------------
 
   try {
-    (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction((tx) => {
+    const ledgerEventId = (
+      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
       const t = tx as ReturnType<typeof getServerDb>;
       // 1. Decrement each source. Use sql template to avoid SELECT-then-UPDATE
       //    race even within a single tx (defense-in-depth).
@@ -407,21 +409,19 @@ export async function applyMixBatch(
           createdAt: now,
         })
         .run();
-      // 4. Record ledger event.
-      t.insert(schema.ledgerEvents)
-        .values({
-          id: ledgerEventId,
-          kind: 'material.mix_created',
-          actorUserId: input.actorUserId,
-          subjectType: 'material',
-          subjectId: newMaterialId,
-          relatedResources: ledgerRelatedResources,
-          payload: JSON.stringify(ledgerPayload),
-          provenanceClass: batchProvenance,
-          occurredAt: null,
-          ingestedAt: now,
-        })
-        .run();
+      // 4. Record ledger event via the helper so the payload Zod schema
+      //    runs at the boundary (G-CF-1). LedgerValidationError → tx rollback.
+      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
+        kind: 'material.mix_created',
+        actorUserId: input.actorUserId,
+        subjectType: 'material',
+        subjectId: newMaterialId,
+        relatedResources: ledgerRelatedResources,
+        payload: ledgerPayload,
+        provenanceClass: batchProvenance,
+        ingestedAt: now,
+      });
+      return eventId;
     });
 
     return {

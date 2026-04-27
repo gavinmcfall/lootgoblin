@@ -43,6 +43,7 @@ import {
   toSubscriptionDto,
   UpdateBodySchema,
 } from '../_shared';
+import { unregisterGdriveChannel } from '@/watchlist/gdrive-channels-register';
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/watchlist/subscriptions/:id
@@ -221,6 +222,37 @@ export async function DELETE(
   if (!loaded.ok) return loaded.response;
 
   const db = getServerDb();
+
+  // V2-004b-T2: unregister any GDrive push channels BEFORE deleting the
+  // subscription row so we still know the channel id + resource id (the FK
+  // CASCADE would otherwise wipe the row first). Best-effort — failures are
+  // logged but do not block the delete.
+  try {
+    const channels = await db
+      .select({
+        channelId: schema.gdriveWatchChannels.channelId,
+      })
+      .from(schema.gdriveWatchChannels)
+      .where(eq(schema.gdriveWatchChannels.subscriptionId, id));
+    for (const ch of channels) {
+      const result = await unregisterGdriveChannel({
+        channelId: ch.channelId,
+        subscriptionId: id,
+      });
+      if (!result.ok) {
+        logger.warn(
+          { subscriptionId: id, channelId: ch.channelId, reason: result.reason },
+          'gdrive-channel-unregister: failed; FK cascade will clean up local row',
+        );
+      }
+    }
+  } catch (unregErr) {
+    logger.warn(
+      { subscriptionId: id, err: unregErr },
+      'gdrive-channel-unregister: threw unexpectedly; FK cascade will clean up',
+    );
+  }
+
   await db
     .delete(schema.watchlistSubscriptions)
     .where(eq(schema.watchlistSubscriptions.id, id));

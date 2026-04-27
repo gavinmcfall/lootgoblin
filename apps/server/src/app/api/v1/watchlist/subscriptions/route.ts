@@ -69,6 +69,7 @@ import {
   toSubscriptionDto,
   validateCapability,
 } from './_shared';
+import { registerGdriveChannel } from '@/watchlist/gdrive-channels-register';
 
 // ---------------------------------------------------------------------------
 // List query schema
@@ -221,6 +222,39 @@ export async function POST(req: NextRequest) {
     // Should never happen — INSERT returned, then SELECT empty.
     logger.error({ id }, 'watchlist-subs: post-insert SELECT returned no row');
     return NextResponse.json({ error: 'internal' }, { status: 500 });
+  }
+
+  // ── 7. GDrive push registration (V2-004b-T2) ────────────────────────────
+  // Best-effort. If anything fails, we WARN and let the subscription fall
+  // back to cadence-based polling. Push is an optimisation, not a contract.
+  if (body.kind === 'folder_watch' && body.source_adapter_id === 'google-drive') {
+    const publicUrl = process.env.INSTANCE_PUBLIC_URL ?? process.env.BETTER_AUTH_URL;
+    if (publicUrl) {
+      const webhookAddress = `${publicUrl.replace(/\/+$/, '')}/api/v1/watchlist/gdrive/notification`;
+      try {
+        const result = await registerGdriveChannel({
+          subscriptionId: row.id,
+          ownerId: actor.id,
+          webhookAddress,
+        });
+        if (!result.ok) {
+          logger.warn(
+            { subscriptionId: row.id, reason: result.reason, details: result.details },
+            'gdrive-channel-register: failed; subscription will fall back to polling',
+          );
+        }
+      } catch (regErr) {
+        logger.warn(
+          { subscriptionId: row.id, err: regErr },
+          'gdrive-channel-register: threw unexpectedly; subscription will fall back to polling',
+        );
+      }
+    } else {
+      logger.info(
+        { subscriptionId: row.id },
+        'gdrive-channel-register: INSTANCE_PUBLIC_URL not set; polling-only',
+      );
+    }
   }
 
   return NextResponse.json(

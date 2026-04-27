@@ -9,16 +9,23 @@
  * the same file.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import argon2 from 'argon2';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { runMigrations, getDb, schema, resetDbCache } from '../../src/db/client';
 import { isValidApiKeyWithScope } from '../../src/auth/helpers';
 
+// argon2id is intentionally slow (~1-2s per hash/verify on loaded runners).
+// Several tests in this file create keys + verify them, easily exceeding the
+// 5s default. Bump the per-test timeout to keep flakes off the suite. (G-CF-2)
+vi.setConfig({ testTimeout: 30_000 });
+
 beforeAll(async () => {
   process.env.DATABASE_URL = 'file:/tmp/lootgoblin-helper-scope.db';
   resetDbCache();
   await runMigrations('file:/tmp/lootgoblin-helper-scope.db');
+  // Warm up argon2 native binding so the first real hash isn't paying JIT cost.
+  await argon2.hash('warmup');
 });
 
 function makeReq(apiKey?: string): Request {

@@ -181,14 +181,14 @@ afterEach(() => {
 
 async function getLedgerEvents(opts: {
   kind?: string;
-  resourceType?: string;
-  resourceId?: string;
+  subjectType?: string;
+  subjectId?: string;
 }): Promise<(typeof schema.ledgerEvents.$inferSelect)[]> {
   let query = db().select().from(schema.ledgerEvents);
   const conditions = [];
   if (opts.kind) conditions.push(eq(schema.ledgerEvents.kind, opts.kind));
-  if (opts.resourceType) conditions.push(eq(schema.ledgerEvents.resourceType, opts.resourceType));
-  if (opts.resourceId) conditions.push(eq(schema.ledgerEvents.resourceId, opts.resourceId));
+  if (opts.subjectType) conditions.push(eq(schema.ledgerEvents.subjectType, opts.subjectType));
+  if (opts.subjectId) conditions.push(eq(schema.ledgerEvents.subjectId, opts.subjectId));
 
   if (conditions.length === 0) return query;
 
@@ -230,16 +230,16 @@ describe('template-migration ledger persistence', () => {
     // Ledger event persisted
     const events = await getLedgerEvents({
       kind: 'migration.execute',
-      resourceType: 'loot',
-      resourceId: lootId,
+      subjectType: 'loot',
+      subjectId: lootId,
     });
     expect(events).toHaveLength(1);
 
     const event = events[0]!;
     expect(event.kind).toBe('migration.execute');
-    expect(event.resourceType).toBe('loot');
-    expect(event.resourceId).toBe(lootId);
-    expect(event.createdAt).toBeInstanceOf(Date);
+    expect(event.subjectType).toBe('loot');
+    expect(event.subjectId).toBe(lootId);
+    expect(event.ingestedAt).toBeInstanceOf(Date);
 
     const payload = JSON.parse(event.payload!);
     expect(payload.lootFileId).toBe(lootFileId);
@@ -283,14 +283,14 @@ describe('template-migration ledger — multi-file emits one event per file', ()
 
     expect(report.filesMigrated).toBe(2);
 
-    const events = await getLedgerEvents({ kind: 'migration.execute', resourceType: 'loot' });
+    const events = await getLedgerEvents({ kind: 'migration.execute', subjectType: 'loot' });
     const ourLootIds = new Set([loot1Id, loot2Id]);
-    const ourEvents = events.filter((e) => ourLootIds.has(e.resourceId));
+    const ourEvents = events.filter((e) => ourLootIds.has(e.subjectId));
 
     expect(ourEvents).toHaveLength(2);
-    const resourceIds = new Set(ourEvents.map((e) => e.resourceId));
-    expect(resourceIds.has(loot1Id)).toBe(true);
-    expect(resourceIds.has(loot2Id)).toBe(true);
+    const subjectIds = new Set(ourEvents.map((e) => e.subjectId));
+    expect(subjectIds.has(loot1Id)).toBe(true);
+    expect(subjectIds.has(loot2Id)).toBe(true);
   });
 });
 
@@ -333,8 +333,8 @@ describe('bulk-restructure ledger — move-to-collection', () => {
     // Exactly ONE bulk ledger event for the whole operation
     const events = await getLedgerEvents({
       kind: 'bulk.move-to-collection',
-      resourceType: 'collection',
-      resourceId: targetCollId,
+      subjectType: 'collection',
+      subjectId: targetCollId,
     });
     expect(events).toHaveLength(1);
 
@@ -384,7 +384,7 @@ describe('bulk-restructure ledger — change-template', () => {
 
     // Exactly ONE bulk.change-template event
     const events = await getLedgerEvents({ kind: 'bulk.change-template' });
-    const ourEvents = events.filter((e) => e.actorId === ownerId);
+    const ourEvents = events.filter((e) => e.actorUserId === ownerId);
     expect(ourEvents.length).toBeGreaterThanOrEqual(1);
 
     // The most recent is ours
@@ -393,21 +393,21 @@ describe('bulk-restructure ledger — change-template', () => {
     expect(payload.action.kind).toBe('change-template');
     expect(payload.manifest.applied).toContain(lootId);
 
-    // V2-002 T10 carry-forward: change-template bulks use resourceType
-    // 'bulk-action' with a synthetic `bulk-<actor>-<timestamp>` resourceId,
+    // V2-002 T10 carry-forward: change-template bulks use subjectType
+    // 'bulk-action' with a synthetic `bulk-<actor>-<timestamp>` subjectId,
     // NOT the actor id as a 'collection' (which previously polluted
     // collection audit queries).
-    expect(event.resourceType).toBe('bulk-action');
-    expect(event.resourceId).toMatch(new RegExp(`^bulk-${ownerId}-\\d+$`));
+    expect(event.subjectType).toBe('bulk-action');
+    expect(event.subjectId).toMatch(new RegExp(`^bulk-${ownerId}-\\d+$`));
   });
 });
 
 // ---------------------------------------------------------------------------
-// Test 4b — move-to-collection still uses resourceType='collection' + target id
+// Test 4b — move-to-collection still uses subjectType='collection' + target id
 // ---------------------------------------------------------------------------
 
-describe('bulk-restructure ledger — move-to-collection resourceType invariant', () => {
-  it('uses resourceType=collection with resourceId=targetCollectionId (regression guard for T10 carry-forward)', async () => {
+describe('bulk-restructure ledger — move-to-collection subjectType invariant', () => {
+  it('uses subjectType=collection with subjectId=targetCollectionId (regression guard for T10 carry-forward)', async () => {
     const scratch = await makeScratchDir();
     const ownerId = await seedUser();
     const stashRootId = await seedStashRoot(ownerId, scratch);
@@ -436,13 +436,13 @@ describe('bulk-restructure ledger — move-to-collection resourceType invariant'
 
     const events = await getLedgerEvents({
       kind: 'bulk.move-to-collection',
-      resourceType: 'collection',
-      resourceId: targetCollId,
+      subjectType: 'collection',
+      subjectId: targetCollId,
     });
     expect(events.length).toBeGreaterThanOrEqual(1);
     const evt = events[events.length - 1]!;
-    expect(evt.resourceType).toBe('collection');
-    expect(evt.resourceId).toBe(targetCollId);
+    expect(evt.subjectType).toBe('collection');
+    expect(evt.subjectId).toBe(targetCollId);
   });
 });
 

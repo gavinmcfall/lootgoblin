@@ -127,6 +127,34 @@
       "when": 1746547200000,
       "tag": "0017_v2_004_t9_watchlist_idempotency_key",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1746633600000,
+      "tag": "0018_v2_007a_materials",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1746720000000,
+      "tag": "0019_v2_007a_grimoire",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1746806400000,
+      "tag": "0020_v2_007a_ledger_expand",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1746892800000,
+      "tag": "0021_v2_007a_t14_idempotency_keys",
+      "breakpoints": true
     }
   ]
 }

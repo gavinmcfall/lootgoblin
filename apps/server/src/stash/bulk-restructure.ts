@@ -161,34 +161,34 @@ function createDefaultLedgerEmitter(dbUrl?: string): BulkLedgerEmitter {
   return {
     async emitBulk(event) {
       try {
-        // Choose resourceType + resourceId so `(resource_type, resource_id)`
+        // Choose subjectType + subjectId so `(subject_type, subject_id)`
         // audit queries don't return cross-type false hits.
         //
-        //   move-to-collection → resourceType='collection', resourceId=targetCollectionId
+        //   move-to-collection → subjectType='collection', subjectId=targetCollectionId
         //     (the canonical resource acted on)
-        //   change-template    → resourceType='bulk-action', resourceId=synthetic
+        //   change-template    → subjectType='bulk-action', subjectId=synthetic
         //     `bulk-${actorOwnerId}-${timestamp}`
         //     (V2-002 T10 carry-forward: previously used actorOwnerId as
-        //      resourceId with resourceType='collection', which polluted
+        //      subjectId with subjectType='collection', which polluted
         //      collection audit queries and made user-id lookups hit bulk
         //      events by accident. 'bulk-action' is a synthetic type name
         //      reserved for multi-collection bulks that have no single
         //      canonical resource.)
-        let resourceType: string;
-        let resourceId: string;
+        let subjectType: string;
+        let subjectId: string;
         if (event.action.kind === 'move-to-collection') {
-          resourceType = 'collection';
-          resourceId = event.action.targetCollectionId;
+          subjectType = 'collection';
+          subjectId = event.action.targetCollectionId;
         } else {
-          resourceType = 'bulk-action';
-          resourceId = `bulk-${event.actorOwnerId}-${event.timestamp.getTime()}`;
+          subjectType = 'bulk-action';
+          subjectId = `bulk-${event.actorOwnerId}-${event.timestamp.getTime()}`;
         }
         const result = await persistLedgerEvent(
           {
             kind: `bulk.${event.action.kind}`,
-            actorId: event.actorOwnerId,
-            resourceType,
-            resourceId,
+            actorUserId: event.actorOwnerId,
+            subjectType,
+            subjectId,
             payload: {
               action: event.action,
               manifest: event.manifest,

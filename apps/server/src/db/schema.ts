@@ -34,6 +34,12 @@ export * from './schema.ingest';
 // OAuth state table — V2-003-T9.
 export * from './schema.oauth';
 
+// Materials pillar — V2-007a-T1 (Grimoire + Materials + Ledger).
+export * from './schema.materials';
+
+// Grimoire pillar — V2-007a-T2 (slicer profiles + print settings + attachments).
+export * from './schema.grimoire';
+
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 

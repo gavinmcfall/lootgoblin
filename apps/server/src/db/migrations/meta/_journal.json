@@ -190,6 +190,13 @@
       "when": 1747324800000,
       "tag": "0026_v2_005a_forge_idempotency_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1777277135379,
+      "tag": "0027_v2_005c_slicer_runner",
+      "breakpoints": true
     }
   ]
 }

@@ -39,10 +39,11 @@
  *    Bambu-LAN, SDCP), which is a different concept.
  */
 
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 import { user } from './schema.auth';
 import { loot, lootFiles } from './schema.stash';
+import { slicerProfiles } from './schema.grimoire';
 
 // ---------------------------------------------------------------------------
 // Enum value lists (TS-side; no DB CHECK constraints per project pattern)
@@ -452,5 +453,139 @@ export const dispatchJobs = sqliteTable(
     index('dispatch_jobs_loot_idx').on(t.lootId),
     /** Per-target history (e.g. "all jobs sent to my X1C"). */
     index('dispatch_jobs_target_idx').on(t.targetKind, t.targetId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// V2-005c: forge_artifacts — machine-facing intermediates (gcode, slice meta)
+// ---------------------------------------------------------------------------
+
+/**
+ * Machine-facing artifacts produced as part of a dispatch job's lifecycle —
+ * sliced gcode, slicer-emitted metadata, profile snapshots used for the slice.
+ *
+ * Distinct from `loot_files`: loot_files holds *user-facing* assets that
+ * round-trip through the Stash. forge_artifacts hold byproducts that exist
+ * only to feed downstream Forge stages (the printer, an audit trail of what
+ * was sliced with which profile, etc.) and are tied to the dispatch job's
+ * lifetime via CASCADE.
+ */
+export const FORGE_ARTIFACT_KINDS = ['gcode', 'slice_metadata', 'profile_snapshot'] as const;
+export type ForgeArtifactKind = (typeof FORGE_ARTIFACT_KINDS)[number];
+
+export const forgeArtifacts = sqliteTable(
+  'forge_artifacts',
+  {
+    id: text('id').primaryKey(),
+    dispatchJobId: text('dispatch_job_id')
+      .notNull()
+      .references(() => dispatchJobs.id, { onDelete: 'cascade' }),
+    /** App-layer validates against FORGE_ARTIFACT_KINDS. */
+    kind: text('kind').notNull(),
+    storagePath: text('storage_path').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    sha256: text('sha256').notNull(),
+    mimeType: text('mime_type'),
+    /** Free-form per-kind JSON blob (e.g. slicer settings hash, layer count). */
+    metadataJson: text('metadata_json'),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => [
+    index('forge_artifacts_dispatch_idx').on(t.dispatchJobId),
+    index('forge_artifacts_kind_idx').on(t.kind),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// V2-005c: forge_slicer_installs — runtime-installed slicer binaries
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks slicer binaries the central worker has downloaded + extracted at
+ * runtime (PrusaSlicer / OrcaSlicer / Bambu Studio). One row per slicer kind
+ * (UNIQUE on `slicer_kind`) — only one active install per kind.
+ *
+ * Distinct from `forge_slicers`: forge_slicers is "a slicer the user owns
+ * somewhere they can hand a model to" (could be on the user's laptop via
+ * url-scheme handoff). forge_slicer_installs is "a slicer binary the
+ * lootgoblin server has installed locally and can invoke as a CLI".
+ */
+export const FORGE_SLICER_KINDS_INSTALLABLE = ['prusaslicer', 'orcaslicer', 'bambustudio'] as const;
+export type ForgeSlicerKindInstallable = (typeof FORGE_SLICER_KINDS_INSTALLABLE)[number];
+
+export const FORGE_SLICER_INSTALL_STATUSES = [
+  'downloading',
+  'extracting',
+  'verifying',
+  'ready',
+  'failed',
+] as const;
+export type ForgeSlicerInstallStatus = (typeof FORGE_SLICER_INSTALL_STATUSES)[number];
+
+export const forgeSlicerInstalls = sqliteTable('forge_slicer_installs', {
+  id: text('id').primaryKey(),
+  /**
+   * App-layer validates against FORGE_SLICER_KINDS_INSTALLABLE. UNIQUE — one
+   * install per kind. Re-installs upsert into the same row.
+   */
+  slicerKind: text('slicer_kind').notNull().unique(),
+  /** Semver string of the currently-installed version, e.g. "2.9.1". NULL until first install completes. */
+  installedVersion: text('installed_version'),
+  /** Absolute path to the executable (e.g. /data/forge-tools/prusaslicer/2.9.1/prusa-slicer). */
+  binaryPath: text('binary_path'),
+  /** Root extraction directory (e.g. /data/forge-tools/prusaslicer/2.9.1). */
+  installRoot: text('install_root'),
+  /** App-layer validates against FORGE_SLICER_INSTALL_STATUSES. */
+  installStatus: text('install_status').notNull(),
+  /** Last time the update-availability checker queried GitHub Releases. */
+  lastUpdateCheckAt: integer('last_update_check_at', { mode: 'timestamp_ms' }),
+  /** Latest version observed upstream (may differ from installed_version). */
+  availableVersion: text('available_version'),
+  /** Convenience flag set by the update checker so the UI can dot the menu. */
+  updateAvailable: integer('update_available', { mode: 'boolean' }).notNull().default(false),
+  /** When the current install finished. NULL while in-progress / failed. */
+  installedAt: integer('installed_at', { mode: 'timestamp_ms' }),
+  /** SHA-256 of the downloaded archive (for integrity audit). */
+  sha256: text('sha256'),
+});
+
+// ---------------------------------------------------------------------------
+// V2-005c: forge_slicer_profile_materializations — Grimoire profile → on-disk
+// ---------------------------------------------------------------------------
+
+/**
+ * Pairs a Grimoire `slicer_profiles` row with its on-disk slicer config file
+ * for a specific installed slicer. The materializer (T_c7) writes the config
+ * file to disk and records the source-profile hash; on subsequent slices the
+ * worker compares the current Grimoire profile hash against
+ * `source_profile_hash` and re-materializes if they drift.
+ *
+ * Composite unique on (slicer_profile_id, slicer_kind) — at most one
+ * materialization row per (profile, slicer-kind) pair.
+ */
+export const forgeSlicerProfileMaterializations = sqliteTable(
+  'forge_slicer_profile_materializations',
+  {
+    id: text('id').primaryKey(),
+    slicerProfileId: text('slicer_profile_id')
+      .notNull()
+      .references(() => slicerProfiles.id, { onDelete: 'cascade' }),
+    /** App-layer validates against FORGE_SLICER_KINDS_INSTALLABLE. */
+    slicerKind: text('slicer_kind').notNull(),
+    /** Absolute path to the materialized config file on disk. */
+    configPath: text('config_path').notNull(),
+    /** Hash of the Grimoire profile body at materialization time (for drift detection). */
+    sourceProfileHash: text('source_profile_hash').notNull(),
+    /** Set true when drift is detected. The materializer clears it on re-write. */
+    syncRequired: integer('sync_required', { mode: 'boolean' }).notNull().default(false),
+    materializedAt: integer('materialized_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => [
+    index('forge_profile_mat_profile_idx').on(t.slicerProfileId),
+    uniqueIndex('forge_profile_mat_unique').on(t.slicerProfileId, t.slicerKind),
   ],
 );

@@ -11,10 +11,15 @@
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { getServerDb, schema } from '@/db/client';
+import { logger } from '@/logger';
 import { loadSubscriptionForActor, ResumeBodySchema } from '../../_shared';
+import {
+  registerGdriveChannel,
+  unregisterGdriveChannel,
+} from '@/watchlist/gdrive-channels-register';
 
 export async function POST(
   req: NextRequest,
@@ -46,6 +51,7 @@ export async function POST(
 
   const loaded = await loadSubscriptionForActor(req, id);
   if (!loaded.ok) return loaded.response;
+  const { actor, row: subRow } = loaded;
 
   const db = getServerDb();
   const patch: Partial<typeof schema.watchlistSubscriptions.$inferInsert> = {
@@ -58,6 +64,65 @@ export async function POST(
     .update(schema.watchlistSubscriptions)
     .set(patch)
     .where(eq(schema.watchlistSubscriptions.id, id));
+
+  // V2-004b-T2: re-register a fresh GDrive push channel if the subscription
+  // had one expired by an earlier pause. We delete the stale row first
+  // (best-effort channels/stop) then register fresh — matches the "channel
+  // re-registration is part of the resume flow" decision.
+  if (
+    subRow.kind === 'folder_watch' &&
+    subRow.sourceAdapterId === 'google-drive'
+  ) {
+    try {
+      const expiredRows = await db
+        .select({
+          channelId: schema.gdriveWatchChannels.channelId,
+        })
+        .from(schema.gdriveWatchChannels)
+        .where(
+          and(
+            eq(schema.gdriveWatchChannels.subscriptionId, id),
+            eq(schema.gdriveWatchChannels.status, 'expired'),
+          ),
+        );
+      if (expiredRows.length > 0) {
+        for (const ch of expiredRows) {
+          // Best-effort: drop the stale row (and try to call channels/stop
+          // even though Google may have already timed it out).
+          await unregisterGdriveChannel({
+            channelId: ch.channelId,
+            subscriptionId: id,
+          });
+        }
+        const publicUrl =
+          process.env.INSTANCE_PUBLIC_URL ?? process.env.BETTER_AUTH_URL;
+        if (publicUrl) {
+          const webhookAddress = `${publicUrl.replace(/\/+$/, '')}/api/v1/watchlist/gdrive/notification`;
+          const result = await registerGdriveChannel({
+            subscriptionId: id,
+            ownerId: actor.id,
+            webhookAddress,
+          });
+          if (!result.ok) {
+            logger.warn(
+              { subscriptionId: id, reason: result.reason },
+              'gdrive-channel-register: resume re-registration failed; falling back to polling',
+            );
+          }
+        } else {
+          logger.info(
+            { subscriptionId: id },
+            'gdrive-channel-register: resume — INSTANCE_PUBLIC_URL not set; polling-only',
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { subscriptionId: id, err },
+        'gdrive-channel-register: resume re-registration threw (non-fatal)',
+      );
+    }
+  }
 
   return new Response(null, { status: 204 });
 }

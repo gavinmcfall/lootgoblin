@@ -1,0 +1,12 @@
+-- V2-004b-T4: Per-channel message-number dedup for Google Drive push
+-- notifications.
+--
+-- Google may retry a push on transient 5xx and (rarely) deliver duplicates
+-- or out-of-order messages. The webhook handler tracks the highest
+-- `X-Goog-Message-Number` we've accepted per channel and silently drops
+-- any push whose message number is ≤ the stored value. The column is
+-- updated atomically with the watchlist_job INSERT inside a single
+-- transaction so a crash between the two does not leave a missed push.
+--
+-- See apps/server/src/watchlist/gdrive-push-handler.ts for the consumer.
+ALTER TABLE `gdrive_watch_channels` ADD COLUMN `last_message_number` INTEGER;

@@ -40,7 +40,7 @@
  */
 
 import { sql } from 'drizzle-orm';
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { user } from './schema.auth';
 import { collections } from './schema.stash';
 
@@ -242,5 +242,128 @@ export const watchlistJobs = sqliteTable(
      * long. Worker queries `WHERE status='running' AND claimed_at < ?`.
      */
     index('watchlist_jobs_status_claimed_idx').on(t.status, t.claimedAt),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// gdriveWatchChannels — V2-004b-T1
+// ---------------------------------------------------------------------------
+
+/**
+ * Status values for a registered Google Drive `changes.watch` channel.
+ *
+ *   'active'     — channel registered, receiving pushes from Google.
+ *   'refreshing' — refresh in flight (transient state during T3 worker tick).
+ *   'expired'    — expirationMs elapsed before a refresh succeeded.
+ *   'error'      — last refresh / registration failed; see errorReason.
+ */
+export const GDRIVE_CHANNEL_STATUSES = [
+  'active',
+  'refreshing',
+  'expired',
+  'error',
+] as const;
+export type GdriveChannelStatus = (typeof GDRIVE_CHANNEL_STATUSES)[number];
+
+/**
+ * Tracks an active Google Drive push-notification channel registered via
+ * `changes.watch`. One row per subscription that has push enabled.
+ *
+ * Architectural notes (locked in V2-004b design):
+ *
+ *   - Push complements polling: when a push arrives, we kick off a
+ *     watchlist_job bypassing cadence. If push registration fails, the
+ *     subscription falls back to cadence-based polling — identical to V2-004
+ *     behaviour.
+ *
+ *   - One channel per subscription. Channel TTL ≤ 7 days (Google-enforced);
+ *     T3 will own the refresh worker that walks expirationMs.
+ *
+ *   - Auth on the inbound push is by per-channel `token` echoed in
+ *     `X-Goog-Channel-Token`. NOT a cryptographic signature — Google does
+ *     not sign push payloads (per their docs). The token is the mechanism.
+ *     Compared with `crypto.timingSafeEqual` to defend against length /
+ *     equality timing leaks.
+ */
+export const gdriveWatchChannels = sqliteTable(
+  'gdrive_watch_channels',
+  {
+    /** UUID. Generated app-side via `crypto.randomUUID()`. */
+    id: text('id').primaryKey(),
+    /**
+     * FK → watchlist_subscriptions.id. Cascade on subscription delete: when
+     * a subscription is removed, its channel row is removed too. T2/T3 also
+     * issue an unsubscribe call to Google before delete; cascade is the
+     * fail-safe so DB state never lingers.
+     */
+    subscriptionId: text('subscription_id')
+      .notNull()
+      .references(() => watchlistSubscriptions.id, { onDelete: 'cascade' }),
+    /**
+     * Channel id we generated and sent to Google. Echoed back on every push
+     * via `X-Goog-Channel-ID`. Unique across the table — the webhook uses it
+     * to find the row.
+     */
+    channelId: text('channel_id').notNull(),
+    /**
+     * Google's resource id for the watched resource. For `changes.watch`
+     * this is the `startPageToken`-derived id Google returns in the
+     * registration response.
+     */
+    resourceId: text('resource_id').notNull(),
+    /**
+     * Resource type. `'changes'` for the top-level changes feed (V2-004b
+     * default); `'files/{id}'` for per-file watch (future). v2-004b always
+     * uses 'changes'.
+     */
+    resourceType: text('resource_type').notNull(),
+    /**
+     * Public webhook URL we registered with Google. Must be HTTPS in
+     * production — Google rejects http: at registration time. Stored for
+     * audit + so refresh logic can use the same address.
+     */
+    address: text('address').notNull(),
+    /**
+     * Shared secret echoed back on every push via `X-Goog-Channel-Token`.
+     * Random 32 bytes hex. NOT a cryptographic signature — see header. Stored
+     * in plaintext: it's only meaningful in conjunction with the channel id,
+     * has a ≤7-day lifetime, and is not reused across channels.
+     */
+    token: text('token').notNull(),
+    /**
+     * Channel expiration timestamp (Google sets max 7 days from
+     * registration). The refresh worker (T3) queries by this column to find
+     * expiring channels.
+     */
+    expirationMs: integer('expiration_ms', { mode: 'timestamp_ms' }).notNull(),
+    /** Status enum — see GDRIVE_CHANNEL_STATUSES. */
+    status: text('status').notNull(),
+    /** Reason if status='error'. NULL otherwise. */
+    errorReason: text('error_reason'),
+    /** Last time we refreshed (or registered). NULL until first refresh. */
+    refreshedAt: integer('refreshed_at', { mode: 'timestamp_ms' }),
+    /**
+     * V2-004b-T4: highest `X-Goog-Message-Number` we have accepted on this
+     * channel. Google may retry pushes on transient 5xx; we silently drop
+     * any push whose message number is ≤ this value. NULL until the first
+     * accepted push. Updated atomically with the watchlist_job INSERT in a
+     * single transaction so a crash between the two cannot leave a missed
+     * push (the row only advances when the firing was accepted).
+     */
+    lastMessageNumber: integer('last_message_number'),
+    /** ms epoch of channel-row creation. App-side default via unixepoch(). */
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => [
+    /** Subscription lookup (e.g. when a subscription is deleted, find its channel). */
+    index('gdrive_watch_channels_subscription_idx').on(t.subscriptionId),
+    /** Channel lookup on push (webhook receives X-Goog-Channel-ID, looks up the row). */
+    uniqueIndex('gdrive_watch_channels_channel_id_uniq').on(t.channelId),
+    /** Refresh worker query: find expiring channels. */
+    index('gdrive_watch_channels_expiration_idx').on(t.expirationMs),
+    /** Status filter (active channels only). */
+    index('gdrive_watch_channels_status_idx').on(t.status),
   ],
 );

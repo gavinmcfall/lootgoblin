@@ -6,6 +6,9 @@ export async function register() {
     const { startIngestWorker, stopIngestWorker } = await import('./workers/ingest-worker');
     const { startWatchlistScheduler, stopWatchlistScheduler } = await import('./workers/watchlist-scheduler');
     const { startWatchlistWorker, stopWatchlistWorker } = await import('./workers/watchlist-worker');
+    const { startChannelRefreshWorker, stopChannelRefreshWorker } = await import(
+      './workers/gdrive-channel-refresh-worker'
+    );
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -61,6 +64,13 @@ export async function register() {
     // calls SubscribableAdapter.discover(), enqueues child ingest_jobs (which
     // the V2-003 ingest worker then drains).
     startWatchlistWorker();
+    // V2-004b-T3 gdrive channel refresh worker — refreshes
+    // gdrive_watch_channels rows ~2 days before their 7-day TTL elapses.
+    // Runs as a fire-and-forget loop; failures inside the loop are logged
+    // and do not propagate.
+    void startChannelRefreshWorker().catch((err) =>
+      logger.error({ err }, 'gdrive-channel-refresh: loop crashed'),
+    );
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));
@@ -75,6 +85,7 @@ export async function register() {
       stopIngestWorker();
       stopWatchlistScheduler();
       stopWatchlistWorker();
+      stopChannelRefreshWorker();
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));

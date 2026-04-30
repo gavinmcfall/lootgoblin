@@ -1,5 +1,5 @@
 /**
- * types.ts — V2-005d-b T_db1
+ * types.ts — V2-005d-b T_db1 + T_db3
  *
  * Per-model capability data for Bambu Lab LAN-mode printers. Drives UI hints
  * (max AMS slots, bed size, multi-function affordances) and dispatcher
@@ -186,3 +186,59 @@ export const BAMBU_MODEL_CAPABILITIES: Record<BambuLanKind, BambuModelCapability
 export function isBambuLanKind(kind: string): kind is BambuLanKind {
   return (BAMBU_LAN_KINDS as readonly string[]).includes(kind);
 }
+
+// ---------------------------------------------------------------------------
+// T_db3 — credential + connection-config schemas for Bambu LAN dispatcher
+// ---------------------------------------------------------------------------
+
+import { z } from 'zod';
+
+/**
+ * Credential payload for a Bambu LAN printer. The user reads both values from
+ * the printer LCD (Settings → WLAN → LAN Mode):
+ *   - `accessCode` — 8-char alphanumeric LAN access code (used as MQTT and
+ *     FTPS password; printer username is the literal string "bblp").
+ *   - `serial` — printer serial number, used as the MQTT topic prefix:
+ *     `device/<serial>/request`.
+ *
+ * Stored encrypted via apps/server/src/crypto.ts (AES-256-GCM) — never logged.
+ */
+export const BambuLanCredentialPayload = z.object({
+  accessCode: z
+    .string()
+    .min(8)
+    .max(64)
+    .regex(/^[A-Za-z0-9]+$/, 'access code must be alphanumeric'),
+  serial: z.string().min(1).max(64),
+});
+export type BambuLanCredentialPayloadT = z.infer<typeof BambuLanCredentialPayload>;
+
+/**
+ * Per-printer connection-config stored on `printers.connectionConfig`. Bed
+ * type and calibration toggles map 1:1 onto the MQTT `print.project_file`
+ * payload fields the Bambu firmware expects.
+ */
+export const BambuLanConnectionConfig = z.object({
+  ip: z.string().min(1),
+  mqttPort: z.number().int().positive().default(8883),
+  ftpPort: z.number().int().positive().default(990),
+  startPrint: z.boolean().default(true),
+  forceAmsDisabled: z.boolean().default(false),
+  plateIndex: z.number().int().positive().default(1),
+  bedLevelling: z.boolean().default(true),
+  flowCalibration: z.boolean().default(true),
+  vibrationCalibration: z.boolean().default(true),
+  layerInspect: z.boolean().default(false),
+  timelapse: z.boolean().default(false),
+  bedType: z
+    .enum([
+      'auto',
+      'cool_plate',
+      'engineering_plate',
+      'high_temp_plate',
+      'textured_pei_plate',
+      'pei_plate',
+    ])
+    .default('auto'),
+});
+export type BambuLanConnectionConfigT = z.infer<typeof BambuLanConnectionConfig>;

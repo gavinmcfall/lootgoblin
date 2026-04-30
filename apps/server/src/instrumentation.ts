@@ -106,8 +106,12 @@ export async function register() {
       const { createMoonrakerHandler } = await import(
         './forge/dispatch/moonraker/adapter'
       );
+      const { createOctoprintHandler } = await import(
+        './forge/dispatch/octoprint/adapter'
+      );
       const dispatchRegistry = getDefaultRegistry();
       dispatchRegistry.register(createMoonrakerHandler());
+      dispatchRegistry.register(createOctoprintHandler());
       logger.info(
         { kinds: dispatchRegistry.list().map((h) => h.kind) },
         'forge.dispatch: handlers registered',

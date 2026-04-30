@@ -4,8 +4,9 @@
  * Coverage:
  *   runOneClaimTick:
  *     1.  No claimable jobs → 'idle'
- *     2.  Claimable printer-target + central reachable → claimed → dispatched →
- *         completed (default stub handler)
+ *     2.  Claimable printer-target + central reachable → claimed → dispatched
+ *         (default stub handler; V2-005d-a SD-Q3: worker rests at 'dispatched';
+ *         V2-005f closes dispatched → completed via real status events)
  *     3.  Claimable printer-target where central NOT in reachable_via → 'idle'
  *         (reachability filter holds the row out of the candidate set)
  *     4.  Slicer-target job → always claimed by central (no reachability check)
@@ -32,6 +33,8 @@ import {
   it,
   expect,
   beforeAll,
+  beforeEach,
+  afterAll,
   afterEach,
 } from 'vitest';
 import * as fs from 'node:fs';
@@ -43,6 +46,11 @@ import { eq } from 'drizzle-orm';
 import { runMigrations, resetDbCache, getDb, schema } from '../../src/db/client';
 import { bootstrapCentralWorker } from '../../src/forge/agent-bootstrap';
 import { createDispatchJob } from '../../src/forge/dispatch-jobs';
+import { getDefaultRegistry } from '../../src/forge/dispatch/registry';
+import type {
+  DispatchHandler,
+  DispatchOutcome,
+} from '../../src/forge/dispatch/handler';
 
 const DB_PATH = '/tmp/lootgoblin-forge-claim-worker.db';
 const DB_URL = `file:${DB_PATH}`;
@@ -147,6 +155,39 @@ async function seedReachableVia(printerId: string, agentId: string): Promise<voi
   });
 }
 
+/**
+ * Seed a forge_artifacts row tied to the dispatch job. The new T_da6 default
+ * dispatcher requires this row before it will hand off to a printer-target
+ * DispatchHandler.
+ */
+async function seedArtifactForJob(jobId: string): Promise<void> {
+  await db().insert(schema.forgeArtifacts).values({
+    id: uid(),
+    dispatchJobId: jobId,
+    kind: 'gcode',
+    storagePath: `/tmp/lootgoblin-fcw-artifact-${jobId}.gcode`,
+    sizeBytes: 1024,
+    sha256: 'a'.repeat(64),
+    mimeType: 'text/x.gcode',
+    metadataJson: null,
+    createdAt: new Date(),
+  });
+}
+
+/**
+ * Build a stub DispatchHandler that returns a fixed success outcome for
+ * `fdm_klipper`. Used by existing tests that exercise the default dispatcher
+ * without wanting to hit the real Moonraker adapter.
+ */
+function stubSuccessHandler(): DispatchHandler {
+  return {
+    kind: 'fdm_klipper',
+    async dispatch(): Promise<DispatchOutcome> {
+      return { kind: 'success', remoteFilename: 'stub.gcode' };
+    },
+  };
+}
+
 async function seedAuxiliaryAgent(): Promise<string> {
   const id = uid();
   await db().insert(schema.agents).values({
@@ -219,8 +260,18 @@ beforeAll(async () => {
   await runMigrations(DB_URL);
 }, 30_000);
 
+beforeEach(() => {
+  // Process-singleton registry — clear between tests to keep isolation.
+  // T_da6's default dispatcher reads from this registry; stale handlers from
+  // a prior case would otherwise leak across tests.
+  getDefaultRegistry().clear();
+});
+
 afterEach(async () => {
   // Order matters for FK cascade.
+  // forge_artifacts CASCADE off dispatch_jobs but explicit delete is cheap and
+  // documents intent; do it before dispatch_jobs to be safe with PRAGMA settings.
+  await db().delete(schema.forgeArtifacts);
   await db().delete(schema.dispatchJobs);
   await db().delete(schema.printerReachableVia);
   await db().delete(schema.printers);
@@ -230,6 +281,12 @@ afterEach(async () => {
   await db().delete(schema.collections);
   await db().delete(schema.stashRoots);
   await db().delete(schema.user);
+});
+
+afterAll(() => {
+  // Defensive — leave the registry empty for any other test files that import
+  // workers in the same process.
+  getDefaultRegistry().clear();
 });
 
 // ===========================================================================
@@ -249,7 +306,7 @@ describe('runOneClaimTick — V2-005a-T4', () => {
     expect(result).toBe('idle');
   });
 
-  it('2. printer-target reachable by central → claimed → dispatched → completed', async () => {
+  it('2. printer-target reachable by central → claimed → dispatched (success rests there)', async () => {
     const fx = await buildBaseFixture();
     await seedReachableVia(fx.printerId, fx.centralAgentId);
     const jobId = await newClaimableJob({
@@ -258,6 +315,9 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       targetKind: 'printer',
       targetId: fx.printerId,
     });
+    // T_da6: default dispatcher requires registered handler + forge_artifact.
+    await seedArtifactForJob(jobId);
+    getDefaultRegistry().register(stubSuccessHandler());
 
     const { runOneClaimTick } = await import(
       '../../src/workers/forge-claim-worker'
@@ -273,11 +333,13 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, jobId));
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.status).toBe('completed');
+    // V2-005d-a (SD-Q3): worker stops at 'dispatched' on success.
+    // V2-005f closes dispatched → completed via real printer status events.
+    expect(rows[0]!.status).toBe('dispatched');
     expect(rows[0]!.claimMarker).toBe(fx.centralAgentId);
     expect(rows[0]!.claimedAt).not.toBeNull();
     expect(rows[0]!.startedAt).not.toBeNull();
-    expect(rows[0]!.completedAt).not.toBeNull();
+    expect(rows[0]!.completedAt).toBeNull();
   });
 
   it('3. printer-target not in reachable_via → idle (filtered out)', async () => {
@@ -332,7 +394,8 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, jobId));
-    expect(rows[0]!.status).toBe('completed');
+    // V2-005d-a (SD-Q3): worker rests at 'dispatched' on success.
+    expect(rows[0]!.status).toBe('dispatched');
   });
 
   it('5. handler returns ok=false → row marked failed with handler reason', async () => {
@@ -413,8 +476,9 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       '../../src/workers/forge-claim-worker'
     );
     // Slow handler to widen the race window. The first tick that wins markClaimed
-    // takes the row through to completed; the loser sees status='claimed' or
-    // 'completed' on its candidate fetch and returns 'idle'.
+    // takes the row through to 'dispatched'; the loser sees status='claimed' or
+    // 'dispatched' on its candidate fetch and returns 'idle'.
+    // (V2-005d-a SD-Q3: worker stops at 'dispatched'; V2-005f closes to 'completed'.)
     const handler = async () => {
       await new Promise((r) => setTimeout(r, 50));
       return { ok: true } as const;
@@ -438,7 +502,7 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, jobId));
-    expect(rows[0]!.status).toBe('completed');
+    expect(rows[0]!.status).toBe('dispatched');
   });
 });
 
@@ -587,6 +651,11 @@ describe('startForgeClaimWorker — V2-005a-T4', () => {
       targetKind: 'printer',
       targetId: fx.printerId,
     });
+    // T_da6: default dispatcher requires registered handler + forge_artifact
+    // for the printer-target job. The stale slicer-target row uses the
+    // slicer-stub path and needs neither.
+    await seedArtifactForJob(dueJobId);
+    getDefaultRegistry().register(stubSuccessHandler());
 
     const { startForgeClaimWorker, stopForgeClaimWorker } = await import(
       '../../src/workers/forge-claim-worker'
@@ -612,19 +681,20 @@ describe('startForgeClaimWorker — V2-005a-T4', () => {
 
     // Recovery: stale row was reset to claimable on startup, then the live
     // claim loop picked it up (since it's slicer-target and central-reachable
-    // by definition) and drove it to 'completed'.
+    // by definition) and drove it to 'dispatched' (V2-005d-a SD-Q3: worker
+    // rests at 'dispatched'; V2-005f closes to 'completed' via status events).
     const stale = await db()
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, staleJobId));
-    expect(stale[0]!.status).toBe('completed');
+    expect(stale[0]!.status).toBe('dispatched');
 
-    // Due printer-target row should also be completed by the loop.
+    // Due printer-target row should also be at 'dispatched' after the loop.
     const due = await db()
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, dueJobId));
-    expect(due[0]!.status).toBe('completed');
+    expect(due[0]!.status).toBe('dispatched');
   });
 });
 
@@ -664,5 +734,162 @@ describe('dispatchHandler input shape — V2-005a-T4', () => {
       lootId: fx.lootId,
       ownerId: fx.ownerId,
     });
+  });
+});
+
+// ===========================================================================
+// V2-005d-a T_da6 — registry-backed default dispatcher
+// ===========================================================================
+
+describe('default dispatcher (registry-backed) — V2-005d-a T_da6', () => {
+  it('13. no handler registered for printer.kind → markFailed unsupported-format', async () => {
+    const fx = await buildBaseFixture();
+    await seedReachableVia(fx.printerId, fx.centralAgentId);
+    // Mutate the printer's kind to something the registry will not have.
+    await db()
+      .update(schema.printers)
+      .set({ kind: 'unknown_kind' })
+      .where(eq(schema.printers.id, fx.printerId));
+    const jobId = await newClaimableJob({
+      ownerId: fx.ownerId,
+      lootId: fx.lootId,
+      targetKind: 'printer',
+      targetId: fx.printerId,
+    });
+    await seedArtifactForJob(jobId);
+    // Registry intentionally empty (cleared in beforeEach).
+
+    const { runOneClaimTick } = await import(
+      '../../src/workers/forge-claim-worker'
+    );
+    const result = await runOneClaimTick({
+      agentId: fx.centralAgentId,
+      dbUrl: DB_URL,
+    });
+    expect(result).toBe('ran');
+
+    const rows = await db()
+      .select()
+      .from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, jobId));
+    expect(rows[0]!.status).toBe('failed');
+    // 'unsupported-protocol' (adapter) → 'unsupported-format' (schema).
+    expect(rows[0]!.failureReason).toBe('unsupported-format');
+    expect(rows[0]!.failureDetails).toContain(
+      'no handler registered for printer.kind=unknown_kind',
+    );
+  });
+
+  it('14. registered handler returns success → row reaches dispatched', async () => {
+    const fx = await buildBaseFixture();
+    await seedReachableVia(fx.printerId, fx.centralAgentId);
+    const jobId = await newClaimableJob({
+      ownerId: fx.ownerId,
+      lootId: fx.lootId,
+      targetKind: 'printer',
+      targetId: fx.printerId,
+    });
+    await seedArtifactForJob(jobId);
+
+    let calledWith: { jobId?: string; printerKind?: string } = {};
+    getDefaultRegistry().register({
+      kind: 'fdm_klipper',
+      async dispatch(ctx): Promise<DispatchOutcome> {
+        calledWith = { jobId: ctx.job.id, printerKind: ctx.printer.kind };
+        return { kind: 'success', remoteFilename: 'cube.gcode' };
+      },
+    });
+
+    const { runOneClaimTick } = await import(
+      '../../src/workers/forge-claim-worker'
+    );
+    const result = await runOneClaimTick({
+      agentId: fx.centralAgentId,
+      dbUrl: DB_URL,
+    });
+    expect(result).toBe('ran');
+    expect(calledWith.jobId).toBe(jobId);
+    expect(calledWith.printerKind).toBe('fdm_klipper');
+
+    const rows = await db()
+      .select()
+      .from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, jobId));
+    // The claim worker drives claimed → dispatched and STOPS there on
+    // ok=true (V2-005d-a SD-Q3); V2-005f closes dispatched → completed via
+    // real printer status events.
+    expect(rows[0]!.status).toBe('dispatched');
+  });
+
+  it('15. registered handler returns failure unreachable → mapped reason + raw details preserved', async () => {
+    const fx = await buildBaseFixture();
+    await seedReachableVia(fx.printerId, fx.centralAgentId);
+    const jobId = await newClaimableJob({
+      ownerId: fx.ownerId,
+      lootId: fx.lootId,
+      targetKind: 'printer',
+      targetId: fx.printerId,
+    });
+    await seedArtifactForJob(jobId);
+
+    getDefaultRegistry().register({
+      kind: 'fdm_klipper',
+      async dispatch(): Promise<DispatchOutcome> {
+        return {
+          kind: 'failure',
+          reason: 'unreachable',
+          details: 'ECONNREFUSED 1.2.3.4:7125',
+        };
+      },
+    });
+
+    const { runOneClaimTick } = await import(
+      '../../src/workers/forge-claim-worker'
+    );
+    const result = await runOneClaimTick({
+      agentId: fx.centralAgentId,
+      dbUrl: DB_URL,
+    });
+    expect(result).toBe('ran');
+
+    const rows = await db()
+      .select()
+      .from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, jobId));
+    expect(rows[0]!.status).toBe('failed');
+    expect(rows[0]!.failureReason).toBe('unreachable');
+    expect(rows[0]!.failureDetails).toBe('ECONNREFUSED 1.2.3.4:7125');
+  });
+
+  it('16. no forge_artifact row for printer-target job → markFailed', async () => {
+    const fx = await buildBaseFixture();
+    await seedReachableVia(fx.printerId, fx.centralAgentId);
+    // Register a handler so the no-handler short-circuit doesn't fire — we
+    // want to verify the artifact-missing branch specifically.
+    getDefaultRegistry().register(stubSuccessHandler());
+    const jobId = await newClaimableJob({
+      ownerId: fx.ownerId,
+      lootId: fx.lootId,
+      targetKind: 'printer',
+      targetId: fx.printerId,
+    });
+    // Deliberately NOT seeding a forge_artifacts row.
+
+    const { runOneClaimTick } = await import(
+      '../../src/workers/forge-claim-worker'
+    );
+    const result = await runOneClaimTick({
+      agentId: fx.centralAgentId,
+      dbUrl: DB_URL,
+    });
+    expect(result).toBe('ran');
+
+    const rows = await db()
+      .select()
+      .from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, jobId));
+    expect(rows[0]!.status).toBe('failed');
+    expect(rows[0]!.failureReason).toBe('unknown');
+    expect(rows[0]!.failureDetails).toContain('no forge_artifact');
   });
 });

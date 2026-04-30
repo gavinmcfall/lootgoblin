@@ -114,3 +114,70 @@ Concurrency is `1` by default (slicing is CPU-bound and minutes-scale). Override
 ### Known limitation — slicer profile selection
 
 `dispatch_jobs` does not currently carry a `slicer_profile_id` column. For the V2-005c MVP the worker picks the user's first `slicer_profiles` row (oldest by `created_at`). A future plan threads explicit profile selection through the dispatch route. Until then, multi-profile users should treat their oldest profile as the default.
+
+## V2-005d-a: Moonraker (Klipper) dispatcher
+
+### Configure a Klipper-based printer
+
+1. POST /api/v1/forge/printers
+   ```json
+   {
+     "kind": "fdm_klipper",
+     "name": "Voron 2.4",
+     "connectionConfig": {
+       "host": "voron.lan",
+       "port": 7125,
+       "scheme": "http",
+       "startPrint": true,
+       "requiresAuth": true
+     }
+   }
+   ```
+2. POST /api/v1/forge/printers/:id/credentials
+   ```json
+   {
+     "kind": "moonraker_api_key",
+     "payload": { "apiKey": "<from Moonraker /access/api_key endpoint>" },
+     "label": "Voron API key"
+   }
+   ```
+
+### Connection config fields
+
+- `host` (required) — printer hostname or IP
+- `port` (default `7125`) — Moonraker port
+- `scheme` (default `'http'`)
+- `startPrint` (default `true`) — issue print start after upload (multipart `print=true`)
+- `requiresAuth` (default `true`) — set `false` for trusted-IP setups (no `X-Api-Key` header sent)
+
+### Security
+
+Credentials are encrypted at rest with AES-256-GCM via `LOOTGOBLIN_SECRET`. The credential plaintext NEVER crosses the API surface — `GET /api/v1/forge/printers/:id/credentials` returns metadata only (`kind`, `label`, `lastUsedAt`).
+
+ACL: per-printer credentials are owner-only. Admins do NOT bypass printer ACL — printers are personal devices in this consent model. To re-key an abandoned printer, delete and recreate the printer row (admin or new owner).
+
+### Failure reasons surfaced on `dispatch_jobs.failure_reason`
+
+| Adapter reason | Schema reason | Meaning |
+|---|---|---|
+| `unreachable` | `unreachable` | Network refused / unresolvable host |
+| `auth-failed` | `auth-failed` | 401/403 from Moonraker (wrong API key) |
+| `rejected` | `target-rejected` | 4xx with file rejected (mesh issue, permission) |
+| `timeout` | `unreachable` | 60s upload timeout exceeded |
+| `no-credentials` | `auth-failed` | `requiresAuth=true` but no creds row for printer |
+| `unsupported-protocol` | `unsupported-format` | `printer.kind` has no registered handler |
+| `unknown` | `unknown` | Catch-all (misconfig, decryption failure, etc.) |
+
+The original adapter reason is preserved verbatim in `dispatch_jobs.failure_details` for diagnostic use.
+
+### Real-printer smoke test
+
+`apps/server/tests/integration/forge-moonraker-real.test.ts` skips unless these env vars are set:
+
+```
+LG_TEST_MOONRAKER_HOST=voron.lan
+LG_TEST_MOONRAKER_API_KEY=<from /access/api_key>
+LG_TEST_MOONRAKER_PORT=7125  # optional, default 7125
+```
+
+Operator runs `npx vitest run tests/integration/forge-moonraker-real.test.ts` with env vars set to validate against a real Klipper instance. Test uploads a no-op gcode (G28 + M84) with `startPrint=false`. Skipped in CI.

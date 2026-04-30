@@ -109,9 +109,27 @@ export async function register() {
       const { createOctoprintHandler } = await import(
         './forge/dispatch/octoprint/adapter'
       );
+      const { createBambuLanHandler } = await import(
+        './forge/dispatch/bambu/adapter'
+      );
+      const { BAMBU_LAN_KINDS } = await import('./forge/dispatch/bambu/types');
       const dispatchRegistry = getDefaultRegistry();
       dispatchRegistry.register(createMoonrakerHandler());
       dispatchRegistry.register(createOctoprintHandler());
+      // V2-005d-b-T_db4: register the Bambu LAN handler against all 13 per-model
+      // kinds. One adapter, one dispatch logic, 13 registry entries — operator
+      // UI distinguishes printer models (BAMBU_MODEL_CAPABILITIES) but the
+      // dispatch path converges on a single MQTT+FTPS implementation. The
+      // adapter exposes a sentinel kind ('fdm_bambu_lan') internally; we wrap
+      // it once per per-model kind so registry routing works without the
+      // worker needing protocol knowledge.
+      const bambuHandler = createBambuLanHandler();
+      for (const kind of BAMBU_LAN_KINDS) {
+        dispatchRegistry.register({
+          kind,
+          dispatch: bambuHandler.dispatch.bind(bambuHandler),
+        });
+      }
       logger.info(
         { kinds: dispatchRegistry.list().map((h) => h.kind) },
         'forge.dispatch: handlers registered',

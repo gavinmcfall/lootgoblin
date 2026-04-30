@@ -257,3 +257,128 @@ LG_TEST_OCTOPRINT_SCHEME=http      # optional, default http
 ```
 
 Operator runs `npx vitest run tests/integration/forge-octoprint-real.test.ts` to validate against a real OctoPrint instance. Test uploads a no-op gcode (G28 + M84) with `select=false, startPrint=false`. Skipped in CI.
+
+## V2-005d-b: Bambu LAN dispatcher
+
+### One-time printer setup (REQUIRED)
+
+Before lootgoblin can dispatch to a Bambu printer:
+
+1. On the printer screen: **Settings → WLAN → LAN Mode** — toggle ON
+2. **Settings → WLAN → LAN Mode → Developer Mode** — toggle ON ⚠️ **REQUIRED for firmware 01.08+**
+3. Note the **Access Code** (8-character alphanumeric) and **Serial Number** shown on this screen
+
+Without Developer Mode, firmware 01.08+ rejects MQTT print commands with "Connection refused: Not authorized" — the file uploads via FTP but the print never starts.
+
+Required firmware versions for Developer Mode:
+- X1C / X1E: ≥01.08.03.00
+- P1S / P1P: ≥01.08.02.00
+- A1 / A1 mini: ≥01.05.00.00
+- H2 series + X2D + P2S: any current firmware (post-launch)
+
+### Cloud co-existence
+
+LAN mode does NOT replace cloud mode. The printer continues to talk to Bambu cloud — your Bambu Handy app keeps working unchanged. lootgoblin dispatches via the LAN side; cloud monitoring (video stream, remote status in lootgoblin's UI) is a separate future feature.
+
+### Configure a Bambu printer in lootgoblin
+
+1. POST /api/v1/forge/printers
+   ```json
+   {
+     "kind": "bambu_h2c",
+     "name": "Workshop H2C",
+     "connectionConfig": {
+       "ip": "192.168.1.42",
+       "mqttPort": 8883,
+       "ftpPort": 990,
+       "startPrint": true,
+       "forceAmsDisabled": false,
+       "plateIndex": 1,
+       "bedType": "auto",
+       "bedLevelling": true,
+       "flowCalibration": true,
+       "vibrationCalibration": true,
+       "layerInspect": false,
+       "timelapse": false
+     }
+   }
+   ```
+
+   **Supported kinds** (one per Bambu printer model):
+   - **H2 series** (multi-function): `bambu_h2d`, `bambu_h2d_pro`, `bambu_h2c`, `bambu_h2s`
+   - **X series**: `bambu_x2d`
+   - **P series**: `bambu_p2s`, `bambu_p1s`, `bambu_p1p`
+   - **A series**: `bambu_a1`, `bambu_a1_mini`
+   - **X1 series** (EOL 2026-03-31, still supported): `bambu_x1c`, `bambu_x1e`, `bambu_x1`
+
+2. POST /api/v1/forge/printers/:id/credentials
+   ```json
+   {
+     "kind": "bambu_lan",
+     "payload": {
+       "accessCode": "<from printer screen>",
+       "serial": "<from printer screen>"
+     },
+     "label": "Workshop H2C"
+   }
+   ```
+
+### Connection config fields
+
+- `ip` (required) — printer IP on the LAN
+- `mqttPort` (default 8883) — Bambu MQTT broker port
+- `ftpPort` (default 990) — Bambu FTPS port (implicit TLS)
+- `startPrint` (default true) — issue print start after upload
+- `forceAmsDisabled` (default false) — disable AMS even if the .gcode.3mf has AMS metadata. Useful for single-color prints loaded into AMS slot 1.
+- `plateIndex` (default 1) — which plate inside a multi-plate 3MF to print. Multi-plate 3MFs are V2-005d-b-CF-2 carry-forward; current default is 1.
+- `bedType` (default 'auto') — overrides the build-plate type. Options: `auto`, `cool_plate`, `engineering_plate`, `high_temp_plate`, `textured_pei_plate`, `pei_plate`.
+- `bedLevelling` (default true) — re-level the bed before printing (recommended).
+- `flowCalibration` (default true) — flow rate calibration (recommended for new filament).
+- `vibrationCalibration` (default true) — vibration calibration (recommended for first print on a new printer or after maintenance).
+- `layerInspect` (default false) — AI-driven layer inspection (X1 series only; ignored on others).
+- `timelapse` (default false) — record a timelapse during printing.
+
+### File format
+
+V2-005d-b accepts `.gcode.3mf` (or `.3mf`) produced by Bambu Studio (V2-005c). Plain `.gcode` is rejected — Bambu printers need the 3MF wrapper for AMS metadata, thumbnails, and slicer settings.
+
+### AMS support
+
+If the .gcode.3mf was sliced with AMS enabled in Bambu Studio, the adapter auto-extracts the slot mapping from `Metadata/slice_info.config` and passes it through to the printer. To force AMS off (e.g., loading a single color into AMS slot 1 and printing single-color), set `forceAmsDisabled: true` in connection-config.
+
+### Security
+
+Bambu printers self-sign their TLS certs for LAN mode. Both MQTT (port 8883) and FTPS (port 990) connections use `rejectUnauthorized: false`. This is universal community practice for Bambu LAN integrations. Acceptable for trusted home/office LAN; do NOT expose Bambu LAN ports to the internet.
+
+Credentials encrypted at rest with AES-256-GCM via `LOOTGOBLIN_SECRET`. The credential plaintext NEVER crosses the API surface — `GET /api/v1/forge/printers/:id/credentials` returns metadata only (kind, label, lastUsedAt).
+
+ACL: per-printer credentials are owner-only. Admins do NOT bypass printer ACL.
+
+### Failure reasons surfaced on `dispatch_jobs.failure_reason`
+
+| Adapter reason | Schema reason | Bambu-specific |
+|---|---|---|
+| `unreachable` | `unreachable` | Network refused / unresolvable; check printer IP, ensure on same LAN |
+| `auth-failed` | `auth-failed` | Most common: (1) wrong access code, OR (2) **Developer Mode not enabled** — see one-time setup above |
+| `rejected` | `target-rejected` | File rejected — wrong format (need .gcode.3mf), corrupt 3MF, disk full |
+| `timeout` | `unreachable` | 90s upload timeout |
+| `no-credentials` | `auth-failed` | No credentials row for this printer |
+| `unsupported-protocol` | `unsupported-format` | `printer.kind` has no registered handler |
+| `unknown` | `unknown` | Catch-all (misconfig, decryption failure, MQTT publish error) |
+
+The original adapter reason is preserved verbatim in `dispatch_jobs.failure_details`.
+
+### Real-printer smoke test
+
+`apps/server/tests/integration/forge-bambu-real.test.ts` skips unless these env vars are set:
+
+```
+LG_TEST_BAMBU_IP=192.168.1.42
+LG_TEST_BAMBU_ACCESS_CODE=<from printer screen>
+LG_TEST_BAMBU_SERIAL=<from printer screen>
+LG_TEST_BAMBU_KIND=bambu_p1s          # optional, default bambu_p1s
+LG_TEST_BAMBU_MQTT_PORT=8883          # optional, default 8883
+LG_TEST_BAMBU_FTP_PORT=990            # optional, default 990
+```
+
+Operator runs `npx vitest run tests/integration/forge-bambu-real.test.ts` to validate against a real Bambu printer. Test uploads a tiny no-op gcode (G28 + M84) wrapped in a single-color `.gcode.3mf` to `/cache/` with `startPrint=false`. Skipped in CI.

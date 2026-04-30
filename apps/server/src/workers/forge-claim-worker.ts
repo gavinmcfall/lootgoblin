@@ -18,9 +18,11 @@
  *
  *   3. claimed → dispatched via markDispatched.
  *
- *   4. Run the dispatchHandler. T4 ships a stub that just logs + returns
- *      ok:true; V2-005d (printer dispatchers) and V2-005e (slicer dispatcher)
- *      replace the stub via dependency injection.
+ *   4. Run the dispatchHandler. The default routes printer-target jobs through
+ *      the DispatchHandlerRegistry (V2-005d-a T_da6); slicer-target jobs use
+ *      a stub-success path until V2-005e replaces it. Tests can inject a custom
+ *      `dispatchHandler` via `runOneClaimTick({ dispatchHandler })` to override
+ *      both paths.
  *
  *   5. dispatched → completed (handler.ok) | failed (handler.ok=false or threw).
  *
@@ -61,6 +63,13 @@ import {
   type DispatchFailureReason,
   type DispatchTargetKind,
 } from '../db/schema.forge';
+import {
+  getDefaultRegistry,
+  type DispatchHandlerRegistry,
+} from '../forge/dispatch/registry';
+import { getCredential } from '../forge/dispatch/credentials';
+import { mapAdapterReasonToSchema } from '../forge/dispatch/failure-reason-map';
+import type { DispatchContext } from '../forge/dispatch/handler';
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -123,19 +132,205 @@ async function getCentralWorkerAgentId(dbUrl?: string): Promise<string> {
 }
 
 /**
- * Default stub dispatcher. T4 doesn't ship real adapters — V2-005d (printer
- * dispatchers) and V2-005e (slicer dispatcher) inject real handlers. The
- * stub logs + returns ok so the full claim-loop pipeline is exercised end-
- * to-end in tests without needing real printer/slicer integrations.
+ * Default registry-backed dispatcher (V2-005d-a T_da6).
+ *
+ * Routes per-job by `targetKind`:
+ *   - 'printer' → look up DispatchHandler by `printers.kind` in the
+ *     DispatchHandlerRegistry, build a DispatchContext, call handler.dispatch,
+ *     translate DispatchOutcome → DispatchHandlerResult.
+ *   - 'slicer'  → stub-success (V2-005e replaces this with the slicer
+ *     dispatcher).
+ *
+ * Tests that want to exercise the legacy stub-success path for printer-target
+ * jobs can either:
+ *   1. Inject a custom `dispatchHandler` via runOneClaimTick({ dispatchHandler })
+ *      — the override skips the registry entirely.
+ *   2. Pre-register a stub handler in the registry under the relevant
+ *      `printer.kind`.
  */
-async function defaultStubDispatchHandler(
-  input: DispatchHandlerInput,
-): Promise<DispatchHandlerResult> {
-  logger.info(
-    { jobId: input.jobId, targetKind: input.targetKind, targetId: input.targetId },
-    'forge-claim: stub dispatcher — real dispatcher not yet implemented (V2-005d/e)',
-  );
-  return { ok: true };
+function makeRegistryBackedDispatchHandler(args: {
+  registry: DispatchHandlerRegistry;
+  dbUrl?: string;
+}): DispatchHandler {
+  return async (input) => {
+    if (input.targetKind === 'slicer') {
+      // V2-005e replaces this. The slicer dispatcher will translate the
+      // dispatch_job into a slicer-open URL handoff and confirm completion.
+      logger.info(
+        { jobId: input.jobId, targetId: input.targetId },
+        'forge-claim: slicer-target stub dispatcher — V2-005e not yet implemented',
+      );
+      return { ok: true };
+    }
+
+    // targetKind === 'printer'.
+    const printer = await loadPrinterForJob(input.targetId, args.dbUrl);
+    if (!printer) {
+      return {
+        ok: false,
+        reason: 'unknown',
+        details: `printer row not found for targetId=${input.targetId}`,
+      };
+    }
+
+    const handler = args.registry.get(printer.kind);
+    if (!handler) {
+      logger.warn(
+        { jobId: input.jobId, printerKind: printer.kind },
+        'forge-claim: no DispatchHandler registered for printer.kind',
+      );
+      return {
+        ok: false,
+        reason: mapAdapterReasonToSchema('unsupported-protocol'),
+        details: `no handler registered for printer.kind=${printer.kind}`,
+      };
+    }
+
+    const artifact = await loadArtifactForJob(input.jobId, args.dbUrl);
+    if (!artifact) {
+      return {
+        ok: false,
+        reason: mapAdapterReasonToSchema('unknown'),
+        details: 'no forge_artifact found for dispatch job',
+      };
+    }
+
+    // Decrypt credential (NULL when no row exists). Encryption key sourced from
+    // LOOTGOBLIN_SECRET; failures here propagate as 'unknown' so the row goes
+    // to a terminal failed state instead of looping forever.
+    let credential;
+    try {
+      credential = getCredential({ printerId: printer.id, dbUrl: args.dbUrl });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        { jobId: input.jobId, printerId: printer.id },
+        'forge-claim: getCredential threw — treating as no-credentials',
+      );
+      return {
+        ok: false,
+        reason: mapAdapterReasonToSchema('unknown'),
+        details: `credential decryption failed: ${msg}`,
+      };
+    }
+
+    const ctx: DispatchContext = {
+      job: {
+        id: input.jobId,
+        ownerId: input.ownerId,
+        targetId: input.targetId,
+      },
+      printer: {
+        id: printer.id,
+        ownerId: printer.ownerId,
+        kind: printer.kind,
+        connectionConfig:
+          typeof printer.connectionConfig === 'string'
+            ? (JSON.parse(printer.connectionConfig) as Record<string, unknown>)
+            : (printer.connectionConfig as Record<string, unknown>),
+      },
+      artifact: {
+        storagePath: artifact.storagePath,
+        sizeBytes: artifact.sizeBytes,
+        sha256: artifact.sha256,
+      },
+      credential,
+      // Production HttpClient. globalThis.fetch loses `this` if called bare on
+      // some Node versions — bind defensively.
+      http: { fetch: globalThis.fetch.bind(globalThis) },
+      logger: logger.child({
+        jobId: input.jobId,
+        printerId: printer.id,
+        printerKind: printer.kind,
+      }),
+    };
+
+    const outcome = await handler.dispatch(ctx);
+    if (outcome.kind === 'success') {
+      logger.info(
+        {
+          jobId: input.jobId,
+          printerId: printer.id,
+          remoteFilename: outcome.remoteFilename,
+        },
+        'forge-claim: dispatch succeeded',
+      );
+      return { ok: true };
+    }
+
+    const schemaReason = mapAdapterReasonToSchema(outcome.reason);
+    logger.warn(
+      {
+        jobId: input.jobId,
+        printerId: printer.id,
+        adapterReason: outcome.reason,
+        schemaReason,
+      },
+      'forge-claim: dispatch failed',
+    );
+    return {
+      ok: false,
+      reason: schemaReason,
+      // Preserve the raw adapter reason in details for forensic inspection.
+      details: outcome.details ?? outcome.reason,
+    };
+  };
+}
+
+/** Convenience accessor used by `runOneClaimTick` when no handler is injected. */
+function defaultDispatchHandler(dbUrl?: string): DispatchHandler {
+  return makeRegistryBackedDispatchHandler({
+    registry: getDefaultRegistry(),
+    dbUrl,
+  });
+}
+
+interface PrinterRow {
+  id: string;
+  ownerId: string;
+  kind: string;
+  connectionConfig: unknown;
+}
+
+async function loadPrinterForJob(
+  printerId: string,
+  dbUrl?: string,
+): Promise<PrinterRow | null> {
+  const db = getServerDb(dbUrl);
+  const rows = await db
+    .select({
+      id: schema.printers.id,
+      ownerId: schema.printers.ownerId,
+      kind: schema.printers.kind,
+      connectionConfig: schema.printers.connectionConfig,
+    })
+    .from(schema.printers)
+    .where(eq(schema.printers.id, printerId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+interface ArtifactRow {
+  storagePath: string;
+  sizeBytes: number;
+  sha256: string;
+}
+
+async function loadArtifactForJob(
+  jobId: string,
+  dbUrl?: string,
+): Promise<ArtifactRow | null> {
+  const db = getServerDb(dbUrl);
+  const rows = await db
+    .select({
+      storagePath: schema.forgeArtifacts.storagePath,
+      sizeBytes: schema.forgeArtifacts.sizeBytes,
+      sha256: schema.forgeArtifacts.sha256,
+    })
+    .from(schema.forgeArtifacts)
+    .where(eq(schema.forgeArtifacts.dispatchJobId, jobId))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 interface ClaimableCandidate {
@@ -255,7 +450,7 @@ export async function runOneClaimTick(opts: {
   dbUrl?: string;
 } = {}): Promise<'ran' | 'idle' | 'errored'> {
   const agentId = opts.agentId ?? (await getCentralWorkerAgentId(opts.dbUrl));
-  const handler = opts.dispatchHandler ?? defaultStubDispatchHandler;
+  const handler = opts.dispatchHandler ?? defaultDispatchHandler(opts.dbUrl);
 
   const candidate = await findClaimableCandidate(agentId, opts.dbUrl);
   if (!candidate) return 'idle';
@@ -447,7 +642,7 @@ export async function startForgeClaimWorker(opts: {
   const claimTimeoutMs =
     opts.claimTimeoutMs ??
     Number(process.env.WORKER_FORGE_CLAIM_TIMEOUT_MS ?? DEFAULT_CLAIM_TIMEOUT_MS);
-  const handler = opts.dispatchHandler ?? defaultStubDispatchHandler;
+  const handler = opts.dispatchHandler ?? defaultDispatchHandler(opts.dbUrl);
 
   // Resolve the agent id once at startup so per-tick lookups are cheap.
   let agentId: string;

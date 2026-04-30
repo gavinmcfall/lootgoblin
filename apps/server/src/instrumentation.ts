@@ -96,9 +96,29 @@ export async function register() {
     void startChannelRefreshWorker().catch((err) =>
       logger.error({ err }, 'gdrive-channel-refresh: loop crashed'),
     );
+    // V2-005d-a-T_da6 — register protocol-specific DispatchHandlers in the
+    // process-singleton registry BEFORE the claim worker's first tick. The
+    // worker's default dispatcher resolves printer.kind → handler via this
+    // registry; missing-kind fails the dispatch_job with reason
+    // 'unsupported-format' (mapped from the adapter-level 'unsupported-protocol').
+    try {
+      const { getDefaultRegistry } = await import('./forge/dispatch/registry');
+      const { createMoonrakerHandler } = await import(
+        './forge/dispatch/moonraker/adapter'
+      );
+      const dispatchRegistry = getDefaultRegistry();
+      dispatchRegistry.register(createMoonrakerHandler());
+      logger.info(
+        { kinds: dispatchRegistry.list().map((h) => h.kind) },
+        'forge.dispatch: handlers registered',
+      );
+    } catch (err) {
+      logger.error({ err }, 'forge.dispatch: handler registration failed');
+    }
     // V2-005a-T4 forge claim worker — drains dispatch_jobs WHERE status='claimable'
-    // for the in-process central_worker agent. Stub dispatcher today; V2-005d/e
-    // inject real printer/slicer dispatch handlers.
+    // for the in-process central_worker agent. Default dispatcher routes
+    // printer-target jobs through the DispatchHandlerRegistry registered above;
+    // slicer-target jobs stay on the stub until V2-005e.
     void startForgeClaimWorker().catch((err) =>
       logger.error({ err }, 'forge-claim-worker crashed'),
     );

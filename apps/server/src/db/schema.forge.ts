@@ -55,9 +55,31 @@ import { slicerProfiles } from './schema.grimoire';
  */
 export const FORGE_PRINTER_KINDS = [
   'fdm_klipper', // Klipper firmware via Moonraker (Voron, V0, etc.)
-  'fdm_bambu_lan', // Bambu Lab printers in LAN mode (X1C, P1S, etc.)
+  'fdm_bambu_lan', // Bambu Lab generic LAN-mode kind (legacy / unspecified model). Kept for
+                   // backwards compatibility; per-model kinds below replace it for new printers.
   'resin_sdcp', // SDCP 3.0 protocol resin printers (Elegoo, Anycubic Photon, Phrozen)
   'fdm_octoprint', // OctoPrint-fronted printers (legacy fallback)
+  // V2-005d-b: Per-model Bambu LAN kinds. Capabilities live in
+  // src/forge/dispatch/bambu/types.ts BAMBU_MODEL_CAPABILITIES. All use the
+  // Bambu LAN MQTT + FTPS transport; the kind drives capability/UI hints.
+  // H2 series — multi-function (print + laser + cut + plot)
+  'bambu_h2d',
+  'bambu_h2d_pro',
+  'bambu_h2c',
+  'bambu_h2s',
+  // X series
+  'bambu_x2d',
+  // P series
+  'bambu_p2s',
+  'bambu_p1s',
+  'bambu_p1p',
+  // A series
+  'bambu_a1',
+  'bambu_a1_mini',
+  // X1 series — EOL 2026-03-31, still supported in homes
+  'bambu_x1c',
+  'bambu_x1e',
+  'bambu_x1',
 ] as const;
 export type ForgePrinterKind = (typeof FORGE_PRINTER_KINDS)[number];
 

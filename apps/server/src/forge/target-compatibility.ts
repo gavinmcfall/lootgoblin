@@ -95,11 +95,37 @@ const ALL_TARGET_KINDS = [
  *  - Slicers accept the broad mesh + project formats — entries reflect each
  *    slicer's documented import support.
  */
+/**
+ * Native formats for V2-005d-b Bambu LAN per-model kinds. All Bambu LAN
+ * printers accept the metadata-laden `.gcode.3mf` produced by Bambu Studio /
+ * OrcaSlicer (sliced output with embedded print metadata) and the plain
+ * `.3mf` mesh container (3mf is also a valid conversion target so STL → 3mf
+ * → gcode.3mf paths surface as `conversion-required`). Plain `.gcode` is
+ * explicitly rejected per Bambu kind via UNSUPPORTED_REASONS — Bambu LAN
+ * printers won't accept it without the embedded Bambu Studio metadata.
+ */
+const BAMBU_LAN_NATIVE = ['gcode.3mf', '3mf'] as const;
+
 const NATIVE_FORMATS: Record<TargetKind, ReadonlyArray<string>> = {
   // FDM printer transports
   fdm_klipper: ['gcode'],
   fdm_octoprint: ['gcode'],
   fdm_bambu_lan: ['gcode', '3mf'],
+  // V2-005d-b: Per-model Bambu LAN kinds. Capabilities — see
+  // src/forge/dispatch/bambu/types.ts BAMBU_MODEL_CAPABILITIES.
+  bambu_h2d: BAMBU_LAN_NATIVE,
+  bambu_h2d_pro: BAMBU_LAN_NATIVE,
+  bambu_h2c: BAMBU_LAN_NATIVE,
+  bambu_h2s: BAMBU_LAN_NATIVE,
+  bambu_x2d: BAMBU_LAN_NATIVE,
+  bambu_p2s: BAMBU_LAN_NATIVE,
+  bambu_p1s: BAMBU_LAN_NATIVE,
+  bambu_p1p: BAMBU_LAN_NATIVE,
+  bambu_a1: BAMBU_LAN_NATIVE,
+  bambu_a1_mini: BAMBU_LAN_NATIVE,
+  bambu_x1c: BAMBU_LAN_NATIVE,
+  bambu_x1e: BAMBU_LAN_NATIVE,
+  bambu_x1: BAMBU_LAN_NATIVE,
   // Resin printer transport (SDCP)
   resin_sdcp: ['ctb', 'cbddlp', 'goo', 'photon', 'pwmx', 'pwmo'],
   // Slicers
@@ -171,9 +197,26 @@ const UNSUPPORTED_REASONS: Record<string, Partial<Record<TargetKind | '*', strin
   pdf: { '*': 'PDF files cannot be sent to printers or slicers' },
   txt: { '*': 'Text files cannot be sent to printers or slicers' },
   md: { '*': 'Markdown files cannot be sent to printers or slicers' },
-  // Resin-vs-FDM mismatches.
+  // Resin-vs-FDM mismatches + Bambu LAN's strict need for Bambu-flavoured 3mf.
   gcode: {
     resin_sdcp: 'Resin printers do not accept gcode',
+    // V2-005d-b: Bambu LAN per-model kinds reject plain gcode. They require
+    // the Bambu-flavoured `.gcode.3mf` produced by Bambu Studio / OrcaSlicer
+    // (embedded print metadata + AMS slot map). Plain gcode is silently
+    // dropped by the printer on push.
+    bambu_h2d: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_h2d_pro: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_h2c: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_h2s: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_x2d: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_p2s: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_p1s: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_p1p: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_a1: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_a1_mini: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_x1c: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_x1e: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
+    bambu_x1: 'Bambu LAN printers require .gcode.3mf from Bambu Studio / OrcaSlicer (plain gcode is not accepted)',
   },
   ctb: {
     fdm_klipper: 'FDM printers do not accept resin-sliced formats (ctb)',

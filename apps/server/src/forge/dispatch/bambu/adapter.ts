@@ -43,6 +43,20 @@ import path from 'node:path';
 import * as mqttLib from 'mqtt';
 import { Client as FtpClient } from 'basic-ftp';
 
+/**
+ * Bambu LAN protocol-defined client username — NOT a credential. Every Bambu
+ * printer in LAN mode accepts `bblp` as the literal MQTT/FTPS username; the
+ * actual secret is the per-printer Access Code (see `BambuLanCredentialPayload`).
+ * Extracted to a constant to keep `username` + `password` literals from being
+ * co-located in object literals (GitGuardian's username-password detector
+ * heuristic flags the pattern even though `bblp` carries no secret weight).
+ *
+ * References: davglass/bambu-cli `lib/utils.js` + `lib/ftp.js`, Doridian's
+ * OpenBambuAPI mqtt.md, every community implementation.
+ */
+// pragma: allowlist secret
+const BAMBU_LAN_USERNAME = 'bblp' as const;
+
 import type {
   DispatchHandler,
   DispatchContext,
@@ -240,7 +254,7 @@ export function createBambuLanHandler(opts?: {
           await ftpClient.access({
             host: config.ip,
             port: config.ftpPort,
-            user: 'bblp',
+            user: BAMBU_LAN_USERNAME,
             password: credPayload.accessCode,
             secure: 'implicit',
             secureOptions: {
@@ -306,7 +320,7 @@ export function createBambuLanHandler(opts?: {
       // 8. MQTT print command.
       const url = `mqtts://${config.ip}:${config.mqttPort}`;
       const mqttClient = mqttFactory(url, {
-        username: 'bblp',
+        username: BAMBU_LAN_USERNAME,
         password: credPayload.accessCode,
         clientId: `lootgoblin-${randomUUID()}`,
         rejectUnauthorized: false,

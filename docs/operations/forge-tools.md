@@ -181,3 +181,79 @@ LG_TEST_MOONRAKER_PORT=7125  # optional, default 7125
 ```
 
 Operator runs `npx vitest run tests/integration/forge-moonraker-real.test.ts` with env vars set to validate against a real Klipper instance. Test uploads a no-op gcode (G28 + M84) with `startPrint=false`. Skipped in CI.
+
+## V2-005d-d: OctoPrint dispatcher
+
+### Configure an OctoPrint-based printer
+
+1. POST /api/v1/forge/printers
+   ```json
+   {
+     "kind": "fdm_octoprint",
+     "name": "Prusa MK3S OctoPi",
+     "connectionConfig": {
+       "host": "octopi.lan",
+       "port": 80,
+       "scheme": "http",
+       "apiPath": "/api",
+       "select": true,
+       "startPrint": true,
+       "requiresAuth": true
+     }
+   }
+   ```
+
+2. POST /api/v1/forge/printers/:id/credentials
+   ```json
+   {
+     "kind": "octoprint_api_key",
+     "payload": { "apiKey": "<from OctoPrint Settings → API → Application Keys>" },
+     "label": "Prusa MK3S API key"
+   }
+   ```
+
+### Connection config fields
+
+- `host` (required) — printer hostname or IP
+- `port` (default `80`) — OctoPrint HTTP port. Common alternatives: `5000` (direct Flask), `8080` (Docker), custom for reverse-proxy
+- `scheme` (default `'http'`) — set to `'https'` for TLS-fronted instances
+- `apiPath` (default `/api`) — API prefix; override for reverse-proxy paths like `/octoprint/api`
+- `select` (default `true`) — load uploaded file as the active print on the printer
+- `startPrint` (default `true`) — start printing immediately after upload
+- `requiresAuth` (default `true`) — set `false` for instances behind a separate auth layer (rare)
+
+### Security
+
+Credentials are encrypted at rest with AES-256-GCM via `LOOTGOBLIN_SECRET`. The credential plaintext NEVER crosses the API surface — `GET /api/v1/forge/printers/:id/credentials` returns metadata only (`kind`, `label`, `lastUsedAt`).
+
+ACL: per-printer credentials are owner-only. Admins do NOT bypass printer ACL — printers are personal devices in this consent model. To re-key an abandoned printer, delete and recreate the printer row (admin or new owner).
+
+### Failure reasons surfaced on `dispatch_jobs.failure_reason`
+
+Identical mapping to Moonraker (see V2-005d-a section above):
+
+| Adapter reason | Schema reason | OctoPrint-specific note |
+|---|---|---|
+| `unreachable` | `unreachable` | Network refused / DNS fail / TLS cert reject |
+| `auth-failed` | `auth-failed` | API key wrong, expired, or lacks upload permission |
+| `rejected` | `target-rejected` | OctoPrint refused: size limit, invalid gcode, disk full, missing slug |
+| `timeout` | `unreachable` | 60s upload timeout |
+| `no-credentials` | `auth-failed` | `requiresAuth=true` + no creds row |
+| `unsupported-protocol` | `unsupported-format` | `printer.kind` has no registered handler |
+| `unknown` | `unknown` | Catch-all (misconfig, decryption failure, 5xx) |
+
+The original adapter reason is preserved verbatim in `dispatch_jobs.failure_details`.
+
+### Real-printer smoke test
+
+`apps/server/tests/integration/forge-octoprint-real.test.ts` skips unless these env vars are set:
+
+```
+LG_TEST_OCTOPRINT_HOST=octopi.lan
+LG_TEST_OCTOPRINT_API_KEY=<from Settings → API → Application Keys>
+LG_TEST_OCTOPRINT_PORT=80          # optional, default 80
+LG_TEST_OCTOPRINT_API_PATH=/api    # optional, default /api
+LG_TEST_OCTOPRINT_SCHEME=http      # optional, default http
+```
+
+Operator runs `npx vitest run tests/integration/forge-octoprint-real.test.ts` to validate against a real OctoPrint instance. Test uploads a no-op gcode (G28 + M84) with `select=false, startPrint=false`. Skipped in CI.

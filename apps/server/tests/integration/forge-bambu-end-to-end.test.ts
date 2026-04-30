@@ -74,8 +74,11 @@ vi.mock('../../src/auth/request-auth', async (importOriginal) => {
 const DB_PATH = '/tmp/lootgoblin-forge-bambu-e2e.db';
 const DB_URL = `file:${DB_PATH}`;
 const TEST_SECRET = 'x'.repeat(32);
-const TEST_ACCESS_CODE = 'TESTCODE12345678';
-const TEST_SERIAL = 'TEST123SERIAL';
+// Clearly-synthetic test values (avoid GitGuardian false-positive on high-entropy
+// strings). Pattern intentionally repeats characters so any credential scanner
+// recognises this is a fixture, not a leaked secret.
+const TEST_ACCESS_CODE = 'BAMBU0TEST0CODE0';
+const TEST_SERIAL = 'BAMBU0TEST0SERIAL';
 const PRINTER_HOST = 'test-bambu';
 const PRINTER_MQTT_PORT = 8883;
 const PRINTER_FTP_PORT = 990;

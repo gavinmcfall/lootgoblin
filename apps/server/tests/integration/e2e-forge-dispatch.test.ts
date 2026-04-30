@@ -4,7 +4,9 @@
  * Drives the full chain through the HTTP routes:
  *
  *   bootstrap → register printer/slicer → reachable-via → POST dispatch →
- *   runOneClaimTick → handler → completed | failed | (no-op for pending)
+ *   runOneClaimTick → handler → dispatched | failed | (no-op for pending)
+ *     V2-005d-a (SD-Q3): worker rests at 'dispatched' on success.
+ *     V2-005f closes dispatched → completed via real status events.
  *
  * Distinct from `forge-claim-worker.test.ts` (which exercises the worker
  * mechanics with direct DB writes) and from `api-v1-forge-dispatch.test.ts`
@@ -289,13 +291,15 @@ describe('e2e Forge dispatch — V2-005a-T7', () => {
     });
     expect(result).toBe('ran');
 
-    // Final state: completed.
+    // Final state: 'dispatched'. V2-005d-a (SD-Q3) — worker rests at
+    // 'dispatched' after a successful upload; V2-005f closes
+    // dispatched → completed via real printer status events.
     const row = await getDispatchRow(jobId);
-    expect(row.status).toBe('completed');
+    expect(row.status).toBe('dispatched');
     expect(row.claimMarker).toBe(bootstrap.agentId);
     expect(row.claimedAt).not.toBeNull();
     expect(row.startedAt).not.toBeNull();
-    expect(row.completedAt).not.toBeNull();
+    expect(row.completedAt).toBeNull();
 
     // Handler received the right input shape.
     expect(received).toEqual({
@@ -354,7 +358,8 @@ describe('e2e Forge dispatch — V2-005a-T7', () => {
     expect(result).toBe('ran');
 
     const row = await getDispatchRow(jobId);
-    expect(row.status).toBe('completed');
+    // V2-005d-a (SD-Q3): worker stops at 'dispatched' on successful upload.
+    expect(row.status).toBe('dispatched');
   });
 
   it('3. conversion-required dispatch sits in pending (V2-005b not yet implemented)', async () => {
@@ -468,7 +473,7 @@ describe('e2e Forge dispatch — V2-005a-T7', () => {
     expect(row.claimMarker).toBeNull();
   });
 
-  it('6. stale-recovery on worker startup re-claims and completes the job', async () => {
+  it('6. stale-recovery on worker startup re-claims and dispatches the job', async () => {
     const bootstrap = await bootstrapCentralWorker({ dbUrl: DB_URL });
     const ownerId = await seedUser();
     const { lootId } = await seedLootWithFile(ownerId, 'stl');
@@ -510,7 +515,9 @@ describe('e2e Forge dispatch — V2-005a-T7', () => {
     expect(afterReset.status).toBe('claimable');
     expect(afterReset.claimMarker).toBeNull();
 
-    // One tick re-claims and completes via the default stub.
+    // One tick re-claims and drives the row to 'dispatched' via the default
+    // stub. V2-005d-a (SD-Q3): worker rests there; V2-005f closes
+    // dispatched → completed via real printer status events.
     const result = await runOneClaimTick({
       agentId: bootstrap.agentId,
       dbUrl: DB_URL,
@@ -518,7 +525,7 @@ describe('e2e Forge dispatch — V2-005a-T7', () => {
     expect(result).toBe('ran');
 
     const final = await getDispatchRow(jobId);
-    expect(final.status).toBe('completed');
+    expect(final.status).toBe('dispatched');
   });
 
   it('7. custom dispatch-handler failure marks job failed with reason + details', async () => {

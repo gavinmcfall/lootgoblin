@@ -10,7 +10,8 @@
  *   5. msw intercepts http://test-printer:7125/server/files/upload
  *      and asserts the X-Api-Key header + form fields are correct
  *   6. Adapter touches forge_target_credentials.last_used_at
- *   7. Worker drives dispatch_job claimable → claimed → dispatched → completed
+ *   7. Worker drives dispatch_job claimable → claimed → dispatched (resting;
+ *      V2-005f closes dispatched → completed via real printer status events)
  *
  * This is a single integration test (T_da7's "single test" brief). The other
  * adapter unit/edge cases live in `forge-moonraker-adapter.test.ts`; the
@@ -248,7 +249,7 @@ async function seedArtifact(args: {
 // ---------------------------------------------------------------------------
 
 describe('Moonraker dispatch end-to-end — V2-005d-a T_da7', () => {
-  it('claimable job → registry → adapter → msw upload → completed + last_used_at bumped', async () => {
+  it('claimable job → registry → adapter → msw upload → dispatched + last_used_at bumped', async () => {
     // 1. Bootstrap central worker.
     const bootstrap = await bootstrapCentralWorker({ dbUrl: DB_URL });
     const centralAgentId = bootstrap.agentId;
@@ -332,19 +333,20 @@ describe('Moonraker dispatch end-to-end — V2-005d-a T_da7', () => {
     });
     expect(result).toBe('ran');
 
-    // 9. Assert dispatch_job reached the worker's terminal success state.
-    // The worker drives claimable → claimed → dispatched → completed when the
-    // handler returns kind:'success' (V2-005a-T4 + T_da6 wiring). The plan
-    // brief calls out 'dispatched' as the next-stage stop, but the live worker
-    // closes the loop to 'completed' until V2-005f swaps that out.
+    // 9. Assert dispatch_job reached 'dispatched' (the worker's resting state
+    // after a successful upload). The worker drives
+    // claimable → claimed → dispatched and STOPS there — V2-005f closes
+    // dispatched → completed via real printer status events
+    // (Moonraker WebSocket / Bambu MQTT / SDCP). "We sent the file" ≠
+    // "the print finished" (SD-Q3).
     const rows = await db()
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, jobId));
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.status).toBe('completed');
+    expect(rows[0]!.status).toBe('dispatched');
     expect(rows[0]!.startedAt).not.toBeNull();
-    expect(rows[0]!.completedAt).not.toBeNull();
+    expect(rows[0]!.completedAt).toBeNull();
 
     // 10. Assert msw was hit exactly once with the right header + form fields.
     expect(hits).toBe(1);

@@ -54,7 +54,6 @@ import { getServerDb, schema } from '../db/client';
 import { sleep } from '../scavengers/rate-limit';
 import {
   markClaimed,
-  markCompleted,
   markDispatched,
   markFailed,
   unclaimStaleJob,
@@ -514,17 +513,10 @@ export async function runOneClaimTick(opts: {
   }
 
   if (outcome.ok) {
-    const completeResult = await markCompleted(
-      { jobId: candidate.id },
-      { dbUrl: opts.dbUrl, now: opts.now },
-    );
-    if (!completeResult.ok) {
-      log.error(
-        { reason: completeResult.reason },
-        'forge-claim: markCompleted returned not-ok',
-      );
-      return 'errored';
-    }
+    // V2-005d-a: leave job in 'dispatched' on successful upload.
+    // V2-005f closes dispatched→completed via real printer status events
+    // (Moonraker WebSocket / Bambu MQTT / SDCP events).
+    // "we sent the file" ≠ "the print finished" — keep them distinct.
     return 'ran';
   }
 

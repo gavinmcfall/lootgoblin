@@ -4,8 +4,9 @@
  * Coverage:
  *   runOneClaimTick:
  *     1.  No claimable jobs → 'idle'
- *     2.  Claimable printer-target + central reachable → claimed → dispatched →
- *         completed (default stub handler)
+ *     2.  Claimable printer-target + central reachable → claimed → dispatched
+ *         (default stub handler; V2-005d-a SD-Q3: worker rests at 'dispatched';
+ *         V2-005f closes dispatched → completed via real status events)
  *     3.  Claimable printer-target where central NOT in reachable_via → 'idle'
  *         (reachability filter holds the row out of the candidate set)
  *     4.  Slicer-target job → always claimed by central (no reachability check)
@@ -305,7 +306,7 @@ describe('runOneClaimTick — V2-005a-T4', () => {
     expect(result).toBe('idle');
   });
 
-  it('2. printer-target reachable by central → claimed → dispatched → completed', async () => {
+  it('2. printer-target reachable by central → claimed → dispatched (success rests there)', async () => {
     const fx = await buildBaseFixture();
     await seedReachableVia(fx.printerId, fx.centralAgentId);
     const jobId = await newClaimableJob({
@@ -332,11 +333,13 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, jobId));
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.status).toBe('completed');
+    // V2-005d-a (SD-Q3): worker stops at 'dispatched' on success.
+    // V2-005f closes dispatched → completed via real printer status events.
+    expect(rows[0]!.status).toBe('dispatched');
     expect(rows[0]!.claimMarker).toBe(fx.centralAgentId);
     expect(rows[0]!.claimedAt).not.toBeNull();
     expect(rows[0]!.startedAt).not.toBeNull();
-    expect(rows[0]!.completedAt).not.toBeNull();
+    expect(rows[0]!.completedAt).toBeNull();
   });
 
   it('3. printer-target not in reachable_via → idle (filtered out)', async () => {
@@ -391,7 +394,8 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, jobId));
-    expect(rows[0]!.status).toBe('completed');
+    // V2-005d-a (SD-Q3): worker rests at 'dispatched' on success.
+    expect(rows[0]!.status).toBe('dispatched');
   });
 
   it('5. handler returns ok=false → row marked failed with handler reason', async () => {
@@ -472,8 +476,9 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       '../../src/workers/forge-claim-worker'
     );
     // Slow handler to widen the race window. The first tick that wins markClaimed
-    // takes the row through to completed; the loser sees status='claimed' or
-    // 'completed' on its candidate fetch and returns 'idle'.
+    // takes the row through to 'dispatched'; the loser sees status='claimed' or
+    // 'dispatched' on its candidate fetch and returns 'idle'.
+    // (V2-005d-a SD-Q3: worker stops at 'dispatched'; V2-005f closes to 'completed'.)
     const handler = async () => {
       await new Promise((r) => setTimeout(r, 50));
       return { ok: true } as const;
@@ -497,7 +502,7 @@ describe('runOneClaimTick — V2-005a-T4', () => {
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, jobId));
-    expect(rows[0]!.status).toBe('completed');
+    expect(rows[0]!.status).toBe('dispatched');
   });
 });
 
@@ -676,19 +681,20 @@ describe('startForgeClaimWorker — V2-005a-T4', () => {
 
     // Recovery: stale row was reset to claimable on startup, then the live
     // claim loop picked it up (since it's slicer-target and central-reachable
-    // by definition) and drove it to 'completed'.
+    // by definition) and drove it to 'dispatched' (V2-005d-a SD-Q3: worker
+    // rests at 'dispatched'; V2-005f closes to 'completed' via status events).
     const stale = await db()
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, staleJobId));
-    expect(stale[0]!.status).toBe('completed');
+    expect(stale[0]!.status).toBe('dispatched');
 
-    // Due printer-target row should also be completed by the loop.
+    // Due printer-target row should also be at 'dispatched' after the loop.
     const due = await db()
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, dueJobId));
-    expect(due[0]!.status).toBe('completed');
+    expect(due[0]!.status).toBe('dispatched');
   });
 });
 
@@ -774,7 +780,7 @@ describe('default dispatcher (registry-backed) — V2-005d-a T_da6', () => {
     );
   });
 
-  it('14. registered handler returns success → row reaches completed', async () => {
+  it('14. registered handler returns success → row reaches dispatched', async () => {
     const fx = await buildBaseFixture();
     await seedReachableVia(fx.printerId, fx.centralAgentId);
     const jobId = await newClaimableJob({
@@ -809,9 +815,10 @@ describe('default dispatcher (registry-backed) — V2-005d-a T_da6', () => {
       .select()
       .from(schema.dispatchJobs)
       .where(eq(schema.dispatchJobs.id, jobId));
-    // The claim worker drives claimed → dispatched → completed; T_da6's
-    // success path resolves to ok=true → markCompleted.
-    expect(rows[0]!.status).toBe('completed');
+    // The claim worker drives claimed → dispatched and STOPS there on
+    // ok=true (V2-005d-a SD-Q3); V2-005f closes dispatched → completed via
+    // real printer status events.
+    expect(rows[0]!.status).toBe('dispatched');
   });
 
   it('15. registered handler returns failure unreachable → mapped reason + raw details preserved', async () => {

@@ -39,7 +39,7 @@
  *    Bambu-LAN, SDCP), which is a different concept.
  */
 
-import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, blob, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 import { user } from './schema.auth';
 import { loot, lootFiles } from './schema.stash';
@@ -588,4 +588,61 @@ export const forgeSlicerProfileMaterializations = sqliteTable(
     index('forge_profile_mat_profile_idx').on(t.slicerProfileId),
     uniqueIndex('forge_profile_mat_unique').on(t.slicerProfileId, t.slicerKind),
   ],
+);
+
+// ---------------------------------------------------------------------------
+// V2-005d-a: forge_target_credentials — encrypted per-printer dispatcher creds
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminator for `forge_target_credentials.kind`. Each kind names a
+ * distinct on-disk plaintext shape that the V2-005d-{a,b,c,d} adapters
+ * encrypt/decrypt via apps/server/src/crypto.ts:
+ *
+ *   moonraker_api_key  V2-005d-a — { apiKey: string }
+ *   octoprint_api_key  V2-005d-d — { apiKey: string }
+ *   bambu_lan          V2-005d-b — { accessCode: string, serial: string }
+ *   sdcp_passcode      V2-005d-c — { passcode?: string }
+ *
+ * App-layer validates against this list (no DB CHECK constraint, project
+ * pattern).
+ */
+export const FORGE_TARGET_CREDENTIAL_KINDS = [
+  'moonraker_api_key',
+  'octoprint_api_key',
+  'bambu_lan',
+  'sdcp_passcode',
+] as const;
+export type ForgeTargetCredentialKind = (typeof FORGE_TARGET_CREDENTIAL_KINDS)[number];
+
+/**
+ * Per-printer encrypted credential row used by the dispatch worker / target
+ * adapters. One row per printer (UNIQUE on `printer_id`); CASCADE on the FK
+ * means deleting a printer drops its credentials atomically.
+ *
+ * `encrypted_blob` stores the base64(nonce||ct||tag) envelope produced by
+ * `apps/server/src/crypto.ts` `encrypt()`; T_da2 adds the CRUD layer that
+ * encrypts on write and decrypts on read.
+ */
+export const forgeTargetCredentials = sqliteTable(
+  'forge_target_credentials',
+  {
+    id: text('id').primaryKey(),
+    printerId: text('printer_id')
+      .notNull()
+      .unique()
+      .references(() => printers.id, { onDelete: 'cascade' }),
+    /** App-layer validates against FORGE_TARGET_CREDENTIAL_KINDS. */
+    kind: text('kind').notNull(),
+    /** base64(nonce||ct||tag) from crypto.ts encrypt(). */
+    encryptedBlob: blob('encrypted_blob').notNull(),
+    label: text('label'),
+    lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
 );

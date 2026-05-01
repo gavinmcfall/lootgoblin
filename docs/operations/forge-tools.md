@@ -382,3 +382,129 @@ LG_TEST_BAMBU_FTP_PORT=990            # optional, default 990
 ```
 
 Operator runs `npx vitest run tests/integration/forge-bambu-real.test.ts` to validate against a real Bambu printer. Test uploads a tiny no-op gcode (G28 + M84) wrapped in a single-color `.gcode.3mf` to `/cache/` with `startPrint=false`. Skipped in CI.
+
+## V2-005d-c: Resin printer dispatchers
+
+lootgoblin's Forge pillar supports two resin printer protocol families: **SDCP 3.0** (Elegoo Saturn 4+/Mars 5+) and **ChituBox legacy network sending** (Phrozen Sonic family + Uniformation GKtwo + legacy Elegoo with pre-SDCP firmware).
+
+### Supported brands matrix
+
+| Family | Brands / Models | Kind values |
+|---|---|---|
+| SDCP 3.0 | Elegoo Saturn 4 / 4 Ultra / 3 Ultra, Mars 5 / 5 Ultra (+ Tier 2: Mars 4 Ultra, Saturn 2, Mars 3 with legacy MQTT path) | `sdcp_elegoo_saturn_4`, `sdcp_elegoo_saturn_4_ultra`, `sdcp_elegoo_saturn_3_ultra`, `sdcp_elegoo_mars_5`, `sdcp_elegoo_mars_5_ultra`, `sdcp_elegoo_mars_4_ultra`, `sdcp_elegoo_saturn_2`, `sdcp_elegoo_mars_3` |
+| ChituBox legacy network | Phrozen Sonic Mighty 8K, Mega 8K, Mini 8K; Uniformation GKtwo, GKone; Elegoo Mars/Saturn (pre-SDCP firmware) | `chitu_network_phrozen_sonic_mighty_8k`, `chitu_network_phrozen_sonic_mega_8k`, `chitu_network_phrozen_sonic_mini_8k`, `chitu_network_uniformation_gktwo`, `chitu_network_uniformation_gkone`, `chitu_network_elegoo_mars_legacy`, `chitu_network_elegoo_saturn_legacy` |
+
+### Encrypted CTB requirement (CRITICAL)
+
+**Phrozen Sonic 8K family + Uniformation GKtwo/GKone require ENCRYPTED CTB.** These printers ship with locked ChiTu mainboards that silently reject plain unencrypted CTB files. lootgoblin's V2-005c slicer pipeline (PrusaSlicer / OrcaSlicer / Bambu Studio) does NOT produce encrypted CTB.
+
+**Workaround until V2-005d-c-CF-1 (Chitubox slicer integration)**:
+1. Slice your STL externally in Chitubox Basic/Pro or Lychee Pro
+2. Export the encrypted .ctb file
+3. Upload it to lootgoblin as a Loot file (existing V2-003 upload route)
+4. Dispatch via lootgoblin to your Phrozen / Uniformation printer
+
+The ChituNetwork dispatcher detects unencrypted CTB at file-format-gate time and rejects with a clear operator message (failure_reason='target-rejected', failure_details mentions "encrypted CTB" + "Chitubox or Lychee Pro").
+
+For SDCP 3.0 printers (Elegoo Saturn 4+, Mars 5+) — NO encryption required; any valid .ctb works.
+
+### Configure an SDCP printer
+
+POST /api/v1/forge/printers with:
+```json
+{
+  "kind": "sdcp_elegoo_saturn_4_ultra",
+  "name": "My Saturn 4 Ultra",
+  "ownerId": "<user-id>",
+  "connectionConfig": {
+    "ip": "192.168.1.42",
+    "mainboardId": "<from UDP discovery or printer info screen>",
+    "port": 3030,
+    "startPrint": true,
+    "startLayer": 0
+  }
+}
+```
+
+Then POST credentials with empty payload (no auth at protocol level):
+```
+POST /api/v1/forge/printers/<id>/credentials
+{ "kind": "sdcp_passcode", "payload": {} }
+```
+
+### Configure a ChituNetwork printer
+
+POST /api/v1/forge/printers:
+```json
+{
+  "kind": "chitu_network_phrozen_sonic_mighty_8k",
+  "name": "Phrozen Sonic Mighty 8K",
+  "connectionConfig": {
+    "ip": "192.168.1.43",
+    "port": 3000,
+    "startPrint": true,
+    "stageTimeoutMs": 60000
+  }
+}
+```
+
+Then POST credentials with empty payload (same as SDCP — no auth):
+```
+POST /api/v1/forge/printers/<id>/credentials
+{ "kind": "sdcp_passcode", "payload": {} }
+```
+
+### Discovery
+
+Both protocols broadcast on UDP port 3000 with the same `M99999` query — but reply formats differ (SDCP returns JSON, ChituNetwork returns ASCII). Use the unified discovery endpoint:
+
+```
+GET /api/v1/forge/discover-resin?timeoutMs=5000
+```
+
+Returns:
+```json
+{
+  "sdcp": [
+    { "id": "...", "mainboardId": "...", "mainboardIp": "...", "name": "...", "machineName": "Saturn 4 Ultra", ... }
+  ],
+  "chituNetwork": [
+    { "name": "Phrozen Sonic Mighty 8K", "ip": "192.168.1.43" }
+  ]
+}
+```
+
+Operator picks from results, then POSTs to /api/v1/forge/printers with the IP (and MainboardID if SDCP) prefilled.
+
+### Failure-reason mapping
+
+Same shape as Moonraker/OctoPrint/Bambu — adapter-level reasons map to schema-level enum, original reason preserved in failure_details. ChituNetwork-specific:
+- 'rejected' (file-format gate) → schema 'target-rejected' with details about CTB encryption
+- 'rejected' (M28) → schema 'target-rejected' with stage prefix
+- 'unreachable' (TCP refused) → schema 'unreachable'
+- 'timeout' (per-stage timeout) → schema 'timeout-error' (or whatever maps)
+
+### Security
+
+**No LAN authentication.** Both protocols are trusted-LAN by design. Do NOT expose printer ports to the internet. Do NOT run lootgoblin on a network shared with untrusted devices.
+
+The 'sdcp_passcode' credential kind exists for future firmware that may add auth — currently stores empty payload. Encrypted at rest via LOOTGOBLIN_SECRET regardless.
+
+### Real-printer smoke tests
+
+`forge-sdcp-real.test.ts` skips unless these env vars are set:
+```
+LG_TEST_SDCP_IP=192.168.1.42
+LG_TEST_SDCP_MAINBOARD_ID=<from printer info screen>
+LG_TEST_SDCP_KIND=sdcp_elegoo_saturn_4_ultra   # optional
+LG_TEST_SDCP_PORT=3030                          # optional
+```
+
+`forge-chitu-real.test.ts` skips unless:
+```
+LG_TEST_CHITU_IP=192.168.1.43
+LG_TEST_CHITU_KIND=chitu_network_phrozen_sonic_mighty_8k   # optional
+LG_TEST_CHITU_PORT=3000                                     # optional
+```
+
+Both tests use startPrint=false — file uploads to /local/ but no actual print starts. Skipped in CI.

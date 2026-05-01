@@ -80,6 +80,31 @@ export const FORGE_PRINTER_KINDS = [
   'bambu_x1c',
   'bambu_x1e',
   'bambu_x1',
+  // V2-005d-c: SDCP 3.0 per-model kinds (Elegoo). Capabilities live in
+  // src/forge/dispatch/sdcp/types.ts SDCP_MODEL_CAPABILITIES. All use the
+  // SDCP 3.0 transport; the kind drives capability/UI hints.
+  'sdcp_elegoo_saturn_4',
+  'sdcp_elegoo_saturn_4_ultra',
+  'sdcp_elegoo_mars_5',
+  'sdcp_elegoo_mars_5_ultra',
+  'sdcp_elegoo_saturn_3_ultra',
+  'sdcp_elegoo_mars_4_ultra',
+  'sdcp_elegoo_saturn_2',
+  'sdcp_elegoo_mars_3',
+  // V2-005d-c: ChituBox legacy network per-model kinds (Phrozen + Uniformation
+  // + legacy-firmware Elegoo). Capabilities live in
+  // src/forge/dispatch/chitu-network/types.ts CHITU_NETWORK_MODEL_CAPABILITIES.
+  'chitu_network_phrozen_sonic_mighty_8k',
+  'chitu_network_phrozen_sonic_mega_8k',
+  'chitu_network_phrozen_sonic_mini_8k',
+  'chitu_network_uniformation_gktwo',
+  'chitu_network_uniformation_gkone',
+  'chitu_network_elegoo_mars_legacy',
+  'chitu_network_elegoo_saturn_legacy',
+  // V2-005d-c: FDM Klipper expansion — registered to the V2-005d-a Moonraker
+  // handler in T_dc10. Mirrors `fdm_klipper` transport (gcode native).
+  'fdm_klipper_phrozen_arco',
+  'fdm_klipper_elegoo_centauri_carbon',
 ] as const;
 export type ForgePrinterKind = (typeof FORGE_PRINTER_KINDS)[number];
 

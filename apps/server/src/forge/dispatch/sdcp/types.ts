@@ -1,9 +1,12 @@
 /**
- * types.ts — V2-005d-c T_dc1
+ * types.ts — V2-005d-c T_dc1 + T_dc5
  *
  * Per-model capability data for SDCP 3.0 resin printers (Elegoo Saturn /
  * Mars families on the open SDCP firmware). Drives UI hints (build volume,
  * LCD resolution, XY pixel pitch) and dispatcher behaviour.
+ *
+ * T_dc5 added: Zod schemas for connection-config + credential payload, used
+ * by the adapter to validate operator-provided printer rows before dispatch.
  *
  * NOTE (V2-005d-c-CF-7): Capability values are initial best-effort from
  * research against Elegoo's published spec sheets and community-confirmed
@@ -125,3 +128,30 @@ export const SDCP_MODEL_CAPABILITIES: Record<SdcpKind, SdcpModelCapability> = {
 export function isSdcpKind(kind: string): kind is SdcpKind {
   return (SDCP_KINDS as readonly string[]).includes(kind);
 }
+
+import { z } from 'zod';
+
+/**
+ * SDCP printer connection-config — operator-provided IP + MainboardID.
+ * Discovery (UDP M99999) populates this initially; operator can also enter
+ * manually. `port` defaults to 3030 (SDCP 3.0 standard); `startPrint=false`
+ * is used by an "upload only" mode that stops after the chunked upload
+ * succeeds without firing Cmd 128.
+ */
+export const SdcpConnectionConfig = z.object({
+  ip: z.string().min(1),
+  mainboardId: z.string().min(1).max(64),
+  port: z.number().int().positive().default(3030),
+  startPrint: z.boolean().default(true),
+  startLayer: z.number().int().min(0).default(0),
+});
+export type SdcpConnectionConfigT = z.infer<typeof SdcpConnectionConfig>;
+
+/**
+ * SDCP has NO authentication at the protocol level (verified by spec + every
+ * community implementation). The 'sdcp_passcode' credential kind in
+ * forge_target_credentials is reserved for future firmware that may add auth.
+ * For now, the credential row is optional and stores empty/null payload.
+ */
+export const SdcpCredentialPayload = z.object({}).strict();
+export type SdcpCredentialPayloadT = z.infer<typeof SdcpCredentialPayload>;

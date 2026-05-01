@@ -223,6 +223,8 @@ describe('V2-005f-T_dcf4 createMoonrakerSubscriber', () => {
     expect(sent.params.objects.print_stats).toContain('state');
     expect(sent.params.objects.print_stats).toContain('filename');
     expect(sent.params.objects.display_status).toContain('progress');
+    // Subscriber considers itself "connected" only after subscribe-reply.
+    ws.fireMessage({ jsonrpc: '2.0', id: 1, result: { status: {}, eventtime: 0 } });
     expect(sub.isConnected()).toBe(true);
 
     await sub.stop();
@@ -370,6 +372,11 @@ describe('V2-005f-T_dcf4 createMoonrakerSubscriber', () => {
   it('reconnects after socket close', async () => {
     const { sub } = startSubscriber();
     factoryRig.sockets[0]!.fireOpen();
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { status: {}, eventtime: 0 },
+    });
     expect(sub.isConnected()).toBe(true);
 
     factoryRig.sockets[0]!.fireClose();
@@ -398,6 +405,11 @@ describe('V2-005f-T_dcf4 createMoonrakerSubscriber', () => {
     const { sub } = startSubscriber();
     expect(sub.isConnected()).toBe(false);
     factoryRig.sockets[0]!.fireOpen();
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { status: {}, eventtime: 0 },
+    });
     expect(sub.isConnected()).toBe(true);
     factoryRig.sockets[0]!.fireClose();
     expect(sub.isConnected()).toBe(false);

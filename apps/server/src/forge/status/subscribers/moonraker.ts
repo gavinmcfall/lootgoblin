@@ -17,11 +17,11 @@
  *     terminal-state signal — `notify_status_update` may emit `complete`
  *     once and be missed during reconnect.
  *
- * Reconnect: exponential backoff schedule defaults to
- * [5s, 10s, 30s, 60s, 5min] (capped at the last entry on subsequent
- * failures). On the first connection failure of a disconnect cycle the
- * subscriber emits `'unreachable'`; on the first successful reconnect after
- * a prior disconnect it emits `'reconnected'`.
+ * Reconnect / connectivity events are owned by `_reconnect-base.ts` —
+ * this module only contributes the WebSocket transport + JSON-RPC routing.
+ * The base treats Moonraker as "connected" only after the subscribe-reply
+ * arrives (not on raw ws.open), so the `reconnected` connectivity event
+ * fires once Klipper has actually acknowledged the subscription.
  *
  * Klipper does NOT track per-slot grams (only filament length in mm), so
  * `measuredConsumption` is always left undefined for Moonraker events.
@@ -37,12 +37,14 @@ import {
   MoonrakerCredentialPayload,
 } from '@/forge/dispatch/moonraker/types';
 
+import {
+  createReconnectingSubscriber,
+  type TransportHandle,
+} from './_reconnect-base';
 import type {
   StatusSubscriber,
   StatusEvent,
   StatusEventKind,
-  PrinterRecord,
-  DecryptedCredential,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -87,7 +89,6 @@ export interface MoonrakerSubscriberOpts {
 // Internals
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BACKOFF_MS: readonly number[] = [5_000, 10_000, 30_000, 60_000, 300_000];
 const SUBSCRIBE_REQUEST_ID = 1;
 
 interface MoonrakerStatusPayload {
@@ -278,234 +279,142 @@ export function createMoonrakerSubscriber(
   opts: MoonrakerSubscriberOpts = {},
 ): StatusSubscriber {
   const wsFactory = opts.wsFactory ?? defaultWsFactory;
-  const backoffSchedule =
-    opts.reconnectBackoffMs && opts.reconnectBackoffMs.length > 0
-      ? opts.reconnectBackoffMs
-      : DEFAULT_BACKOFF_MS;
-  const setTimer = opts.setTimeout ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
-  const clearTimer =
-    opts.clearTimeout ??
-    ((handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>));
 
-  let ws: WsClientLike | null = null;
-  let connected = false;
-  let stopped = false;
-  let attempt = 0;
-  let reconnectHandle: unknown = null;
-  let onEventCb: ((e: StatusEvent) => void) | null = null;
-  let printer: PrinterRecord | null = null;
-  let credential: DecryptedCredential | null = null;
-  let unreachableEmitted = false;
-  /** True once a disconnect happens — drives the `reconnected` event on the next open. */
-  let needsReconnectedEvent = false;
-
-  function emit(event: StatusEvent): void {
-    if (onEventCb !== null) onEventCb(event);
-  }
-
-  function emitConnectivity(kind: 'reconnected' | 'unreachable'): void {
-    emit({
-      kind,
-      remoteJobRef: '',
-      rawPayload: null,
-      occurredAt: new Date(),
-    });
-  }
-
-  function scheduleReconnect(): void {
-    if (stopped) return;
-    if (reconnectHandle !== null) return;
-    const idx = Math.min(attempt, backoffSchedule.length - 1);
-    const delay = backoffSchedule[idx] ?? backoffSchedule[backoffSchedule.length - 1] ?? 5_000;
-    attempt += 1;
-    reconnectHandle = setTimer(() => {
-      reconnectHandle = null;
-      if (stopped) return;
-      void connect();
-    }, delay);
-  }
-
-  function handleSubscribeReply(_payload: unknown): void {
-    // The reply to id=1 includes the current state. We don't emit a synthetic
-    // 'started' here — the next `notify_status_update` (or history change) will
-    // cover any active job. If we'd just reconnected, surface that fact.
-    if (needsReconnectedEvent) {
-      emitConnectivity('reconnected');
-      needsReconnectedEvent = false;
-    }
-  }
-
-  function handleStatusUpdate(params: unknown): void {
-    if (!Array.isArray(params)) return;
-    const payload = params[0] as MoonrakerStatusPayload | undefined;
-    if (!payload || typeof payload !== 'object') return;
-    const state = payload.print_stats?.state;
-    const kind = mapPrintStatsState(state);
-    if (kind === null) return;
-    emit(buildEventFromStatus(kind, payload, new Date()));
-  }
-
-  function handleHistoryChanged(params: unknown): void {
-    if (!Array.isArray(params)) return;
-    const entry = params[0] as { action?: string; job?: MoonrakerHistoryJob } | undefined;
-    if (!entry || typeof entry !== 'object') return;
-    if (entry.action !== 'finished') return;
-    const job = entry.job ?? {};
-    const kind = mapHistoryStatus(job.status);
-    if (kind === null) return;
-    emit(buildEventFromHistory(kind, job, entry, new Date()));
-  }
-
-  function handleMessage(data: unknown): void {
-    const msg = decodeMessage(data);
-    if (msg === null) return;
-    if (msg.method === 'notify_status_update') {
-      handleStatusUpdate(msg.params);
-      return;
-    }
-    if (msg.method === 'notify_history_changed') {
-      handleHistoryChanged(msg.params);
-      return;
-    }
-    if (msg.id === SUBSCRIBE_REQUEST_ID) {
-      handleSubscribeReply(msg.result);
-      return;
-    }
-  }
-
-  async function connect(): Promise<void> {
-    if (printer === null) return;
-
-    const cfgParse = MoonrakerConnectionConfig.safeParse(printer.connectionConfig);
-    if (!cfgParse.success) {
-      logger.error(
-        { printerId: printer.id, err: cfgParse.error.message },
-        'moonraker-status: invalid connectionConfig — scheduling reconnect',
-      );
-      if (!unreachableEmitted) {
-        emitConnectivity('unreachable');
-        unreachableEmitted = true;
-      }
-      scheduleReconnect();
-      return;
-    }
-    const cfg = cfgParse.data;
-
-    const headers: Record<string, string> = {};
-    if (cfg.requiresAuth && credential !== null) {
-      const credParse = MoonrakerCredentialPayload.safeParse(credential.payload);
-      if (credParse.success) {
-        headers['X-Api-Key'] = credParse.data.apiKey;
-      } else {
-        logger.warn(
-          { printerId: printer.id },
-          'moonraker-status: requiresAuth but credential payload invalid — connecting without header',
-        );
-      }
-    }
-
-    const wsScheme = cfg.scheme === 'https' ? 'wss' : 'ws';
-    const url = `${wsScheme}://${cfg.host}:${cfg.port}/websocket`;
-
-    let nextWs: WsClientLike;
-    try {
-      nextWs = wsFactory(url, Object.keys(headers).length > 0 ? { headers } : undefined);
-    } catch (err) {
-      logger.warn(
-        { printerId: printer.id, err: (err as Error)?.message },
-        'moonraker-status: ws factory threw — scheduling reconnect',
-      );
-      if (!unreachableEmitted) {
-        emitConnectivity('unreachable');
-        unreachableEmitted = true;
-      }
-      scheduleReconnect();
-      return;
-    }
-    ws = nextWs;
-
-    nextWs.on('open', () => {
-      connected = true;
-      attempt = 0;
-      unreachableEmitted = false;
-      // Send the subscription request. `send` may throw synchronously if
-      // the socket is already closed; tolerate it and let the close handler
-      // schedule a reconnect.
-      try {
-        nextWs.send(buildSubscribeMessage());
-      } catch (err) {
-        logger.warn(
-          { printerId: printer?.id, err: (err as Error)?.message },
-          'moonraker-status: subscribe send failed',
-        );
-      }
-    });
-
-    nextWs.on('message', (data: unknown) => {
-      handleMessage(data);
-    });
-
-    nextWs.on('close', () => {
-      const wasConnected = connected;
-      connected = false;
-      ws = null;
-      if (stopped) return;
-      if (wasConnected) {
-        // Genuine disconnect after a successful session — next open should
-        // emit 'reconnected'.
-        needsReconnectedEvent = true;
-        unreachableEmitted = false;
-      } else if (!unreachableEmitted) {
-        // Failed to ever open — surface unreachable once per cycle.
-        emitConnectivity('unreachable');
-        unreachableEmitted = true;
-      }
-      logger.info({ printerId: printer?.id }, 'moonraker-status: ws closed — scheduling reconnect');
-      scheduleReconnect();
-    });
-
-    nextWs.on('error', (err: Error) => {
-      logger.warn(
-        { printerId: printer?.id, err: err?.message },
-        'moonraker-status: ws error',
-      );
-      // `connected` will be cleared by the subsequent `close` event; do not
-      // schedule reconnect here to avoid double-scheduling.
-    });
-  }
-
-  return {
+  return createReconnectingSubscriber({
     protocol: 'moonraker',
     printerKind: 'fdm_klipper',
-    async start(p, cred, onEvent) {
-      printer = p;
-      credential = cred;
-      onEventCb = onEvent;
-      stopped = false;
-      attempt = 0;
-      unreachableEmitted = false;
-      needsReconnectedEvent = false;
-      await connect();
-    },
-    async stop() {
-      stopped = true;
-      if (reconnectHandle !== null) {
-        clearTimer(reconnectHandle);
-        reconnectHandle = null;
+    reconnectBackoffMs: opts.reconnectBackoffMs,
+    setTimeout: opts.setTimeout,
+    clearTimeout: opts.clearTimeout,
+    openTransport: (printer, credential, helpers): TransportHandle => {
+      // ----- Validate connection config / build URL + headers -----
+      const cfgParse = MoonrakerConnectionConfig.safeParse(printer.connectionConfig);
+      if (!cfgParse.success) {
+        logger.error(
+          { printerId: printer.id, err: cfgParse.error.message },
+          'moonraker-status: invalid connectionConfig',
+        );
+        throw new Error(`moonraker-status: invalid connectionConfig: ${cfgParse.error.message}`);
       }
-      if (ws !== null) {
-        try {
-          ws.close(1000, 'subscriber-stop');
-        } catch {
-          // ignore close-time errors
-        }
-        ws = null;
-      }
-      connected = false;
-    },
-    isConnected() {
-      return connected;
-    },
-  };
-}
+      const cfg = cfgParse.data;
 
+      const headers: Record<string, string> = {};
+      if (cfg.requiresAuth && credential !== null) {
+        const credParse = MoonrakerCredentialPayload.safeParse(credential.payload);
+        if (credParse.success) {
+          headers['X-Api-Key'] = credParse.data.apiKey;
+        } else {
+          logger.warn(
+            { printerId: printer.id },
+            'moonraker-status: requiresAuth but credential payload invalid — connecting without header',
+          );
+        }
+      }
+
+      const wsScheme = cfg.scheme === 'https' ? 'wss' : 'ws';
+      const url = `${wsScheme}://${cfg.host}:${cfg.port}/websocket`;
+
+      // ----- Open the WebSocket -----
+      // (ws factory throwing is treated as openTransport-throw by the base.)
+      const ws = wsFactory(url, Object.keys(headers).length > 0 ? { headers } : undefined);
+
+      // Track whether ws.open has fired, to inform onTransportClose's
+      // `wasConnected` argument. Note: "connected" from the base's
+      // perspective is gated on subscribe-reply, but for the purpose of
+      // distinguishing "first-connect failure" from "session disconnect"
+      // we use ws.open as the boundary — if the socket actually opened we
+      // consider that a real session, even if klippy never sent the
+      // subscribe-reply.
+      let socketOpened = false;
+      let closedReported = false;
+
+      const reportClose = (): void => {
+        if (closedReported) return;
+        closedReported = true;
+        helpers.onTransportClose(socketOpened);
+      };
+
+      // ----- Message router -----
+      function handleStatusUpdate(params: unknown): void {
+        if (!Array.isArray(params)) return;
+        const payload = params[0] as MoonrakerStatusPayload | undefined;
+        if (!payload || typeof payload !== 'object') return;
+        const state = payload.print_stats?.state;
+        const kind = mapPrintStatsState(state);
+        if (kind === null) return;
+        helpers.emitProtocolEvent(buildEventFromStatus(kind, payload, new Date()));
+      }
+
+      function handleHistoryChanged(params: unknown): void {
+        if (!Array.isArray(params)) return;
+        const entry = params[0] as { action?: string; job?: MoonrakerHistoryJob } | undefined;
+        if (!entry || typeof entry !== 'object') return;
+        if (entry.action !== 'finished') return;
+        const job = entry.job ?? {};
+        const kind = mapHistoryStatus(job.status);
+        if (kind === null) return;
+        helpers.emitProtocolEvent(buildEventFromHistory(kind, job, entry, new Date()));
+      }
+
+      function handleMessage(data: unknown): void {
+        const msg = decodeMessage(data);
+        if (msg === null) return;
+        if (msg.method === 'notify_status_update') {
+          handleStatusUpdate(msg.params);
+          return;
+        }
+        if (msg.method === 'notify_history_changed') {
+          handleHistoryChanged(msg.params);
+          return;
+        }
+        if (msg.id === SUBSCRIBE_REQUEST_ID) {
+          // Subscribe-reply received — Moonraker is fully ready.
+          helpers.onTransportOpen();
+          return;
+        }
+      }
+
+      ws.on('open', () => {
+        socketOpened = true;
+        try {
+          ws.send(buildSubscribeMessage());
+        } catch (err) {
+          logger.warn(
+            { printerId: printer.id, err: (err as Error)?.message },
+            'moonraker-status: subscribe send failed',
+          );
+        }
+      });
+
+      ws.on('message', (data: unknown) => {
+        handleMessage(data);
+      });
+
+      ws.on('close', () => {
+        logger.info(
+          { printerId: printer.id },
+          'moonraker-status: ws closed',
+        );
+        reportClose();
+      });
+
+      ws.on('error', (err: Error) => {
+        logger.warn(
+          { printerId: printer.id, err: err?.message },
+          'moonraker-status: ws error',
+        );
+        // Defer to the subsequent 'close' for reconnect bookkeeping.
+      });
+
+      return {
+        close: () => {
+          try {
+            ws.close(1000, 'subscriber-stop');
+          } catch {
+            // ignore close-time errors
+          }
+        },
+      };
+    },
+  });
+}

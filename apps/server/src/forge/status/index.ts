@@ -8,6 +8,11 @@
 
 export * from './types';
 export * from './registry';
+export {
+  createStatusEventBus,
+  getDefaultStatusEventBus,
+  resetDefaultStatusEventBus,
+} from './event-bus';
 export * from './subscribers/moonraker';
 export { createOctoprintSubscriber, type OctoprintSubscriberOpts } from './subscribers/octoprint';
 export {

@@ -227,6 +227,13 @@ export async function register() {
       const { createForgeStatusWorker } = await import(
         './workers/forge-status-worker'
       );
+      // V2-005f-T_dcf12: in-memory pub/sub for live SSE consumers. The status
+      // sink calls `bus.emit` on every event; SSE handlers at
+      // /api/v1/forge/dispatch/:id/status/stream subscribe per dispatch.
+      const { getDefaultStatusEventBus } = await import(
+        './forge/status/event-bus'
+      );
+      const statusEventBus = getDefaultStatusEventBus();
 
       const subRegistry = getDefaultSubscriberRegistry();
       // Klipper-via-Moonraker: legacy + per-model FDM kinds.
@@ -278,6 +285,11 @@ export async function register() {
           // (estimated) is emitted at dispatch time by the claim worker.
           emitConsumption: async ({ dispatchJobId, event }) => {
             await emitConsumptionForCompletion({ dispatchJobId, event });
+          },
+          // V2-005f-T_dcf12: live broadcast every persisted event to SSE
+          // subscribers (one Set<listener> per dispatchJobId in the bus).
+          emitToBus: (dispatchJobId, event) => {
+            statusEventBus.emit(dispatchJobId, event);
           },
         },
       });

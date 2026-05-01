@@ -41,35 +41,22 @@ import {
   createReconnectingSubscriber,
   type TransportHandle,
 } from './_reconnect-base';
+import {
+  defaultWsFactory,
+  type WsClientLike,
+  type WsFactory,
+} from './_ws-client';
 import type {
   StatusSubscriber,
   StatusEvent,
   StatusEventKind,
 } from '../types';
 
+export type { WsClientLike, WsFactory } from './_ws-client';
+
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
-
-/**
- * Minimal WebSocket-client surface used by the subscriber. Mirrors the
- * relevant subset of the `ws` package and lets tests inject a fake.
- */
-export interface WsClientLike {
-  on(event: 'open', listener: () => void): this;
-  on(event: 'message', listener: (data: unknown) => void): this;
-  on(event: 'close', listener: (code?: number, reason?: Buffer) => void): this;
-  on(event: 'error', listener: (err: Error) => void): this;
-  on(event: string, listener: (...args: unknown[]) => void): this;
-  off(event: string, listener: (...args: unknown[]) => void): this;
-  send(data: string, callback?: (err?: Error) => void): void;
-  close(code?: number, reason?: string): void;
-  readonly readyState: number;
-}
-
-export interface WsFactory {
-  (url: string, options?: { headers?: Record<string, string> }): WsClientLike;
-}
 
 export interface MoonrakerSubscriberOpts {
   /** Inject a fake WebSocket constructor for tests. */
@@ -240,35 +227,6 @@ function buildEventFromHistory(
     rawPayload,
     occurredAt,
   };
-}
-
-// Default factory — lazy-loads `ws` so tests don't have to.
-function defaultWsFactory(
-  url: string,
-  options?: { headers?: Record<string, string> },
-): WsClientLike {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const wsMod = require('ws') as
-    | (new (url: string, opts?: { headers?: Record<string, string> }) => WsClientLike)
-    | {
-        default?: new (url: string, opts?: { headers?: Record<string, string> }) => WsClientLike;
-        WebSocket?: new (
-          url: string,
-          opts?: { headers?: Record<string, string> },
-        ) => WsClientLike;
-      };
-  const Ctor =
-    typeof wsMod === 'function'
-      ? wsMod
-      : ((wsMod as { WebSocket?: typeof wsMod }).WebSocket ??
-        (wsMod as { default?: typeof wsMod }).default);
-  if (typeof Ctor !== 'function') {
-    throw new Error('moonraker subscriber: unable to resolve ws constructor');
-  }
-  return new (Ctor as new (
-    url: string,
-    opts?: { headers?: Record<string, string> },
-  ) => WsClientLike)(url, { headers: options?.headers });
 }
 
 // ---------------------------------------------------------------------------

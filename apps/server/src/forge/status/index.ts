@@ -8,3 +8,4 @@
 
 export * from './types';
 export * from './subscribers/moonraker';
+export { createOctoprintSubscriber, type OctoprintSubscriberOpts } from './subscribers/octoprint';

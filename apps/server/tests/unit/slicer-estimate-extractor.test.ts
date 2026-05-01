@@ -113,6 +113,18 @@ describe('gcode-parser', () => {
     expect(parsePrintTimeToMinutes('30s')).toBeCloseTo(0.5, 5);
   });
 
+  it('parsePrintTimeToMinutes returns null for digits without h/m/s tokens', () => {
+    expect(parsePrintTimeToMinutes('foo123bar')).toBeNull();
+  });
+
+  it('parsePrintTimeToMinutes returns null for digits with no h/m/s suffix', () => {
+    expect(parsePrintTimeToMinutes('abc 5 def')).toBeNull();
+  });
+
+  it('parsePrintTimeToMinutes still parses bare seconds-only values', () => {
+    expect(parsePrintTimeToMinutes('5s')).toBeCloseTo(5 / 60, 5);
+  });
+
   it('returns null when no filament-used line is present', () => {
     const content = 'G1 X0 Y0\n; some other comment\n';
     expect(parseGcodeContent(content)).toBeNull();

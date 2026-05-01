@@ -72,10 +72,10 @@ export function parsePrintTimeToMinutes(raw: string): number | null {
   const re = /(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?/i;
   const m = raw.match(re);
   if (!m) return null;
+  if (!m[1] && !m[2] && !m[3]) return null;
   const h = m[1] ? parseInt(m[1], 10) : 0;
   const min = m[2] ? parseInt(m[2], 10) : 0;
   const s = m[3] ? parseFloat(m[3]) : 0;
-  if (h === 0 && min === 0 && s === 0 && !/\d/.test(raw)) return null;
   return h * 60 + min + s / 60;
 }
 

@@ -125,3 +125,25 @@ export const CHITU_NETWORK_MODEL_CAPABILITIES: Record<ChituNetworkKind, ChituNet
 export function isChituNetworkKind(kind: string): kind is ChituNetworkKind {
   return (CHITU_NETWORK_KINDS as readonly string[]).includes(kind);
 }
+
+import { z } from 'zod';
+
+/**
+ * ChituBox legacy network printer connection-config — operator-provided IP only.
+ * No authentication at protocol level; printer is trusted-LAN.
+ */
+export const ChituNetworkConnectionConfig = z.object({
+  ip: z.string().min(1),
+  port: z.number().int().positive().default(3000),
+  startPrint: z.boolean().default(true),
+  /** Per-stage timeout — defaults to 60000 to accommodate slower WiFi. */
+  stageTimeoutMs: z.number().int().positive().default(60_000),
+});
+export type ChituNetworkConnectionConfigT = z.infer<typeof ChituNetworkConnectionConfig>;
+
+/**
+ * ChituBox legacy network has NO authentication. The 'sdcp_passcode' kind
+ * (shared with SDCP for storage convenience) stores empty payload.
+ */
+export const ChituNetworkCredentialPayload = z.object({}).strict();
+export type ChituNetworkCredentialPayloadT = z.infer<typeof ChituNetworkCredentialPayload>;

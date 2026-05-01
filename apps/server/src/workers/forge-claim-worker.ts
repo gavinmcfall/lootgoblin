@@ -104,6 +104,23 @@ export type DispatchHandler = (
   input: DispatchHandlerInput,
 ) => Promise<DispatchHandlerResult>;
 
+/**
+ * Optional hook fired after a dispatch_job successfully transitions
+ * `claimed → dispatched`. Wired in instrumentation.ts to
+ * `statusWorker.notifyDispatched` so the per-printer status subscriber
+ * lazy-starts as soon as the printer has an active dispatch. Tests can
+ * override.
+ *
+ * Contract: best-effort. The hook runs sync-ish (we await it so errors are
+ * loggable) but failures inside it MUST NOT affect the dispatch's downstream
+ * lifecycle — the rule "we sent the file ≠ the print finished" still holds.
+ * Errors are logged and swallowed by the caller.
+ */
+export type OnJobDispatched = (args: {
+  dispatchJobId: string;
+  printerId: string;
+}) => void | Promise<void>;
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -445,6 +462,12 @@ async function findClaimableCandidate(
 export async function runOneClaimTick(opts: {
   agentId?: string;
   dispatchHandler?: DispatchHandler;
+  /**
+   * Best-effort hook fired AFTER `claimed → dispatched` succeeds (V2-005f-T_dcf10).
+   * Used to wake the status subscriber for printer-target jobs. Errors are
+   * logged and swallowed — the dispatch lifecycle continues regardless.
+   */
+  onJobDispatched?: OnJobDispatched;
   now?: Date;
   dbUrl?: string;
 } = {}): Promise<'ran' | 'idle' | 'errored'> {
@@ -484,6 +507,25 @@ export async function runOneClaimTick(opts: {
       'forge-claim: failed to mark dispatched after successful claim',
     );
     return 'errored';
+  }
+
+  // V2-005f-T_dcf10: notify the status worker that this printer has a fresh
+  // dispatched job, so it can lazy-start the per-printer subscriber. Only
+  // applies to printer-target jobs; slicer-target jobs have no live status
+  // feed. Best-effort: errors are logged and swallowed so the dispatch
+  // continues regardless.
+  if (opts.onJobDispatched && candidate.targetKind === 'printer') {
+    try {
+      await opts.onJobDispatched({
+        dispatchJobId: candidate.id,
+        printerId: candidate.targetId,
+      });
+    } catch (err) {
+      log.warn(
+        { err },
+        'forge-claim: onJobDispatched hook threw — continuing dispatch',
+      );
+    }
   }
 
   // Run the dispatch handler.
@@ -618,6 +660,11 @@ export async function startForgeClaimWorker(opts: {
   signal?: AbortSignal;
   concurrency?: number;
   dispatchHandler?: DispatchHandler;
+  /**
+   * Hook fired after `claimed → dispatched` succeeds. Wired in
+   * instrumentation.ts to `statusWorker.notifyDispatched` (V2-005f-T_dcf10).
+   */
+  onJobDispatched?: OnJobDispatched;
   claimTimeoutMs?: number;
   dbUrl?: string;
 } = {}): Promise<void> {
@@ -674,7 +721,13 @@ export async function startForgeClaimWorker(opts: {
   );
 
   const loops = Array.from({ length: concurrency }, () =>
-    runClaimLoop({ signal, agentId, dispatchHandler: handler, dbUrl: opts.dbUrl }),
+    runClaimLoop({
+      signal,
+      agentId,
+      dispatchHandler: handler,
+      onJobDispatched: opts.onJobDispatched,
+      dbUrl: opts.dbUrl,
+    }),
   );
   await Promise.all(loops);
 }
@@ -694,6 +747,7 @@ async function runClaimLoop(args: {
   signal: AbortSignal;
   agentId: string;
   dispatchHandler: DispatchHandler;
+  onJobDispatched?: OnJobDispatched;
   dbUrl?: string;
 }): Promise<void> {
   let backoffMs = 0;
@@ -704,6 +758,7 @@ async function runClaimLoop(args: {
       result = await runOneClaimTick({
         agentId: args.agentId,
         dispatchHandler: args.dispatchHandler,
+        onJobDispatched: args.onJobDispatched,
         dbUrl: args.dbUrl,
       });
     } catch (err) {

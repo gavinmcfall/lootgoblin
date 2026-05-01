@@ -186,11 +186,123 @@ export async function register() {
     } catch (err) {
       logger.error({ err }, 'forge.dispatch: handler registration failed');
     }
+    // V2-005f-T_dcf9 / T_dcf10 forge status worker — lazy-starts per-printer
+    // status subscribers when dispatches enter 'dispatched', persists every
+    // emitted StatusEvent to dispatch_status_events, and atomically transitions
+    // dispatch_jobs.status='dispatched' → 'completed' | 'failed' on terminal
+    // events. Recovers in-flight prints across restarts.
+    let forgeStatusWorker:
+      | Awaited<ReturnType<typeof import('./workers/forge-status-worker').createForgeStatusWorker>>
+      | null = null;
+    try {
+      const { getDefaultSubscriberRegistry } = await import(
+        './forge/status/registry'
+      );
+      const { createMoonrakerSubscriber } = await import(
+        './forge/status/subscribers/moonraker'
+      );
+      const { createOctoprintSubscriber } = await import(
+        './forge/status/subscribers/octoprint'
+      );
+      const { createBambuSubscriber } = await import(
+        './forge/status/subscribers/bambu'
+      );
+      const { createSdcpSubscriber } = await import(
+        './forge/status/subscribers/sdcp'
+      );
+      const { createChituNetworkSubscriber } = await import(
+        './forge/status/subscribers/chitu-network'
+      );
+      const { BAMBU_LAN_KINDS } = await import('./forge/dispatch/bambu/types');
+      const { SDCP_KINDS } = await import('./forge/dispatch/sdcp/types');
+      const { CHITU_NETWORK_KINDS } = await import(
+        './forge/dispatch/chitu-network/types'
+      );
+      const { createStatusEventSink } = await import(
+        './forge/status/status-event-handler'
+      );
+      const { createForgeStatusWorker } = await import(
+        './workers/forge-status-worker'
+      );
+
+      const subRegistry = getDefaultSubscriberRegistry();
+      // Klipper-via-Moonraker: legacy + per-model FDM kinds.
+      subRegistry.register('fdm_klipper', {
+        create: () => createMoonrakerSubscriber({}),
+      });
+      subRegistry.register('fdm_klipper_phrozen_arco', {
+        create: () => createMoonrakerSubscriber({}),
+      });
+      subRegistry.register('fdm_klipper_elegoo_centauri_carbon', {
+        create: () => createMoonrakerSubscriber({}),
+      });
+      // OctoPrint.
+      subRegistry.register('fdm_octoprint', {
+        create: () => createOctoprintSubscriber({}),
+      });
+      // Bambu LAN — one entry per per-model kind, all delegating to the
+      // same protocol implementation.
+      for (const kind of BAMBU_LAN_KINDS) {
+        subRegistry.register(kind, {
+          create: () =>
+            createBambuSubscriber({ printerKind: kind }),
+        });
+      }
+      // SDCP — same fan-out.
+      for (const kind of SDCP_KINDS) {
+        subRegistry.register(kind, {
+          create: () => createSdcpSubscriber({ printerKind: kind }),
+        });
+      }
+      // ChituNetwork — same fan-out.
+      for (const kind of CHITU_NETWORK_KINDS) {
+        subRegistry.register(kind, {
+          create: () => createChituNetworkSubscriber({ printerKind: kind }),
+        });
+      }
+
+      // Build the worker first so we can pass `notifyTerminal` into the sink
+      // without a circular dep (sink → worker → sink).
+      // eslint-disable-next-line prefer-const
+      let workerRef: ReturnType<typeof createForgeStatusWorker>;
+      const statusEventSink = createStatusEventSink({
+        deps: {
+          notifyTerminal: (args) => workerRef.notifyTerminal(args),
+        },
+      });
+      workerRef = createForgeStatusWorker({
+        registry: subRegistry,
+        onEvent: (printerId, event) => {
+          void statusEventSink(printerId, event);
+        },
+      });
+      forgeStatusWorker = workerRef;
+      // Boot recovery — replay every dispatched/printer-target row.
+      try {
+        await workerRef.recover();
+      } catch (err) {
+        logger.error({ err }, 'forge-status: recover() threw on boot');
+      }
+      logger.info(
+        { kinds: subRegistry.list() },
+        'forge.status: subscribers registered',
+      );
+    } catch (err) {
+      logger.error({ err }, 'forge.status: worker setup failed');
+    }
+
     // V2-005a-T4 forge claim worker — drains dispatch_jobs WHERE status='claimable'
     // for the in-process central_worker agent. Default dispatcher routes
     // printer-target jobs through the DispatchHandlerRegistry registered above;
     // slicer-target jobs stay on the stub until V2-005e.
-    void startForgeClaimWorker().catch((err) =>
+    // V2-005f-T_dcf10: pass the status worker's notifyDispatched as the
+    // onJobDispatched hook so per-printer status subscribers lazy-start as
+    // soon as a dispatch reaches 'dispatched'.
+    void startForgeClaimWorker({
+      onJobDispatched: forgeStatusWorker
+        ? (args) => forgeStatusWorker!.notifyDispatched(args)
+        : undefined,
+    }).catch((err) =>
       logger.error({ err }, 'forge-claim-worker crashed'),
     );
     // V2-005b-T_b4 forge converter worker — drains dispatch_jobs WHERE
@@ -224,6 +336,14 @@ export async function register() {
       stopForgeClaimWorker();
       stopForgeConverterWorker();
       stopForgeSlicerWorker();
+      // V2-005f-T_dcf10: tear down per-printer status subscriptions so the
+      // process can exit cleanly. Fire-and-forget — graceful-shutdown timing
+      // is owned by the orchestrator.
+      if (forgeStatusWorker) {
+        void forgeStatusWorker.stop().catch((err: unknown) =>
+          logger.warn({ err }, 'forge-status: stop threw on shutdown'),
+        );
+      }
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));
     process.once('SIGINT', () => shutdown('SIGINT'));

@@ -485,6 +485,27 @@ export const dispatchJobs = sqliteTable(
      * + migration 0026 for the partial unique index.
      */
     idempotencyKey: text('idempotency_key'),
+    /**
+     * V2-005f-T_dcf1: Per-slot material consumption captured for this dispatch
+     * job. Single-element list for non-AMS printers; multi-element for AMS-class
+     * systems (Bambu AMS / AMS HT / AMS 2 Pro). NULL until the status worker /
+     * post-print integration writes it.
+     *
+     * JSON shape: MaterialsUsed = MaterialsUsedEntry[].
+     */
+    materialsUsed: text('materials_used', { mode: 'json' }).$type<MaterialsUsed>(),
+    /**
+     * V2-005f-T_dcf1: Last time a status event was ingested for this job.
+     * Updated by the status worker on every status push/poll. NULL until the
+     * first status event arrives.
+     */
+    lastStatusAt: integer('last_status_at', { mode: 'timestamp_ms' }),
+    /**
+     * V2-005f-T_dcf1: Cached print-progress percentage 0–100 (integer). Mirrors
+     * the latest `progress` event's `pct` for cheap UI reads without scanning
+     * dispatch_status_events. NULL until the first progress event.
+     */
+    progressPct: integer('progress_pct'),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
@@ -692,4 +713,116 @@ export const forgeTargetCredentials = sqliteTable(
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
   },
+);
+
+// ---------------------------------------------------------------------------
+// V2-005f-T_dcf1: dispatch_status_events + dispatch_jobs.materials_used
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle event kinds emitted by status subscribers (T_dcf3+).
+ *
+ *   started      — printer accepted job + began executing
+ *   progress     — periodic update (pct / layer_num / mc_remaining_min)
+ *   paused       — print paused (user / filament out / lid open)
+ *   resumed      — print resumed after a pause
+ *   completed    — print finished successfully
+ *   failed       — print failed (error_code + protocol-specific detail)
+ *   reconnected  — subscriber regained connectivity after `unreachable`
+ *   unreachable  — subscriber can't reach printer (transient or terminal)
+ *
+ * App-layer validates against this list (no DB CHECK constraint, project
+ * pattern). The full event payload lives in `dispatch_status_events.event_data`
+ * as a per-protocol JSON blob.
+ */
+export const STATUS_EVENT_KINDS = [
+  'started',
+  'progress',
+  'paused',
+  'resumed',
+  'completed',
+  'failed',
+  'reconnected',
+  'unreachable',
+] as const;
+export type StatusEventKind = (typeof STATUS_EVENT_KINDS)[number];
+
+/**
+ * Source-protocol discriminator for status events. Names the wire protocol
+ * the status subscriber used (NOT the printer model — see
+ * FORGE_PRINTER_KINDS for that).
+ */
+export const STATUS_SOURCE_PROTOCOLS = [
+  'moonraker',
+  'octoprint',
+  'bambu_lan',
+  'sdcp',
+  'chitu_network',
+] as const;
+export type StatusSourceProtocol = (typeof STATUS_SOURCE_PROTOCOLS)[number];
+
+/**
+ * One slot's worth of material consumption attributed to a dispatch job.
+ *
+ *   slot_index       0 for non-AMS printers; 0..N-1 for AMS-class systems.
+ *   material_id      FK at the app layer → materials.id (V2-007a). Identifies
+ *                    *which* material was consumed; the Materials pillar owns
+ *                    consumption ledger emission via T_dcf11.
+ *   estimated_grams  Slicer-estimated consumption (T_dcf2 extractor).
+ *   measured_grams   Observed consumption from per-slot weight delta (Bambu
+ *                    AMS only) or NULL when the printer doesn't report it.
+ */
+export type MaterialsUsedEntry = {
+  slot_index: number;
+  material_id: string;
+  estimated_grams: number;
+  measured_grams: number | null;
+};
+export type MaterialsUsed = MaterialsUsedEntry[];
+
+/**
+ * Full audit trail of every status update ingested for a dispatch job, from
+ * any printer protocol. Append-only; CASCADE on dispatch_job_id so deleting a
+ * dispatch row drops its event history atomically.
+ *
+ *   - `event_data` is a free-form JSON blob shaped per `source_protocol`
+ *     (Moonraker `notify_status_update`, Bambu MQTT push, SDCP WS frame, …).
+ *     Schema is intentionally loose — the dispatch_jobs cache columns
+ *     (`progress_pct`, `last_status_at`) are the typed surface for UI reads.
+ *   - `occurred_at` is the printer's clock when known, else ingest clock.
+ *   - `ingested_at` is always our clock — used for debug / clock-skew triage.
+ *   - No app-layer FK from `material_id` (lives inside `materials_used` JSON
+ *     on the parent `dispatch_jobs` row, not in this event stream).
+ */
+export const dispatchStatusEvents = sqliteTable(
+  'dispatch_status_events',
+  {
+    id: text('id').primaryKey(),
+    dispatchJobId: text('dispatch_job_id')
+      .notNull()
+      .references(() => dispatchJobs.id, { onDelete: 'cascade' }),
+    /** App-layer validates against STATUS_EVENT_KINDS. */
+    eventKind: text('event_kind').notNull(),
+    /**
+     * Free-form JSON per `source_protocol` — e.g.
+     *   moonraker: { pct, layer_num, total_layers, mc_remaining_min, gcode_state, error_code }
+     *   bambu_lan: { mc_percent, mc_remaining_time, layer_num, total_layer_num, ams: [...] }
+     *   sdcp:      { CurrentTicks, TotalTicks, PrintStatus, ErrorNumber }
+     */
+    eventData: text('event_data').notNull(),
+    /** App-layer validates against STATUS_SOURCE_PROTOCOLS. */
+    sourceProtocol: text('source_protocol').notNull(),
+    occurredAt: integer('occurred_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+    ingestedAt: integer('ingested_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => [
+    /** Per-job timeline scan — UI/SSE hot path. */
+    index('idx_dispatch_status_events_job').on(t.dispatchJobId, t.occurredAt),
+    /** Filter by event kind (e.g. all `failed` events for diagnostics). */
+    index('idx_dispatch_status_events_kind').on(t.eventKind),
+  ],
 );

@@ -25,6 +25,13 @@ export interface WsClientLike {
   off(event: string, listener: (...args: unknown[]) => void): this;
   send(data: string, callback?: (err?: Error) => void): void;
   close(code?: number, reason?: string): void;
+  /**
+   * Optional WebSocket-level ping frame. Used by SDCP (T_dcf7) for the 30s
+   * keepalive — SDCP printers disconnect after 60s idle. Other transports
+   * (Moonraker, OctoPrint SockJS) don't need it; the property is optional so
+   * existing fakes don't have to implement it.
+   */
+  ping?(): void;
   readonly readyState: number;
 }
 

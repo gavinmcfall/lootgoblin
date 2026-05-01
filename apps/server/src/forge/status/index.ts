@@ -16,3 +16,9 @@ export {
   buildBambuEvent,
   type BambuSubscriberOpts,
 } from './subscribers/bambu';
+export {
+  createSdcpSubscriber,
+  mapSdcpStatus,
+  buildSdcpEvent,
+  type SdcpSubscriberOpts,
+} from './subscribers/sdcp';

@@ -7,6 +7,7 @@
  */
 
 export * from './types';
+export * from './registry';
 export * from './subscribers/moonraker';
 export { createOctoprintSubscriber, type OctoprintSubscriberOpts } from './subscribers/octoprint';
 export {

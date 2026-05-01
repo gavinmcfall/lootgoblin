@@ -221,6 +221,9 @@ export async function register() {
       const { createStatusEventSink } = await import(
         './forge/status/status-event-handler'
       );
+      const { emitConsumptionForCompletion } = await import(
+        './forge/status/consumption-emitter'
+      );
       const { createForgeStatusWorker } = await import(
         './workers/forge-status-worker'
       );
@@ -268,6 +271,14 @@ export async function register() {
       const statusEventSink = createStatusEventSink({
         deps: {
           notifyTerminal: (args) => workerRef.notifyTerminal(args),
+          // V2-005f-T_dcf11: bridge terminal-completed events into V2-007a's
+          // consumption ledger. Phase B emits one `material.consumed` ledger
+          // event per AMS slot (provenance='measured') using the
+          // event.measuredConsumption signal + cached materials_used. Phase A
+          // (estimated) is emitted at dispatch time by the claim worker.
+          emitConsumption: async ({ dispatchJobId, event }) => {
+            await emitConsumptionForCompletion({ dispatchJobId, event });
+          },
         },
       });
       workerRef = createForgeStatusWorker({

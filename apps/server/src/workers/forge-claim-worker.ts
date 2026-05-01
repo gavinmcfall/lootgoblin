@@ -69,6 +69,9 @@ import {
 import { getCredential } from '../forge/dispatch/credentials';
 import { mapAdapterReasonToSchema } from '../forge/dispatch/failure-reason-map';
 import type { DispatchContext } from '../forge/dispatch/handler';
+import { extractSlicerEstimate } from '../forge/dispatch/slicer-estimate/extractor';
+import { emitConsumptionForDispatch } from '../forge/status/consumption-emitter';
+import type { MaterialsUsed } from '../db/schema.forge';
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -349,6 +352,82 @@ async function loadArtifactForJob(
   return rows[0] ?? null;
 }
 
+/**
+ * V2-005f-T_dcf11 Phase A. After claim, before dispatch handler runs:
+ *
+ *   1. Resolve the dispatch's machine-facing artifact storage path
+ *      (forge_artifacts.storage_path — set by V2-005c slicer worker for
+ *      printer-target jobs). Slicer-target jobs and pre-slice jobs have no
+ *      artifact yet → no-op.
+ *   2. Run `extractSlicerEstimate` against that path. Parser failures and
+ *      unsupported formats return null (the framework swallows throws).
+ *   3. UPDATE `dispatch_jobs.materials_used` with the per-slot estimate.
+ *      `material_id` is left empty — V2-005f-CF-1 will populate it once
+ *      material-loadout tracking is wired.
+ *   4. Call `emitConsumptionForDispatch` to record the Phase-A estimated
+ *      ledger row(s). With `material_id=''` everywhere this is a no-op for
+ *      now; the call site is in place for CF-1.
+ *
+ * Best-effort. Failures are logged and swallowed — dispatch continues
+ * regardless. The materials_used cache is purely metadata + bookkeeping
+ * for Phase B; missing data degrades the consumption-event flow but does
+ * not break the print.
+ */
+async function extractAndPersistSlicerEstimate(args: {
+  dispatchJobId: string;
+  lootId: string;
+  dbUrl?: string;
+}): Promise<void> {
+  const artifact = await loadArtifactForJob(args.dispatchJobId, args.dbUrl);
+  if (!artifact) {
+    // No machine-facing artifact yet — slicer-target jobs and jobs that
+    // skipped the slicer worker land here. Nothing to extract.
+    return;
+  }
+
+  const estimate = await extractSlicerEstimate({ filePath: artifact.storagePath }).catch(
+    () => null,
+  );
+  if (!estimate) {
+    logger.debug(
+      { dispatchJobId: args.dispatchJobId, path: artifact.storagePath },
+      'forge-claim: slicer estimate not extractable — skipping Phase A',
+    );
+    return;
+  }
+
+  const materialsUsed: MaterialsUsed = estimate.slots.map((s) => ({
+    slot_index: s.slot_index,
+    // V2-005f-CF-1: material loadout tracking not yet wired. Leave empty so
+    // Phase A / Phase B both safely skip emission until CF-1 lands.
+    material_id: '',
+    estimated_grams: s.estimated_grams,
+    measured_grams: null,
+  }));
+
+  const db = getServerDb(args.dbUrl);
+  // better-sqlite3 needs `.run()` to actually execute (the awaited builder is
+  // only the async-postgres path). Mirror dispatch-state.ts's pattern.
+  (db
+    .update(schema.dispatchJobs)
+    .set({ materialsUsed })
+    .where(eq(schema.dispatchJobs.id, args.dispatchJobId)) as unknown as {
+    run: () => unknown;
+  }).run();
+
+  // Phase A emission. Currently a no-op (every material_id is '') — the
+  // call site is here so V2-005f-CF-1 can flip the switch by populating
+  // material_id without touching this worker.
+  await emitConsumptionForDispatch(
+    {
+      dispatchJobId: args.dispatchJobId,
+      lootId: args.lootId,
+      materialsUsed,
+    },
+    { dbUrl: args.dbUrl },
+  );
+}
+
 interface ClaimableCandidate {
   id: string;
   ownerId: string;
@@ -493,6 +572,26 @@ export async function runOneClaimTick(opts: {
     targetKind: candidate.targetKind,
     targetId: candidate.targetId,
   });
+
+  // V2-005f-T_dcf11 Phase A: extract slicer estimate + cache materials_used
+  // BEFORE markDispatched, so the status worker (which subscribes on the
+  // dispatched transition) sees the cache populated by the time it correlates
+  // measured-consumption events. Failures are logged and swallowed — the
+  // dispatch lifecycle is independent of the consumption-emission pipeline.
+  if (candidate.targetKind === 'printer') {
+    try {
+      await extractAndPersistSlicerEstimate({
+        dispatchJobId: candidate.id,
+        lootId: candidate.lootId,
+        dbUrl: opts.dbUrl,
+      });
+    } catch (err) {
+      log.warn(
+        { err },
+        'forge-claim: slicer-estimate extraction threw — continuing dispatch',
+      );
+    }
+  }
 
   // claimed → dispatched. If this fails, the row is stuck in 'claimed' and
   // stale-recovery will eventually rescue it. We still return 'errored' so

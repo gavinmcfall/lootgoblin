@@ -9,3 +9,10 @@
 export * from './types';
 export * from './subscribers/moonraker';
 export { createOctoprintSubscriber, type OctoprintSubscriberOpts } from './subscribers/octoprint';
+export {
+  createBambuSubscriber,
+  mapBambuState,
+  extractAmsSlots,
+  buildBambuEvent,
+  type BambuSubscriberOpts,
+} from './subscribers/bambu';

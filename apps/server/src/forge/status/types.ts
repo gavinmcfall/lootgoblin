@@ -63,6 +63,13 @@ export interface MeasuredConsumptionSlot {
   slot_index: number;
   grams: number;
   volume_ml?: number;
+  /**
+   * Bambu AMS / similar protocols: tray remaining as percentage 0–100.
+   * Surfaced when the printer reports remaining-stock as a percentage rather
+   * than an absolute mass. T_dcf11 uses this together with the slicer-derived
+   * `materials_used` estimate to back-calculate measured grams.
+   */
+  remain_percent?: number;
 }
 
 /**

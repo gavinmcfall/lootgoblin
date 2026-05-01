@@ -106,6 +106,23 @@ const ALL_TARGET_KINDS = [
  */
 const BAMBU_LAN_NATIVE = ['gcode.3mf', '3mf'] as const;
 
+/**
+ * Native formats for V2-005d-c SDCP per-model kinds. All Elegoo SDCP printers
+ * accept open `.ctb` (no encryption). Capabilities — see
+ * src/forge/dispatch/sdcp/types.ts SDCP_MODEL_CAPABILITIES.
+ */
+const SDCP_NATIVE = ['ctb'] as const;
+
+/**
+ * Native formats for V2-005d-c ChituNetwork legacy network resin kinds. All
+ * accept `.ctb`; legacy Elegoo also accepts `.cbddlp`; Uniformation GKtwo
+ * also accepts `.jxs`. Capabilities — see
+ * src/forge/dispatch/chitu-network/types.ts CHITU_NETWORK_MODEL_CAPABILITIES.
+ */
+const CHITU_NETWORK_NATIVE_CTB_ONLY = ['ctb'] as const;
+const CHITU_NETWORK_NATIVE_CTB_CBDDLP = ['ctb', 'cbddlp'] as const;
+const CHITU_NETWORK_NATIVE_CTB_JXS = ['ctb', 'jxs'] as const;
+
 const NATIVE_FORMATS: Record<TargetKind, ReadonlyArray<string>> = {
   // FDM printer transports
   fdm_klipper: ['gcode'],
@@ -128,6 +145,32 @@ const NATIVE_FORMATS: Record<TargetKind, ReadonlyArray<string>> = {
   bambu_x1: BAMBU_LAN_NATIVE,
   // Resin printer transport (SDCP)
   resin_sdcp: ['ctb', 'cbddlp', 'goo', 'photon', 'pwmx', 'pwmo'],
+  // V2-005d-c: Per-model SDCP kinds (Elegoo Saturn / Mars families on the
+  // open SDCP firmware). All accept `.ctb` (no encryption required).
+  sdcp_elegoo_saturn_4: SDCP_NATIVE,
+  sdcp_elegoo_saturn_4_ultra: SDCP_NATIVE,
+  sdcp_elegoo_mars_5: SDCP_NATIVE,
+  sdcp_elegoo_mars_5_ultra: SDCP_NATIVE,
+  sdcp_elegoo_saturn_3_ultra: SDCP_NATIVE,
+  sdcp_elegoo_mars_4_ultra: SDCP_NATIVE,
+  sdcp_elegoo_saturn_2: SDCP_NATIVE,
+  sdcp_elegoo_mars_3: SDCP_NATIVE,
+  // V2-005d-c: Per-model ChituNetwork legacy-network resin kinds (Phrozen +
+  // Uniformation + legacy-firmware Elegoo). Phrozen + Uniformation GKone
+  // accept `.ctb` only; Uniformation GKtwo also accepts `.jxs`; legacy
+  // Elegoo (pre-SDCP firmware) also accepts `.cbddlp`.
+  chitu_network_phrozen_sonic_mighty_8k: CHITU_NETWORK_NATIVE_CTB_ONLY,
+  chitu_network_phrozen_sonic_mega_8k: CHITU_NETWORK_NATIVE_CTB_ONLY,
+  chitu_network_phrozen_sonic_mini_8k: CHITU_NETWORK_NATIVE_CTB_ONLY,
+  chitu_network_uniformation_gktwo: CHITU_NETWORK_NATIVE_CTB_JXS,
+  chitu_network_uniformation_gkone: CHITU_NETWORK_NATIVE_CTB_ONLY,
+  chitu_network_elegoo_mars_legacy: CHITU_NETWORK_NATIVE_CTB_CBDDLP,
+  chitu_network_elegoo_saturn_legacy: CHITU_NETWORK_NATIVE_CTB_CBDDLP,
+  // V2-005d-c: FDM Klipper expansion — Phrozen Arco + Elegoo Centauri Carbon
+  // are Klipper-firmware FDM printers fronted by Moonraker. Mirror the
+  // generic `fdm_klipper` kind: plain gcode native.
+  fdm_klipper_phrozen_arco: ['gcode'],
+  fdm_klipper_elegoo_centauri_carbon: ['gcode'],
   // Slicers
   bambu_studio: ['stl', '3mf', 'obj', 'step', 'stp', 'gcode', 'amf'],
   orcaslicer: ['stl', '3mf', 'obj', 'step', 'stp', 'amf', 'gcode'],
@@ -200,6 +243,25 @@ const UNSUPPORTED_REASONS: Record<string, Partial<Record<TargetKind | '*', strin
   // Resin-vs-FDM mismatches + Bambu LAN's strict need for Bambu-flavoured 3mf.
   gcode: {
     resin_sdcp: 'Resin printers do not accept gcode',
+    // V2-005d-c: Per-model SDCP kinds reject plain gcode — resin printers
+    // need a sliced format (.ctb) instead.
+    sdcp_elegoo_saturn_4: 'resin-printer-needs-ctb-not-gcode',
+    sdcp_elegoo_saturn_4_ultra: 'resin-printer-needs-ctb-not-gcode',
+    sdcp_elegoo_mars_5: 'resin-printer-needs-ctb-not-gcode',
+    sdcp_elegoo_mars_5_ultra: 'resin-printer-needs-ctb-not-gcode',
+    sdcp_elegoo_saturn_3_ultra: 'resin-printer-needs-ctb-not-gcode',
+    sdcp_elegoo_mars_4_ultra: 'resin-printer-needs-ctb-not-gcode',
+    sdcp_elegoo_saturn_2: 'resin-printer-needs-ctb-not-gcode',
+    sdcp_elegoo_mars_3: 'resin-printer-needs-ctb-not-gcode',
+    // V2-005d-c: Per-model ChituNetwork kinds reject plain gcode — resin
+    // printers need a sliced format (.ctb / .cbddlp / .jxs).
+    chitu_network_phrozen_sonic_mighty_8k: 'resin-printer-needs-ctb-not-gcode',
+    chitu_network_phrozen_sonic_mega_8k: 'resin-printer-needs-ctb-not-gcode',
+    chitu_network_phrozen_sonic_mini_8k: 'resin-printer-needs-ctb-not-gcode',
+    chitu_network_uniformation_gktwo: 'resin-printer-needs-ctb-not-gcode',
+    chitu_network_uniformation_gkone: 'resin-printer-needs-ctb-not-gcode',
+    chitu_network_elegoo_mars_legacy: 'resin-printer-needs-ctb-not-gcode',
+    chitu_network_elegoo_saturn_legacy: 'resin-printer-needs-ctb-not-gcode',
     // V2-005d-b: Bambu LAN per-model kinds reject plain gcode. They require
     // the Bambu-flavoured `.gcode.3mf` produced by Bambu Studio / OrcaSlicer
     // (embedded print metadata + AMS slot map). Plain gcode is silently

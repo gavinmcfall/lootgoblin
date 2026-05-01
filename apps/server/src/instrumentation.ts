@@ -113,8 +113,17 @@ export async function register() {
         './forge/dispatch/bambu/adapter'
       );
       const { BAMBU_LAN_KINDS } = await import('./forge/dispatch/bambu/types');
+      const { createSdcpHandler } = await import('./forge/dispatch/sdcp/adapter');
+      const { SDCP_KINDS } = await import('./forge/dispatch/sdcp/types');
+      const { createChituNetworkHandler } = await import(
+        './forge/dispatch/chitu-network/adapter'
+      );
+      const { CHITU_NETWORK_KINDS } = await import(
+        './forge/dispatch/chitu-network/types'
+      );
       const dispatchRegistry = getDefaultRegistry();
-      dispatchRegistry.register(createMoonrakerHandler());
+      const moonrakerHandler = createMoonrakerHandler();
+      dispatchRegistry.register(moonrakerHandler);
       dispatchRegistry.register(createOctoprintHandler());
       // V2-005d-b-T_db4: register the Bambu LAN handler against all 13 per-model
       // kinds. One adapter, one dispatch logic, 13 registry entries — operator
@@ -128,6 +137,46 @@ export async function register() {
         dispatchRegistry.register({
           kind,
           dispatch: bambuHandler.dispatch.bind(bambuHandler),
+        });
+      }
+      // V2-005d-c-T_dc10: register the SDCP handler against all 8 SDCP kinds
+      // (Elegoo Saturn 4 Ultra family + Mars 5 Ultra). One adapter, one
+      // WebSocket+upload+job-control implementation, fanned out per per-model
+      // kind so operator UI can distinguish models while the dispatch path
+      // converges.
+      const sdcpHandler = createSdcpHandler();
+      for (const kind of SDCP_KINDS) {
+        dispatchRegistry.register({
+          kind,
+          dispatch: sdcpHandler.dispatch.bind(sdcpHandler),
+        });
+      }
+      // V2-005d-c-T_dc10: register the ChituNetwork handler against all 7
+      // ChituNetwork kinds (Anycubic Photon Mono X / M3 / M5 / M5s / M7 Pro
+      // family). Same fan-out pattern as SDCP/Bambu — single HTTP-API
+      // implementation, per-model registry entries.
+      const chituHandler = createChituNetworkHandler();
+      for (const kind of CHITU_NETWORK_KINDS) {
+        dispatchRegistry.register({
+          kind,
+          dispatch: chituHandler.dispatch.bind(chituHandler),
+        });
+      }
+      // V2-005d-c-T_dc10: V2-005d-a Moonraker registry expansion — register
+      // the existing Moonraker handler against 2 new FDM Klipper per-model
+      // kinds (Phrozen ARCO + Elegoo Centauri Carbon). Both are FDM Klipper-
+      // based printers caught during V2-005d-c research as needing per-model
+      // classification. They reuse the V2-005d-a Moonraker dispatcher
+      // unchanged — operator UI gets distinct kind tags while dispatch
+      // converges on the existing implementation.
+      const FDM_KLIPPER_NEW_KINDS = [
+        'fdm_klipper_phrozen_arco',
+        'fdm_klipper_elegoo_centauri_carbon',
+      ] as const;
+      for (const kind of FDM_KLIPPER_NEW_KINDS) {
+        dispatchRegistry.register({
+          kind,
+          dispatch: moonrakerHandler.dispatch.bind(moonrakerHandler),
         });
       }
       logger.info(

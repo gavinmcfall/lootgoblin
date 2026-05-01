@@ -45,6 +45,8 @@ interface MockTcpSocket {
   fireData: (data: Buffer | string) => void;
   fireError: (err: Error) => void;
   destroyed: () => boolean;
+  /** Number of registered error listeners — lets tests poll for listener installation under parallel load. */
+  errorListenerCount: number;
 }
 
 /**
@@ -136,7 +138,10 @@ function createMockTcpSocket(opts?: {
       for (const fn of errorListeners.slice()) fn(err);
     },
     destroyed: () => destroyed,
-  };
+    get errorListenerCount() {
+      return errorListeners.length;
+    },
+  } as MockTcpSocket;
 }
 
 /** Default reply rule: ok to every write. */
@@ -418,8 +423,11 @@ describe('createChituNetworkHandler', () => {
       }),
     );
 
-    // Allow file read + connect() invocation to register listeners.
-    for (let i = 0; i < 6; i++) await flush();
+    // Wait until the commander has actually registered an error listener on
+    // the socket. Under parallel test load the fixed flush count was
+    // insufficient — fileRead → connect() → listener registration is async
+    // and may not complete in 6 microtasks. Poll-with-cap is robust.
+    for (let i = 0; i < 200 && m.errorListenerCount === 0; i++) await flush();
     const err = new Error('connect ECONNREFUSED 192.168.1.99:3000');
     (err as Error & { code?: string }).code = 'ECONNREFUSED';
     m.fireError(err);

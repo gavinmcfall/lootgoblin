@@ -508,3 +508,82 @@ LG_TEST_CHITU_PORT=3000                                     # optional
 ```
 
 Both tests use startPrint=false — file uploads to /local/ but no actual print starts. Skipped in CI.
+
+## V2-005f Status Feeds + Consumption
+
+V2-005f wires a per-printer status subscriber subsystem on top of the V2-005d dispatcher pillars. After a dispatch transitions to `dispatched`, the status worker spins up a protocol-specific subscriber for that printer; events flow through the worker to `dispatch_status_events` (audit log) and the V2-007a Ledger (consumption events).
+
+### Lifecycle
+
+1. **Lazy-start**: when a `dispatch_jobs.status` transitions to `'dispatched'`, the status worker creates a subscriber (Moonraker WS, OctoPrint SockJS, Bambu MQTT, SDCP WS, or ChituNetwork TCP) for that printer if one isn't already running.
+2. **Auto-stop**: when the last `dispatched` job for a printer reaches a terminal state (`completed` / `failed`), the worker schedules a 30-second teardown grace timer. New dispatches arriving during the grace cancel the teardown.
+3. **Reconnect**: subscribers handle disconnects via exponential backoff: 5s → 10s → 30s → 60s → 5min cap. Reconnect continues forever until the printer comes back or the last dispatch terminates.
+4. **Boot resilience**: on lootgoblin restart, the worker re-attaches subscribers for all in-flight `dispatched` jobs.
+
+### Adaptive polling — ChituNetwork
+
+ChituNetwork (legacy ChituBox firmware on Phrozen / Uniformation / older Elegoo) has no push protocol. The subscriber uses an adaptive M27 polling cadence:
+
+| State | Poll interval | Trigger |
+|---|---|---|
+| IDLE | 60s | default at connect |
+| PRINTING | 10s | dispatch sent M6030 (worker signal) OR M27 reports active print |
+| NEAR_COMPLETION | 2s | M27 reports ≥90% bytes-printed |
+| JUST_FINISHED | 30s | transition from PRINTING/NEAR back to idle (5 min then back to IDLE) |
+
+For 100 printers running idle: ~5 req/s aggregate. For 100 printers actively printing: ~10 req/s. The cadence is bounded.
+
+### Multi-slot consumption (AMS et al.)
+
+Bambu MQTT exposes per-slot tray remaining percentages (`ams.tray[i].remain`). The status subscriber emits `measuredConsumption` arrays on terminal events; the V2-005f consumption emitter back-calculates measured grams per slot:
+
+```
+measured_grams = slicer_estimated_grams × (1 - remain_percent_at_completion / 100)
+```
+
+This is a **simplification** — full per-spool tracking requires V2-005f-CF-1 (material loadout tracking), where operators tag which `materials` row is loaded in which printer slot at print time. Until CF-1 ships, consumption events emit only when `dispatch_jobs.materials_used[].material_id` is manually populated.
+
+OctoPrint, Moonraker, SDCP, and ChituNetwork do not surface per-slot consumption. For those protocols, only the slicer-estimated phase A consumption is recorded (as `provenance='estimated'` in the ledger).
+
+### Idempotency
+
+Reconnect storms can cause duplicate status events for the same dispatch. The consumption emitter dedupes against the ledger via `(dispatch_job_id, slot_index, provenanceClass)` triple — implemented as a `note='slot:N'` field on the `material.consumed` ledger payload, queried via `json_extract` before each emission. Duplicate consumption is a silent no-op.
+
+`dispatch_status_events` rows are NOT deduped — each event gets its own UUID. The audit log preserves all signal including reconnect storms.
+
+### HTTP API
+
+- `GET /api/v1/forge/dispatch/:id/status` — owner-or-admin. Returns `{ dispatch_job_id, status, progress_pct, last_status_at, events: [...latest 50 ordered DESC] }`.
+- `GET /api/v1/forge/dispatch/:id/status/stream` — owner-or-admin Server-Sent Events. Streams `event: status\ndata: <json>\n\n` per printer event. Auto-disconnects on terminal state. Already-terminal dispatches return one terminal frame and close. Heartbeat every 30s.
+
+UI clients should prefer SSE for live progress and fall back to polling `/status` for historical state.
+
+### Real-printer smoke tests
+
+Five env-gated tests at `apps/server/tests/integration/status-{moonraker,octoprint,bambu,sdcp,chitu}-real.test.ts` connect to real printers when local env vars are set:
+
+- `LG_TEST_MOONRAKER_HOST` + `LG_TEST_MOONRAKER_API_KEY`
+- `LG_TEST_OCTOPRINT_HOST` + `LG_TEST_OCTOPRINT_API_KEY`
+- `LG_TEST_BAMBU_IP` + `LG_TEST_BAMBU_ACCESS_CODE` + `LG_TEST_BAMBU_SERIAL`
+- `LG_TEST_SDCP_IP` + `LG_TEST_SDCP_MAINBOARD_ID`
+- `LG_TEST_CHITU_IP`
+
+Each test connects with the real subscriber (no mocked transport), waits for at least one `StatusEvent`, then `stop()`s cleanly and verifies the `isConnected()` lifecycle (true before stop, false after). Run individually:
+
+```bash
+LG_TEST_MOONRAKER_HOST=voron.lan LG_TEST_MOONRAKER_API_KEY=$KEY \
+  npx vitest run tests/integration/status-moonraker-real.test.ts
+```
+
+CI never sets these → tests are no-ops. Used by ops/dev to validate against actual hardware.
+
+### Carry-forwards
+
+- **V2-005f-CF-1**: Material loadout tracking — auto-populate `dispatch_jobs.materials_used[].material_id` from the printer's currently-loaded spool inventory (today operators set this manually).
+- **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival.
+- **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline.
+- **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening.
+- **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence.
+- **V2-005f-CF-6**: Playwright UI tests for status SSE streams (blocked on V2-009 UI scope).
+- **V2-005f-CF-7**: Encrypted CTB binary header parsing (today encrypted variants return null estimates).
+

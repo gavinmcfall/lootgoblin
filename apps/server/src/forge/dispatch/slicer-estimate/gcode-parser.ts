@@ -57,8 +57,10 @@ function findLastComment(content: string, key: string): string | null {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`^\\s*;\\s*${escaped}\\s*=\\s*(.+)$`, 'i');
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const m = lines[i].match(re);
-    if (m) return m[1].trim();
+    const line = lines[i];
+    if (line === undefined) continue;
+    const m = line.match(re);
+    if (m && m[1] !== undefined) return m[1].trim();
   }
   return null;
 }
@@ -102,13 +104,13 @@ export function parseGcodeContent(content: string): SlicerEstimate | null {
   const slots: SlicerEstimateSlot[] = [];
   for (let i = 0; i < grams.length; i += 1) {
     const g = grams[i];
-    if (!Number.isFinite(g) || g <= 0) continue; // inactive AMS lane
+    if (g === undefined || !Number.isFinite(g) || g <= 0) continue; // inactive AMS lane
     const slot: SlicerEstimateSlot = {
       slot_index: i,
       estimated_grams: g,
     };
     const v = volumes[i];
-    if (Number.isFinite(v) && v > 0) {
+    if (v !== undefined && Number.isFinite(v) && v > 0) {
       slot.estimated_volume_ml = v;
     }
     const t = types[i];

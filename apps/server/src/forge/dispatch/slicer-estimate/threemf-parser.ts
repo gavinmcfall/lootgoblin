@@ -168,11 +168,12 @@ export async function parseThreemfFile(filePath: string): Promise<SlicerEstimate
   const plateEntries: { idx: number; name: string }[] = [];
   for (const name of Object.keys(zip.files)) {
     const m = name.match(PLATE_GCODE_RE);
-    if (m) plateEntries.push({ idx: parseInt(m[1], 10), name });
+    if (m && m[1] !== undefined) plateEntries.push({ idx: parseInt(m[1], 10), name });
   }
   if (plateEntries.length === 0) return null;
   plateEntries.sort((a, b) => a.idx - b.idx);
   const preferred = plateEntries.find((p) => p.idx === 1) ?? plateEntries[0];
+  if (!preferred) return null;
   const plateEntry = zip.file(preferred.name);
   if (!plateEntry) return null;
 

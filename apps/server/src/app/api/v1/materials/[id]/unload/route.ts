@@ -1,14 +1,15 @@
 /**
  * POST /api/v1/materials/:id/unload — V2-007a-T14
  *
- * Calls T4 unloadFromPrinter. No body. 409 on not-loaded.
+ * V2-005f-CF-1 T_g2 status: lifecycle is wired against `printer_loadouts` and
+ * exports the new `unloadFromPrinter` shape, but the route refactor lives in
+ * T_g3. Returns 501 until then so we don't lock ourselves into the legacy
+ * `previousPrinterRef` response shape.
  */
 
-import { NextResponse, type NextRequest } from 'next/server';
+import { type NextRequest } from 'next/server';
 
-import { unloadFromPrinter } from '@/materials/lifecycle';
-
-import { errorResponse, loadMaterialForActor, statusForReason } from '../../_shared';
+import { errorResponse, loadMaterialForActor } from '../../_shared';
 
 export async function POST(
   req: NextRequest,
@@ -17,25 +18,10 @@ export async function POST(
   const { id } = await context.params;
   const loaded = await loadMaterialForActor(req, id, 'update');
   if (!loaded.ok) return loaded.response;
-  const { actor } = loaded;
 
-  const result = await unloadFromPrinter({
-    materialId: id,
-    actorUserId: actor.id,
-  });
-  if (!result.ok) {
-    return errorResponse(
-      result.reason,
-      `material unload rejected: ${result.reason}`,
-      statusForReason(result.reason),
-      result.details,
-    );
-  }
-  return NextResponse.json(
-    {
-      ledgerEventId: result.ledgerEventId,
-      previousPrinterRef: result.previousPrinterRef,
-    },
-    { status: 200 },
+  return errorResponse(
+    'not-implemented',
+    'unload endpoint response shape will change in V2-005f-CF-1 T_g3; until then this route returns 501',
+    501,
   );
 }

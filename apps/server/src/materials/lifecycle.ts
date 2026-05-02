@@ -30,7 +30,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 
 import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
@@ -77,17 +77,6 @@ export interface RetireMaterialInput {
   actorUserId: string;
   retirementReason: string;
   acknowledgeLoaded?: boolean;
-}
-
-export interface LoadInPrinterInput {
-  materialId: string;
-  actorUserId: string;
-  printerRef: string;
-}
-
-export interface UnloadFromPrinterInput {
-  materialId: string;
-  actorUserId: string;
 }
 
 /**
@@ -344,11 +333,33 @@ export async function retireMaterial(
     return { ok: false, reason: 'already-retired' };
   }
 
-  // TODO V2-005f-CF-1 T_g2: replace with printer_loadouts lookup.
-  // V2-005f-CF-1 T_g1 dropped materials.loaded_in_printer_ref; the new
-  // printer_loadouts table replaces it but isn't wired through lifecycle yet.
-  // Until T_g2 ships, retirement skips the "loaded in printer" gate.
-  void input.acknowledgeLoaded;
+  // V2-005f-CF-1 T_g2: loaded-gate against printer_loadouts. Block retirement
+  // when the material has an open loadout row, unless the caller explicitly
+  // acknowledges they're aware ("yes, retire even though it's still loaded —
+  // I'll handle the physical unload"). Mirrors the V2-007a-T4 semantics
+  // against the legacy free-text column.
+  const openLoadouts = await db
+    .select({
+      id: schema.printerLoadouts.id,
+      printerId: schema.printerLoadouts.printerId,
+      slotIndex: schema.printerLoadouts.slotIndex,
+    })
+    .from(schema.printerLoadouts)
+    .where(
+      and(
+        eq(schema.printerLoadouts.materialId, input.materialId),
+        isNull(schema.printerLoadouts.unloadedAt),
+      ),
+    )
+    .limit(1);
+  if (openLoadouts.length > 0 && input.acknowledgeLoaded !== true) {
+    const open = openLoadouts[0]!;
+    return {
+      ok: false,
+      reason: 'loaded-in-printer-no-ack',
+      details: `material currently loaded in printer ${open.printerId} slot ${open.slotIndex}; pass acknowledgeLoaded:true to retire anyway`,
+    };
+  }
 
   // V2-005 dispatch check — defaults to no-op until Forge ships.
   // TODO(V2-005): pass the real Forge dispatch checker from the HTTP layer.
@@ -410,81 +421,26 @@ export async function retireMaterial(
 }
 
 // ---------------------------------------------------------------------------
-// loadInPrinter
+// loadInPrinter / unloadFromPrinter — V2-005f-CF-1 T_g2
 // ---------------------------------------------------------------------------
 
 /**
- * Mark a Material as loaded in a printer. For `kind='filament_spool'`, we
- * additionally enforce that no OTHER active filament spool of the same
- * owner is loaded at the same `printerRef`. This is an app-layer constraint
- * — no DB UNIQUE constraint exists because the field is sparse and the
- * uniqueness scope depends on `kind`.
- *
- * Reason codes:
- *   material-id-required
- *   printer-ref-required
- *   material-not-found
- *   material-retired
- *   printer-slot-occupied         — filament_spool conflict on same owner+printerRef
- *   persist-failed
+ * The load/unload lifecycle now lives in `forge/loadouts/lifecycle.ts` against
+ * the `printer_loadouts` table (atomic swap, idempotent re-load,
+ * cross-printer/slot conflict detection, ledger emission). The function names
+ * are preserved here as re-exports so callers (route handlers, tests) keep
+ * resolving the same symbols. T_g3 rewrites the HTTP routes to consume the
+ * new `(printerId, slotIndex)` argument shape.
  */
-/**
- * V2-005f-CF-1 T_g1: stubbed pending T_g2.
- *
- * The legacy materials.loaded_in_printer_ref column was dropped in migration
- * 0030; this lifecycle entry-point returns `not-implemented` until T_g2 wires
- * the new `printer_loadouts` table (insert open row + atomic swap). HTTP
- * routes still call this — they'll receive the failure code and surface it
- * until T_g2/T_g3 land.
- */
-export async function loadInPrinter(
-  input: LoadInPrinterInput,
-  _opts?: { dbUrl?: string; now?: Date },
-): Promise<{ ok: true; ledgerEventId: string } | LifecycleFailure> {
-  void input;
-  void _opts;
-  return {
-    ok: false,
-    reason: 'not-implemented',
-    details:
-      'loadInPrinter is being rewritten against printer_loadouts in V2-005f-CF-1 T_g2',
-  };
-}
-
-// ---------------------------------------------------------------------------
-// unloadFromPrinter
-// ---------------------------------------------------------------------------
-
-/**
- * Clear `loadedInPrinterRef` on a Material. The previous value is captured
- * in the ledger event payload + return value (so callers / V2-005 can
- * correlate without re-querying).
- *
- * Reason codes:
- *   material-id-required
- *   material-not-found
- *   not-loaded                   — loadedInPrinterRef is already NULL
- *   persist-failed
- */
-/**
- * V2-005f-CF-1 T_g1: stubbed pending T_g2.
- *
- * See `loadInPrinter` above — same deferral. Returns `not-implemented` until
- * T_g2 wires `materialUnload` against `printer_loadouts`.
- */
-export async function unloadFromPrinter(
-  input: UnloadFromPrinterInput,
-  _opts?: { dbUrl?: string; now?: Date },
-): Promise<
-  | { ok: true; ledgerEventId: string; previousPrinterRef: string | null }
-  | LifecycleFailure
-> {
-  void input;
-  void _opts;
-  return {
-    ok: false,
-    reason: 'not-implemented',
-    details:
-      'unloadFromPrinter is being rewritten against printer_loadouts in V2-005f-CF-1 T_g2',
-  };
-}
+export {
+  loadInPrinter,
+  unloadFromPrinter,
+} from '../forge/loadouts/lifecycle';
+export type {
+  LoadInPrinterArgs,
+  LoadInPrinterResult,
+  LoadInPrinterReason,
+  UnloadFromPrinterArgs,
+  UnloadFromPrinterResult,
+  UnloadFromPrinterReason,
+} from '../forge/loadouts/lifecycle';

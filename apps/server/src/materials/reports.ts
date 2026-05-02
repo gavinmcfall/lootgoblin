@@ -61,7 +61,7 @@
  *   - Convert Map → sorted array using the per-report sort order.
  */
 
-import { and, eq, gte, lt } from 'drizzle-orm';
+import { and, eq, gte, isNull, lt } from 'drizzle-orm';
 
 import { getServerDb, schema } from '../db/client';
 import type { MaterialUnit } from '../db/schema.materials';
@@ -205,10 +205,9 @@ type MaterialLite = Pick<
   typeof schema.materials.$inferSelect,
   'id' | 'ownerId' | 'brand' | 'colors' | 'unit'
 > & {
-  // V2-005f-CF-1 T_g1: stub — materials.loaded_in_printer_ref was dropped in
-  // migration 0030. T_g4 will populate this from a LEFT JOIN to the current
-  // open `printer_loadouts` row; for now reports always see null and the
-  // per-printer bucket aggregation below routes through the `null` bucket.
+  // V2-005f-CF-1 T_g4: derived from a LEFT JOIN to `printer_loadouts` filtered
+  // on `unloaded_at IS NULL` — i.e. the printer this material is CURRENTLY
+  // loaded in (if any). null = not currently loaded.
   loadedInPrinterRef: string | null;
 };
 
@@ -235,11 +234,22 @@ async function fetchOwnedConsumptionEvents(
       brand: schema.materials.brand,
       colors: schema.materials.colors,
       unit: schema.materials.unit,
+      // V2-005f-CF-1 T_g4: LEFT JOIN to the open printer_loadouts row (if any)
+      // so the per-printer report can bucket by current loadout. NULL when
+      // the material is not currently loaded in any printer slot.
+      loadedInPrinterRef: schema.printerLoadouts.printerId,
     })
     .from(schema.ledgerEvents)
     .innerJoin(
       schema.materials,
       eq(schema.materials.id, schema.ledgerEvents.subjectId),
+    )
+    .leftJoin(
+      schema.printerLoadouts,
+      and(
+        eq(schema.printerLoadouts.materialId, schema.materials.id),
+        isNull(schema.printerLoadouts.unloadedAt),
+      ),
     )
     .where(
       and(
@@ -277,8 +287,8 @@ async function fetchOwnedConsumptionEvents(
         ownerId: r.ownerId,
         brand: r.brand,
         colors: r.colors,
-        // TODO V2-005f-CF-1 T_g4: replace stub with LEFT JOIN to printer_loadouts.
-        loadedInPrinterRef: null,
+        // V2-005f-CF-1 T_g4: from LEFT JOIN to open printer_loadouts row.
+        loadedInPrinterRef: r.loadedInPrinterRef ?? null,
         unit: r.unit,
       },
     });

@@ -249,11 +249,13 @@ describe('E2E /api/v1/materials lifecycle', () => {
     });
     expect(loadRes.status).toBe(200);
 
-    // V2-005f-CF-1 T_g4 will replace the DTO's `loadedInPrinterRef` with a
-    // structured load-state derived from `printer_loadouts`. Until then it
-    // stays null (see materials/_shared.ts toMaterialDto).
+    // V2-005f-CF-1 T_g4: DTO's `loadedInPrinterRef` is now derived from the
+    // open `printer_loadouts` row for this material. After load it points to
+    // `printerId`; after unload it returns to null.
     const after2 = await getMaterial({ ownerId: userId, id: materialId });
-    expect((after2.json.material as { loadedInPrinterRef: string | null }).loadedInPrinterRef).toBeNull();
+    expect((after2.json.material as { loadedInPrinterRef: string | null }).loadedInPrinterRef).toBe(
+      printerId,
+    );
 
     // 3. Admin records a consumption event (50g print).
     const consumeRes = await postConsumption({

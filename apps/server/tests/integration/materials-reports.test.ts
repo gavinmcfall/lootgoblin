@@ -299,28 +299,28 @@ async function seedUserAndMaterials(label: string): Promise<FixtureUser> {
     bumpProv(e.provenance, klass, amount);
   }
 
-  // V2-005f-CF-1: until T_g4 wires the report layer to read from
-  // `printer_loadouts`, `consumptionByPrinter` always returns the null
-  // bucket — so we set every printer key to null here; the per-named-printer
-  // tests are skipped pending T_g4.
+  // V2-005f-CF-1 T_g4: report layer now LEFT JOINs to open `printer_loadouts`
+  // rows, so each material's `loadedInPrinterRef` resolves to the printer it
+  // was loaded into above. The unbranded material was deliberately not loaded
+  // and therefore buckets under printer=null.
   const matMeta = {
     bambuRedG: {
       id: bambuRedG.id,
       brand: 'Bambu Lab' as string | null,
       primaryColor: '#E63946' as string | null,
-      printer: null as string | null,
+      printer: printerAlpha as string | null,
     },
     polymakerBlueG: {
       id: polymakerBlueG.id,
       brand: 'Polymaker' as string | null,
       primaryColor: '#1D4ED8' as string | null,
-      printer: null as string | null,
+      printer: printerBeta as string | null,
     },
     elegooClearMl: {
       id: elegooClearMl.id,
       brand: 'ELEGOO' as string | null,
       primaryColor: '#EEEEEE' as string | null,
-      printer: null as string | null,
+      printer: printerGamma as string | null,
     },
     unbrandedNoColorG: {
       id: unbrandedNoColorG.id,
@@ -646,18 +646,25 @@ describe('consumptionByColor', () => {
 // ---------------------------------------------------------------------------
 
 describe('consumptionByPrinter', () => {
-  // V2-005f-CF-1: pending T_g4 — until the report layer LEFT-JOINs to
-  // `printer_loadouts`, `loadedInPrinterRef` is always null and per-named-
-  // printer rows do not appear. T_g4 unskips this test.
-  it.skip('returns one row per distinct loadedInPrinterRef seen (pending T_g4)', async () => {
+  // V2-005f-CF-1 T_g4: report layer LEFT JOINs to open printer_loadouts.
+  // Each material's loadedInPrinterRef resolves to the printer id it was
+  // seeded against; named-printer rows now appear.
+  it('returns one row per distinct loadedInPrinterRef seen', async () => {
     const rows = await consumptionByPrinter(
       { ownerId: alpha.ownerId, window: WINDOW },
       { dbUrl: DB_URL },
     );
     const printers = rows.map((r) => r.key.printerRef);
-    expect(printers).toContain('printer-alpha');
-    expect(printers).toContain('printer-beta');
-    expect(printers).toContain('printer-gamma');
+    // The three loaded materials map to three distinct printer ids; the
+    // unbranded material is unloaded so its rows bucket under null.
+    const expectedPrinterIds = [...alpha.expected.consumedByPrinter.keys()].filter(
+      (k): k is string => k !== null,
+    );
+    expect(expectedPrinterIds).toHaveLength(3);
+    for (const pid of expectedPrinterIds) {
+      expect(printers).toContain(pid);
+    }
+    expect(printers).toContain(null);
   });
 
   it('materials with no printer attribution bucket as null', async () => {

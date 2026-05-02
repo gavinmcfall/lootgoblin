@@ -31,7 +31,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import {
   authenticateRequest,
@@ -141,6 +141,37 @@ export async function loadMaterialForActor(
 }
 
 // ---------------------------------------------------------------------------
+// Loadout pre-fetch helper (V2-005f-CF-1 T_g4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-fetch the open `printer_loadouts` rows for a set of material ids in a
+ * single query, returning a Map<materialId, { printerId }> so the DTO mapper
+ * can resolve `loadedInPrinterRef` without an N+1 query per material.
+ *
+ * Returns an empty map for an empty input.
+ */
+export async function fetchCurrentLoadoutsByMaterialIds(
+  materialIds: ReadonlyArray<string>,
+): Promise<Map<string, { printerId: string }>> {
+  if (materialIds.length === 0) return new Map();
+  const db = getServerDb();
+  const rows = await db
+    .select({
+      materialId: schema.printerLoadouts.materialId,
+      printerId: schema.printerLoadouts.printerId,
+    })
+    .from(schema.printerLoadouts)
+    .where(
+      and(
+        inArray(schema.printerLoadouts.materialId, materialIds as string[]),
+        isNull(schema.printerLoadouts.unloadedAt),
+      ),
+    );
+  return new Map(rows.map((r) => [r.materialId, { printerId: r.printerId }]));
+}
+
+// ---------------------------------------------------------------------------
 // DTO mappers
 // ---------------------------------------------------------------------------
 
@@ -167,7 +198,19 @@ export interface MaterialDto {
   createdAt: string;
 }
 
-export function toMaterialDto(row: MaterialRow): MaterialDto {
+/**
+ * Build a MaterialDto.
+ *
+ * V2-005f-CF-1 T_g4: `loadedInPrinterRef` is sourced from the printer's
+ * current open loadout (row in `printer_loadouts` with `unloaded_at IS NULL`)
+ * via the optional `currentLoadout` argument. Callers MUST pre-fetch loadouts
+ * in bulk and pass them in to avoid N+1 query thrash; passing `undefined`
+ * means "no loaded printer" and surfaces as null.
+ */
+export function toMaterialDto(
+  row: MaterialRow,
+  currentLoadout?: { printerId: string } | null,
+): MaterialDto {
   return {
     id: row.id,
     ownerId: row.ownerId,
@@ -183,10 +226,9 @@ export function toMaterialDto(row: MaterialRow): MaterialDto {
     remainingAmount: row.remainingAmount,
     unit: row.unit,
     purchaseData: row.purchaseData ?? null,
-    // TODO V2-005f-CF-1 T_g4: replace stub with LEFT JOIN to printer_loadouts
-    // (current open loadout for this material). Until T_g4 lands, the DTO
-    // surfaces null so the v1 API contract still names the field.
-    loadedInPrinterRef: null,
+    // V2-005f-CF-1 T_g4: derived from the printer's current open loadout for
+    // this material (caller pre-fetches in bulk). null = not currently loaded.
+    loadedInPrinterRef: currentLoadout?.printerId ?? null,
     active: row.active === true,
     retirementReason: row.retirementReason ?? null,
     retiredAt: row.retiredAt ? row.retiredAt.toISOString() : null,

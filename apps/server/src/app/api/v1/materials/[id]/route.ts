@@ -61,7 +61,9 @@ const IMMUTABLE_KEYS = [
   'active',
   'retiredAt',
   'retirementReason',
-  'loadedInPrinterRef',
+  // V2-005f-CF-1 T_g1: `loadedInPrinterRef` was dropped from materials in
+  // migration 0030. Load state now lives in `printer_loadouts`; PATCH cannot
+  // touch it via either name.
   'idempotencyKey',
   'createdAt',
 ] as const;

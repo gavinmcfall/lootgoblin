@@ -44,6 +44,7 @@ import { sql } from 'drizzle-orm';
 import { user } from './schema.auth';
 import { loot, lootFiles } from './schema.stash';
 import { slicerProfiles } from './schema.grimoire';
+import { materials } from './schema.materials';
 
 // ---------------------------------------------------------------------------
 // Enum value lists (TS-side; no DB CHECK constraints per project pattern)
@@ -824,5 +825,82 @@ export const dispatchStatusEvents = sqliteTable(
     index('idx_dispatch_status_events_job').on(t.dispatchJobId, t.occurredAt),
     /** Filter by event kind (e.g. all `failed` events for diagnostics). */
     index('idx_dispatch_status_events_kind').on(t.eventKind),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// V2-005f-CF-1-T_g1: printer_loadouts — per-slot material load history
+// ---------------------------------------------------------------------------
+
+/**
+ * Ledger event kinds for the load/unload lifecycle. Emitted by T_g2's
+ * materialLoad / materialUnload flow against the ledger_events table; the
+ * consumption pipeline (T_g4 + T_dcf11) attributes per-slot `materials_used`
+ * entries to the load row that was current at dispatch claim time.
+ */
+export const MATERIAL_LOADED_EVENT_KIND = 'material.loaded' as const;
+export const MATERIAL_UNLOADED_EVENT_KIND = 'material.unloaded' as const;
+
+/**
+ * Per-slot material load history for a printer. Replaces the v1
+ * free-text `materials.loaded_in_printer_ref` (dropped in migration 0030 —
+ * see backfill block at the head of `0030_v2_005f_cf_1_printer_loadouts.sql`).
+ *
+ * Lifecycle:
+ *   - `materialLoad` (T_g2) inserts a row with `unloaded_at = NULL`.
+ *   - `materialUnload` (T_g2) sets `unloaded_at = now` on the matching open
+ *     row. Atomic swap (load + unload of replaced material) lives in T_g2.
+ *   - The partial unique index `idx_printer_loadouts_current` enforces "at
+ *     most one open loadout per (printer, slot)".
+ *
+ * Indexes:
+ *   - `idx_printer_loadouts_current` — partial unique on (printer_id,
+ *     slot_index) WHERE unloaded_at IS NULL. Constraint, not a query lookup.
+ *   - `idx_printer_loadouts_printer_history` — (printer_id, loaded_at) for
+ *     "load history for this printer" UI/report views.
+ *   - `idx_printer_loadouts_material` — (material_id) for "where has this
+ *     material been loaded" reverse lookups.
+ *
+ * FK behaviour:
+ *   - `printer_id` ON DELETE CASCADE — deleting a printer drops its load
+ *     history (mirrors `printers` ownership of all its sub-state).
+ *   - `material_id` ON DELETE RESTRICT — can't delete a material while it's
+ *     referenced in a loadout row. The Materials retire flow already blocks
+ *     deletion; this is the DB-level belt-and-braces.
+ *   - `loaded_by_user_id` / `unloaded_by_user_id` ON DELETE SET NULL —
+ *     deleting a user keeps the load history but anonymises the actor.
+ */
+export const printerLoadouts = sqliteTable(
+  'printer_loadouts',
+  {
+    id: text('id').primaryKey(),
+    printerId: text('printer_id')
+      .notNull()
+      .references(() => printers.id, { onDelete: 'cascade' }),
+    slotIndex: integer('slot_index').notNull(),
+    materialId: text('material_id')
+      .notNull()
+      .references(() => materials.id, { onDelete: 'restrict' }),
+    loadedAt: integer('loaded_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+    unloadedAt: integer('unloaded_at', { mode: 'timestamp_ms' }),
+    loadedByUserId: text('loaded_by_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    unloadedByUserId: text('unloaded_by_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    notes: text('notes'),
+  },
+  (t) => [
+    /** At most one open loadout per (printer, slot). */
+    uniqueIndex('idx_printer_loadouts_current')
+      .on(t.printerId, t.slotIndex)
+      .where(sql`unloaded_at IS NULL`),
+    /** Per-printer history view — newest first. */
+    index('idx_printer_loadouts_printer_history').on(t.printerId, t.loadedAt),
+    /** Per-material reverse lookup. */
+    index('idx_printer_loadouts_material').on(t.materialId),
   ],
 );

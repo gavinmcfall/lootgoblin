@@ -289,7 +289,6 @@ export async function applyRecycleEvent(
     remainingAmount: input.outputWeight,
     unit: 'g', // recycled_spool is mass-tracked (locked in validateUnitKind matrix)
     purchaseData: undefined,
-    loadedInPrinterRef: null,
     active: true,
     retirementReason: null,
     retiredAt: null,

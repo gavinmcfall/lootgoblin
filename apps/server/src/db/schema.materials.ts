@@ -498,13 +498,6 @@ export const materials = sqliteTable(
      */
     purchaseData: text('purchase_data', { mode: 'json' }).$type<Record<string, unknown>>(),
 
-    /**
-     * Optional FK to a printer entity (V2-005 Forge will add the printers
-     * table). For now a free-form text reference; v2-007b or v2-005 promotes
-     * it to a real FK.
-     */
-    loadedInPrinterRef: text('loaded_in_printer_ref'),
-
     /** false = retired (no longer active inventory). Default true on create. */
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
 
@@ -538,8 +531,6 @@ export const materials = sqliteTable(
     index('materials_owner_active_idx').on(t.ownerId, t.active),
     /** Filter by kind (filament-only views, etc). */
     index('materials_owner_kind_idx').on(t.ownerId, t.kind),
-    /** Loaded-in-printer lookup. Sparse (most rows NULL). */
-    index('materials_loaded_idx').on(t.loadedInPrinterRef),
     /** Catalog-linked materials (for v2-007b joins). */
     index('materials_product_idx').on(t.productId),
     /** Brand-filter via expression index (cheap; SQLite supports). */

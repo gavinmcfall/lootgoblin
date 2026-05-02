@@ -203,8 +203,14 @@ interface ConsumedPayload {
  */
 type MaterialLite = Pick<
   typeof schema.materials.$inferSelect,
-  'id' | 'ownerId' | 'brand' | 'colors' | 'loadedInPrinterRef' | 'unit'
->;
+  'id' | 'ownerId' | 'brand' | 'colors' | 'unit'
+> & {
+  // V2-005f-CF-1 T_g1: stub — materials.loaded_in_printer_ref was dropped in
+  // migration 0030. T_g4 will populate this from a LEFT JOIN to the current
+  // open `printer_loadouts` row; for now reports always see null and the
+  // per-printer bucket aggregation below routes through the `null` bucket.
+  loadedInPrinterRef: string | null;
+};
 
 async function fetchOwnedConsumptionEvents(
   ownerId: string,
@@ -228,7 +234,6 @@ async function fetchOwnedConsumptionEvents(
       ownerId: schema.materials.ownerId,
       brand: schema.materials.brand,
       colors: schema.materials.colors,
-      loadedInPrinterRef: schema.materials.loadedInPrinterRef,
       unit: schema.materials.unit,
     })
     .from(schema.ledgerEvents)
@@ -272,7 +277,8 @@ async function fetchOwnedConsumptionEvents(
         ownerId: r.ownerId,
         brand: r.brand,
         colors: r.colors,
-        loadedInPrinterRef: r.loadedInPrinterRef,
+        // TODO V2-005f-CF-1 T_g4: replace stub with LEFT JOIN to printer_loadouts.
+        loadedInPrinterRef: null,
         unit: r.unit,
       },
     });

@@ -30,7 +30,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import { and, eq, ne } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
@@ -229,7 +229,6 @@ export async function createMaterial(
     remainingAmount: input.initialAmount, // force-set: caller cannot override
     unit: unitKind.unit,
     purchaseData: input.purchaseData,
-    loadedInPrinterRef: null,
     active: true,
     retirementReason: null,
     retiredAt: null,
@@ -345,9 +344,11 @@ export async function retireMaterial(
     return { ok: false, reason: 'already-retired' };
   }
 
-  if (current.loadedInPrinterRef !== null && input.acknowledgeLoaded !== true) {
-    return { ok: false, reason: 'loaded-in-printer-no-ack' };
-  }
+  // TODO V2-005f-CF-1 T_g2: replace with printer_loadouts lookup.
+  // V2-005f-CF-1 T_g1 dropped materials.loaded_in_printer_ref; the new
+  // printer_loadouts table replaces it but isn't wired through lifecycle yet.
+  // Until T_g2 ships, retirement skips the "loaded in printer" gate.
+  void input.acknowledgeLoaded;
 
   // V2-005 dispatch check — defaults to no-op until Forge ships.
   // TODO(V2-005): pass the real Forge dispatch checker from the HTTP layer.
@@ -427,89 +428,27 @@ export async function retireMaterial(
  *   printer-slot-occupied         — filament_spool conflict on same owner+printerRef
  *   persist-failed
  */
+/**
+ * V2-005f-CF-1 T_g1: stubbed pending T_g2.
+ *
+ * The legacy materials.loaded_in_printer_ref column was dropped in migration
+ * 0030; this lifecycle entry-point returns `not-implemented` until T_g2 wires
+ * the new `printer_loadouts` table (insert open row + atomic swap). HTTP
+ * routes still call this — they'll receive the failure code and surface it
+ * until T_g2/T_g3 land.
+ */
 export async function loadInPrinter(
   input: LoadInPrinterInput,
-  opts?: { dbUrl?: string; now?: Date },
+  _opts?: { dbUrl?: string; now?: Date },
 ): Promise<{ ok: true; ledgerEventId: string } | LifecycleFailure> {
-  if (typeof input.materialId !== 'string' || input.materialId.length === 0) {
-    return { ok: false, reason: 'material-id-required' };
-  }
-  if (typeof input.printerRef !== 'string' || input.printerRef.length === 0) {
-    return { ok: false, reason: 'printer-ref-required' };
-  }
-
-  const db = getServerDb(opts?.dbUrl);
-  const existing = await db
-    .select()
-    .from(schema.materials)
-    .where(eq(schema.materials.id, input.materialId));
-
-  if (existing.length === 0) {
-    return { ok: false, reason: 'material-not-found' };
-  }
-  const current = existing[0]!;
-  if (current.active === false) {
-    return { ok: false, reason: 'material-retired' };
-  }
-
-  // Filament-spool exclusivity check (per owner + printerRef). Resin bottles
-  // and other kinds intentionally skip this — V2-005 may extend later.
-  if (current.kind === 'filament_spool') {
-    const conflicts = await db
-      .select({ id: schema.materials.id })
-      .from(schema.materials)
-      .where(
-        and(
-          eq(schema.materials.ownerId, current.ownerId),
-          eq(schema.materials.kind, 'filament_spool'),
-          eq(schema.materials.active, true),
-          eq(schema.materials.loadedInPrinterRef, input.printerRef),
-          ne(schema.materials.id, input.materialId),
-        ),
-      );
-    if (conflicts.length > 0) {
-      return {
-        ok: false,
-        reason: 'printer-slot-occupied',
-        details: `conflicting material id: ${conflicts[0]!.id}`,
-      };
-    }
-  }
-
-  const now = opts?.now ?? new Date();
-
-  try {
-    const ledgerEventId = (
-      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
-    ).transaction((tx) => {
-      const t = tx as ReturnType<typeof getServerDb>;
-      t.update(schema.materials)
-        .set({ loadedInPrinterRef: input.printerRef })
-        .where(eq(schema.materials.id, input.materialId))
-        .run();
-      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
-        kind: 'material.loaded',
-        actorUserId: input.actorUserId,
-        subjectType: 'material',
-        subjectId: input.materialId,
-        payload: { printerRef: input.printerRef },
-        provenanceClass: 'entered',
-        ingestedAt: now,
-      });
-      return eventId;
-    });
-    return { ok: true, ledgerEventId };
-  } catch (err) {
-    logger.warn(
-      { err, materialId: input.materialId, printerRef: input.printerRef },
-      'loadInPrinter: persist failed — update + ledger rolled back',
-    );
-    return {
-      ok: false,
-      reason: 'persist-failed',
-      details: err instanceof Error ? err.message : String(err),
-    };
-  }
+  void input;
+  void _opts;
+  return {
+    ok: false,
+    reason: 'not-implemented',
+    details:
+      'loadInPrinter is being rewritten against printer_loadouts in V2-005f-CF-1 T_g2',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -527,64 +466,25 @@ export async function loadInPrinter(
  *   not-loaded                   — loadedInPrinterRef is already NULL
  *   persist-failed
  */
+/**
+ * V2-005f-CF-1 T_g1: stubbed pending T_g2.
+ *
+ * See `loadInPrinter` above — same deferral. Returns `not-implemented` until
+ * T_g2 wires `materialUnload` against `printer_loadouts`.
+ */
 export async function unloadFromPrinter(
   input: UnloadFromPrinterInput,
-  opts?: { dbUrl?: string; now?: Date },
+  _opts?: { dbUrl?: string; now?: Date },
 ): Promise<
   | { ok: true; ledgerEventId: string; previousPrinterRef: string | null }
   | LifecycleFailure
 > {
-  if (typeof input.materialId !== 'string' || input.materialId.length === 0) {
-    return { ok: false, reason: 'material-id-required' };
-  }
-
-  const db = getServerDb(opts?.dbUrl);
-  const existing = await db
-    .select()
-    .from(schema.materials)
-    .where(eq(schema.materials.id, input.materialId));
-
-  if (existing.length === 0) {
-    return { ok: false, reason: 'material-not-found' };
-  }
-  const current = existing[0]!;
-  if (current.loadedInPrinterRef === null) {
-    return { ok: false, reason: 'not-loaded' };
-  }
-
-  const previous = current.loadedInPrinterRef;
-  const now = opts?.now ?? new Date();
-
-  try {
-    const ledgerEventId = (
-      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
-    ).transaction((tx) => {
-      const t = tx as ReturnType<typeof getServerDb>;
-      t.update(schema.materials)
-        .set({ loadedInPrinterRef: null })
-        .where(eq(schema.materials.id, input.materialId))
-        .run();
-      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
-        kind: 'material.unloaded',
-        actorUserId: input.actorUserId,
-        subjectType: 'material',
-        subjectId: input.materialId,
-        payload: { printerRef: previous },
-        provenanceClass: 'entered',
-        ingestedAt: now,
-      });
-      return eventId;
-    });
-    return { ok: true, ledgerEventId, previousPrinterRef: previous };
-  } catch (err) {
-    logger.warn(
-      { err, materialId: input.materialId },
-      'unloadFromPrinter: persist failed — update + ledger rolled back',
-    );
-    return {
-      ok: false,
-      reason: 'persist-failed',
-      details: err instanceof Error ? err.message : String(err),
-    };
-  }
+  void input;
+  void _opts;
+  return {
+    ok: false,
+    reason: 'not-implemented',
+    details:
+      'unloadFromPrinter is being rewritten against printer_loadouts in V2-005f-CF-1 T_g2',
+  };
 }

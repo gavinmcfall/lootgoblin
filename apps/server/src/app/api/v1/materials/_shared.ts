@@ -183,7 +183,10 @@ export function toMaterialDto(row: MaterialRow): MaterialDto {
     remainingAmount: row.remainingAmount,
     unit: row.unit,
     purchaseData: row.purchaseData ?? null,
-    loadedInPrinterRef: row.loadedInPrinterRef ?? null,
+    // TODO V2-005f-CF-1 T_g4: replace stub with LEFT JOIN to printer_loadouts
+    // (current open loadout for this material). Until T_g4 lands, the DTO
+    // surfaces null so the v1 API contract still names the field.
+    loadedInPrinterRef: null,
     active: row.active === true,
     retirementReason: row.retirementReason ?? null,
     retiredAt: row.retiredAt ? row.retiredAt.toISOString() : null,

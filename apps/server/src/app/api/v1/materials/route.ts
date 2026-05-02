@@ -33,7 +33,7 @@
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { and, desc, eq, isNotNull, lt } from 'drizzle-orm';
+import { and, desc, eq, lt } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { getServerDb, schema } from '@/db/client';
@@ -281,15 +281,11 @@ export async function GET(req: NextRequest) {
   if (q.kind) conditions.push(eq(schema.materials.kind, q.kind));
   if (q.brand) conditions.push(eq(schema.materials.brand, q.brand));
   if (q.active !== undefined) conditions.push(eq(schema.materials.active, q.active));
-  if (q.loaded !== undefined) {
-    if (q.loaded) {
-      conditions.push(isNotNull(schema.materials.loadedInPrinterRef));
-    } else {
-      // Postgres-friendly: `column = NULL` returns NULL; use sql here for clarity.
-      // better-sqlite3 + drizzle handles eq(col, null) correctly via IS NULL.
-      conditions.push(eq(schema.materials.loadedInPrinterRef, null as unknown as string));
-    }
-  }
+  // TODO V2-005f-CF-1 T_g4: re-implement `?loaded=true|false` against
+  // `printer_loadouts` (EXISTS subquery on open rows). Migration 0030 dropped
+  // materials.loaded_in_printer_ref; the filter is silently a no-op until
+  // T_g4 wires the new query path.
+  void q.loaded;
   if (q.cursor) {
     const cursorMs = Number(q.cursor);
     if (!Number.isFinite(cursorMs)) {

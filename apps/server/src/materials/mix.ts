@@ -358,7 +358,6 @@ export async function applyMixBatch(
     remainingAmount: input.totalVolume,
     unit: 'ml', // mixes are volumetric (locked in validateUnitKind matrix)
     purchaseData: undefined,
-    loadedInPrinterRef: null,
     active: true,
     retirementReason: null,
     retiredAt: null,

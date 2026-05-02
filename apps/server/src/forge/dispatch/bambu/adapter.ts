@@ -55,7 +55,7 @@ import { Client as FtpClient } from 'basic-ftp';
  * OpenBambuAPI mqtt.md, every community implementation.
  */
 // pragma: allowlist secret
-const BAMBU_LAN_USERNAME = 'bblp' as const;
+export const BAMBU_LAN_USERNAME = 'bblp' as const;
 
 import type {
   DispatchHandler,
@@ -128,7 +128,17 @@ function isTimeoutError(err: ErrLike): boolean {
 
 export interface MqttClientLike {
   publish(topic: string, payload: string, opts: object, cb: (err?: Error) => void): void;
-  end(): void;
+  /**
+   * Subscribe to a topic. Used by the V2-005f Bambu status subscriber; the
+   * dispatch-side adapter does not call this. The structural shape mirrors
+   * `mqtt.MqttClient.subscribe`'s callback overload.
+   */
+  subscribe?(
+    topic: string,
+    opts: { qos?: 0 | 1 | 2 },
+    cb: (err: Error | null, granted?: unknown) => void,
+  ): void;
+  end(force?: boolean, cb?: () => void): void;
   on(event: string, listener: (...args: unknown[]) => void): void;
   once(event: string, listener: (...args: unknown[]) => void): void;
   removeAllListeners?(event?: string): void;
@@ -158,7 +168,7 @@ export interface FtpFactory {
   (): FtpClientLike;
 }
 
-const defaultMqttFactory: MqttFactory = (url, opts) => {
+export const defaultMqttFactory: MqttFactory = (url, opts) => {
   // mqtt.connect returns a MqttClient. Our MqttClientLike is a structural
   // subset of that surface; the cast is safe because we only use publish/
   // end/on/once.

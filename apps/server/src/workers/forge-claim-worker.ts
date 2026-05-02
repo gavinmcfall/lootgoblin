@@ -69,6 +69,9 @@ import {
 import { getCredential } from '../forge/dispatch/credentials';
 import { mapAdapterReasonToSchema } from '../forge/dispatch/failure-reason-map';
 import type { DispatchContext } from '../forge/dispatch/handler';
+import { extractSlicerEstimate } from '../forge/dispatch/slicer-estimate/extractor';
+import { emitConsumptionForDispatch } from '../forge/status/consumption-emitter';
+import type { MaterialsUsed } from '../db/schema.forge';
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -103,6 +106,23 @@ export type DispatchHandlerResult =
 export type DispatchHandler = (
   input: DispatchHandlerInput,
 ) => Promise<DispatchHandlerResult>;
+
+/**
+ * Optional hook fired after a dispatch_job successfully transitions
+ * `claimed → dispatched`. Wired in instrumentation.ts to
+ * `statusWorker.notifyDispatched` so the per-printer status subscriber
+ * lazy-starts as soon as the printer has an active dispatch. Tests can
+ * override.
+ *
+ * Contract: best-effort. The hook runs sync-ish (we await it so errors are
+ * loggable) but failures inside it MUST NOT affect the dispatch's downstream
+ * lifecycle — the rule "we sent the file ≠ the print finished" still holds.
+ * Errors are logged and swallowed by the caller.
+ */
+export type OnJobDispatched = (args: {
+  dispatchJobId: string;
+  printerId: string;
+}) => void | Promise<void>;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -332,6 +352,82 @@ async function loadArtifactForJob(
   return rows[0] ?? null;
 }
 
+/**
+ * V2-005f-T_dcf11 Phase A. After claim, before dispatch handler runs:
+ *
+ *   1. Resolve the dispatch's machine-facing artifact storage path
+ *      (forge_artifacts.storage_path — set by V2-005c slicer worker for
+ *      printer-target jobs). Slicer-target jobs and pre-slice jobs have no
+ *      artifact yet → no-op.
+ *   2. Run `extractSlicerEstimate` against that path. Parser failures and
+ *      unsupported formats return null (the framework swallows throws).
+ *   3. UPDATE `dispatch_jobs.materials_used` with the per-slot estimate.
+ *      `material_id` is left empty — V2-005f-CF-1 will populate it once
+ *      material-loadout tracking is wired.
+ *   4. Call `emitConsumptionForDispatch` to record the Phase-A estimated
+ *      ledger row(s). With `material_id=''` everywhere this is a no-op for
+ *      now; the call site is in place for CF-1.
+ *
+ * Best-effort. Failures are logged and swallowed — dispatch continues
+ * regardless. The materials_used cache is purely metadata + bookkeeping
+ * for Phase B; missing data degrades the consumption-event flow but does
+ * not break the print.
+ */
+async function extractAndPersistSlicerEstimate(args: {
+  dispatchJobId: string;
+  lootId: string;
+  dbUrl?: string;
+}): Promise<void> {
+  const artifact = await loadArtifactForJob(args.dispatchJobId, args.dbUrl);
+  if (!artifact) {
+    // No machine-facing artifact yet — slicer-target jobs and jobs that
+    // skipped the slicer worker land here. Nothing to extract.
+    return;
+  }
+
+  const estimate = await extractSlicerEstimate({ filePath: artifact.storagePath }).catch(
+    () => null,
+  );
+  if (!estimate) {
+    logger.debug(
+      { dispatchJobId: args.dispatchJobId, path: artifact.storagePath },
+      'forge-claim: slicer estimate not extractable — skipping Phase A',
+    );
+    return;
+  }
+
+  const materialsUsed: MaterialsUsed = estimate.slots.map((s) => ({
+    slot_index: s.slot_index,
+    // V2-005f-CF-1: material loadout tracking not yet wired. Leave empty so
+    // Phase A / Phase B both safely skip emission until CF-1 lands.
+    material_id: '',
+    estimated_grams: s.estimated_grams,
+    measured_grams: null,
+  }));
+
+  const db = getServerDb(args.dbUrl);
+  // better-sqlite3 needs `.run()` to actually execute (the awaited builder is
+  // only the async-postgres path). Mirror dispatch-state.ts's pattern.
+  (db
+    .update(schema.dispatchJobs)
+    .set({ materialsUsed })
+    .where(eq(schema.dispatchJobs.id, args.dispatchJobId)) as unknown as {
+    run: () => unknown;
+  }).run();
+
+  // Phase A emission. Currently a no-op (every material_id is '') — the
+  // call site is here so V2-005f-CF-1 can flip the switch by populating
+  // material_id without touching this worker.
+  await emitConsumptionForDispatch(
+    {
+      dispatchJobId: args.dispatchJobId,
+      lootId: args.lootId,
+      materialsUsed,
+    },
+    { dbUrl: args.dbUrl },
+  );
+}
+
 interface ClaimableCandidate {
   id: string;
   ownerId: string;
@@ -445,6 +541,12 @@ async function findClaimableCandidate(
 export async function runOneClaimTick(opts: {
   agentId?: string;
   dispatchHandler?: DispatchHandler;
+  /**
+   * Best-effort hook fired AFTER `claimed → dispatched` succeeds (V2-005f-T_dcf10).
+   * Used to wake the status subscriber for printer-target jobs. Errors are
+   * logged and swallowed — the dispatch lifecycle continues regardless.
+   */
+  onJobDispatched?: OnJobDispatched;
   now?: Date;
   dbUrl?: string;
 } = {}): Promise<'ran' | 'idle' | 'errored'> {
@@ -471,6 +573,26 @@ export async function runOneClaimTick(opts: {
     targetId: candidate.targetId,
   });
 
+  // V2-005f-T_dcf11 Phase A: extract slicer estimate + cache materials_used
+  // BEFORE markDispatched, so the status worker (which subscribes on the
+  // dispatched transition) sees the cache populated by the time it correlates
+  // measured-consumption events. Failures are logged and swallowed — the
+  // dispatch lifecycle is independent of the consumption-emission pipeline.
+  if (candidate.targetKind === 'printer') {
+    try {
+      await extractAndPersistSlicerEstimate({
+        dispatchJobId: candidate.id,
+        lootId: candidate.lootId,
+        dbUrl: opts.dbUrl,
+      });
+    } catch (err) {
+      log.warn(
+        { err },
+        'forge-claim: slicer-estimate extraction threw — continuing dispatch',
+      );
+    }
+  }
+
   // claimed → dispatched. If this fails, the row is stuck in 'claimed' and
   // stale-recovery will eventually rescue it. We still return 'errored' so
   // the caller backs off.
@@ -484,6 +606,25 @@ export async function runOneClaimTick(opts: {
       'forge-claim: failed to mark dispatched after successful claim',
     );
     return 'errored';
+  }
+
+  // V2-005f-T_dcf10: notify the status worker that this printer has a fresh
+  // dispatched job, so it can lazy-start the per-printer subscriber. Only
+  // applies to printer-target jobs; slicer-target jobs have no live status
+  // feed. Best-effort: errors are logged and swallowed so the dispatch
+  // continues regardless.
+  if (opts.onJobDispatched && candidate.targetKind === 'printer') {
+    try {
+      await opts.onJobDispatched({
+        dispatchJobId: candidate.id,
+        printerId: candidate.targetId,
+      });
+    } catch (err) {
+      log.warn(
+        { err },
+        'forge-claim: onJobDispatched hook threw — continuing dispatch',
+      );
+    }
   }
 
   // Run the dispatch handler.
@@ -618,6 +759,11 @@ export async function startForgeClaimWorker(opts: {
   signal?: AbortSignal;
   concurrency?: number;
   dispatchHandler?: DispatchHandler;
+  /**
+   * Hook fired after `claimed → dispatched` succeeds. Wired in
+   * instrumentation.ts to `statusWorker.notifyDispatched` (V2-005f-T_dcf10).
+   */
+  onJobDispatched?: OnJobDispatched;
   claimTimeoutMs?: number;
   dbUrl?: string;
 } = {}): Promise<void> {
@@ -674,7 +820,13 @@ export async function startForgeClaimWorker(opts: {
   );
 
   const loops = Array.from({ length: concurrency }, () =>
-    runClaimLoop({ signal, agentId, dispatchHandler: handler, dbUrl: opts.dbUrl }),
+    runClaimLoop({
+      signal,
+      agentId,
+      dispatchHandler: handler,
+      onJobDispatched: opts.onJobDispatched,
+      dbUrl: opts.dbUrl,
+    }),
   );
   await Promise.all(loops);
 }
@@ -694,6 +846,7 @@ async function runClaimLoop(args: {
   signal: AbortSignal;
   agentId: string;
   dispatchHandler: DispatchHandler;
+  onJobDispatched?: OnJobDispatched;
   dbUrl?: string;
 }): Promise<void> {
   let backoffMs = 0;
@@ -704,6 +857,7 @@ async function runClaimLoop(args: {
       result = await runOneClaimTick({
         agentId: args.agentId,
         dispatchHandler: args.dispatchHandler,
+        onJobDispatched: args.onJobDispatched,
         dbUrl: args.dbUrl,
       });
     } catch (err) {

@@ -204,6 +204,13 @@
       "when": 1777525709757,
       "tag": "0028_v2_005d_a_target_creds",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1777622766148,
+      "tag": "0029_v2_005f_status_events",
+      "breakpoints": true
     }
   ]
 }

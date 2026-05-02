@@ -81,7 +81,10 @@ import {
   resetDbCache,
   schema,
 } from '../../src/db/client';
-import { createMaterial } from '../../src/materials/lifecycle';
+import { createMaterial, loadInPrinter } from '../../src/materials/lifecycle';
+import { bootstrapCentralWorker } from '../../src/forge/agent-bootstrap';
+import { createDispatchJob } from '../../src/forge/dispatch-jobs';
+import { runOneClaimTick } from '../../src/workers/forge-claim-worker';
 import {
   createSubscriberRegistry,
   resetDefaultSubscriberRegistry,
@@ -719,5 +722,426 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
     expect(json.last_status_at).not.toBeNull();
     expect(json.events.length).toBeGreaterThanOrEqual(4);
     expect(json.events.map((e) => e.event_kind)).toContain('completed');
+  });
+
+  // ---------------------------------------------------------------------------
+  // V2-005f-CF-1 T_g5 — real loadout path
+  //
+  // The original cross-pillar test (above) pre-populates
+  // `dispatch_jobs.materials_used` with a real material_id, simulating the
+  // V2-005f-CF-1 endpoint. T_g5 replaces that shortcut with the real chain:
+  //
+  //   loadInPrinter(materialId, printerId, slot 0)         (T_g2)
+  //          ↓                                              writes printer_loadouts row
+  //          ↓                                              emits material.loaded ledger event
+  //   runOneClaimTick()                                    (T_g4)
+  //          ↓                                              extractAndPersistSlicerEstimate
+  //          ↓                                              queries getCurrentLoadout(printerId)
+  //          ↓                                              fills materials_used[].material_id
+  //          ↓                                              markDispatched
+  //   stub subscriber emits progress + completed events
+  //          ↓
+  //   consumption emitter Phase B fires material.consumed (provenance='measured')
+  //
+  // This test is the proof that V2-005f-CF-1 closed the loadout-tracking
+  // gap end-to-end: Phase B emission now happens because material_id is
+  // non-empty, sourced from the printer_loadouts table.
+  // ---------------------------------------------------------------------------
+  it('cross-pillar with real loadout (T_g5) — materialLoad → dispatch → status → consumption', async () => {
+    // Wipe stale SQLite files so we start from migrations.
+    for (const suffix of ['', '-journal', '-wal', '-shm']) {
+      try {
+        fs.unlinkSync(`${DB_PATH}${suffix}`);
+      } catch {
+        /* ignore */
+      }
+    }
+    process.env.DATABASE_URL = DB_URL;
+    process.env.LOOTGOBLIN_SECRET = TEST_SECRET;
+    resetDbCache();
+    await runMigrations(DB_URL);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = getDb(DB_URL) as any;
+
+    tempDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), 'lootgoblin-cross-pillar-tg5-'),
+    );
+    const gcodePath = path.join(tempDir, 'cube.gcode');
+    await fsp.writeFile(gcodePath, SLICER_GCODE, 'utf8');
+
+    const ownerId = uid();
+    await db.insert(schema.user).values({
+      id: ownerId,
+      name: 'T_g5 cross-pillar test user',
+      email: `${ownerId}@cross-pillar-tg5.test`,
+      emailVerified: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const stashRootId = uid();
+    await db.insert(schema.stashRoots).values({
+      id: stashRootId,
+      ownerId,
+      name: 'root',
+      path: tempDir,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const collectionId = uid();
+    await db.insert(schema.collections).values({
+      id: collectionId,
+      ownerId,
+      name: 'cross-pillar-tg5',
+      pathTemplate: '{title|slug}',
+      stashRootId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const lootId = uid();
+    await db.insert(schema.loot).values({
+      id: lootId,
+      collectionId,
+      title: 'T_g5 Cube',
+      tags: [],
+      fileMissing: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const slicedFileId = uid();
+    const fileBuf = await fsp.readFile(gcodePath);
+    const fileHash = crypto.createHash('sha256').update(fileBuf).digest('hex');
+    await db.insert(schema.lootFiles).values({
+      id: slicedFileId,
+      lootId,
+      path: 'cube.gcode',
+      format: 'gcode',
+      size: fileBuf.length,
+      hash: fileHash,
+      origin: 'manual',
+      createdAt: new Date(),
+    });
+
+    // Bootstrap the central agent so runOneClaimTick has an agent_id.
+    const bootstrap = await bootstrapCentralWorker({ dbUrl: DB_URL });
+    const agentId = bootstrap.agentId;
+
+    // Printer + reachable_via wiring so findClaimableCandidate sees this
+    // job as reachable by the central agent.
+    const printerId = uid();
+    await db.insert(schema.printers).values({
+      id: printerId,
+      ownerId,
+      kind: 'fdm_klipper',
+      name: 'T_g5 Test Klipper',
+      connectionConfig: {
+        host: '192.168.1.50',
+        port: 7125,
+        scheme: 'http',
+        requiresAuth: false,
+        startPrint: true,
+      },
+      active: true,
+      createdAt: new Date(),
+    });
+    await db.insert(schema.printerReachableVia).values({
+      printerId,
+      agentId,
+    });
+
+    // Material + LOAD into printer slot 0 — this is the T_g2 entry point
+    // that replaces the T_dcf14 pre-population shortcut. Emits
+    // `material.loaded` ledger event as a side effect.
+    const matResult = await createMaterial(
+      {
+        ownerId,
+        kind: 'filament_spool',
+        brand: 'TestBrand',
+        subtype: 'PLA',
+        colors: ['#112233'],
+        colorPattern: 'solid',
+        initialAmount: INITIAL_MATERIAL_GRAMS,
+        unit: 'g',
+      },
+      { dbUrl: DB_URL },
+    );
+    if (!matResult.ok) {
+      throw new Error(`createMaterial failed: ${matResult.reason}`);
+    }
+    const materialId = matResult.material.id;
+
+    const loadResult = await loadInPrinter(
+      {
+        materialId,
+        printerId,
+        slotIndex: 0,
+        userId: ownerId,
+      },
+      { dbUrl: DB_URL },
+    );
+    expect(loadResult.ok).toBe(true);
+
+    // Create the dispatch job in 'claimable' status so runOneClaimTick will
+    // pick it up immediately. Note: we do NOT pre-populate materials_used —
+    // that's the whole point of this test; T_g4's claim worker fills it
+    // from the loadout we just created.
+    const createJobResult = await createDispatchJob(
+      {
+        ownerId,
+        lootId,
+        targetKind: 'printer',
+        targetId: printerId,
+        initialStatus: 'claimable',
+      },
+      { dbUrl: DB_URL },
+    );
+    if (!createJobResult.ok) {
+      throw new Error(
+        `createDispatchJob failed: ${createJobResult.reason}: ${createJobResult.details ?? ''}`,
+      );
+    }
+    const dispatchJobId = createJobResult.jobId;
+
+    // Forge artifact pointing at the on-disk gcode — required for
+    // extractAndPersistSlicerEstimate (which is the gateway to
+    // getCurrentLoadout()).
+    await db.insert(schema.forgeArtifacts).values({
+      id: uid(),
+      dispatchJobId,
+      kind: 'gcode',
+      storagePath: gcodePath,
+      sizeBytes: fileBuf.length,
+      sha256: fileHash,
+      mimeType: 'text/x.gcode',
+      metadataJson: null,
+      createdAt: new Date(),
+    });
+
+    // Stub DispatchHandler — real registry call returning success.
+    const stubHandler = makeStubMoonrakerHandler();
+    const dispatchRegistry = getDefaultDispatchRegistry();
+    dispatchRegistry.register(stubHandler);
+
+    // Status worker + sink + bus + stub subscriber, identical to T_dcf14.
+    const stubRig = makeStubSubscriberRig('fdm_klipper');
+    const subscriberRegistry = createSubscriberRegistry();
+    subscriberRegistry.register('fdm_klipper', stubRig.factory);
+
+    const bus = createStatusEventBus();
+    const busEventCounts = new Map<string, number>();
+
+    let workerNotifyTerminalCalls = 0;
+    // eslint-disable-next-line prefer-const
+    let workerForCircular: ForgeStatusWorker;
+    const sink = createStatusEventSink({
+      dbUrl: DB_URL,
+      deps: {
+        notifyTerminal: async (a) => {
+          workerNotifyTerminalCalls += 1;
+          await workerForCircular.notifyTerminal(a);
+        },
+        emitConsumption: async ({ dispatchJobId: jid, event }) => {
+          await emitConsumptionForCompletion(
+            { dispatchJobId: jid, event },
+            { dbUrl: DB_URL },
+          );
+        },
+        emitToBus: (id, event) => {
+          busEventCounts.set(id, (busEventCounts.get(id) ?? 0) + 1);
+          bus.emit(id, event);
+        },
+      },
+    });
+
+    workerForCircular = createForgeStatusWorker({
+      registry: subscriberRegistry,
+      dbUrl: DB_URL,
+      onEvent: (printerIdArg, event) => {
+        void sink(printerIdArg, event);
+      },
+    });
+    workerRef = workerForCircular;
+
+    // Drive the claim tick — this is where T_g4 fires:
+    // extractAndPersistSlicerEstimate → getCurrentLoadout → fills
+    // materials_used[0].material_id from the loadout, then markDispatched
+    // and the onJobDispatched hook spins up the status subscriber.
+    const tickResult = await runOneClaimTick({
+      agentId,
+      dbUrl: DB_URL,
+      onJobDispatched: async (a) => workerForCircular.notifyDispatched(a),
+    });
+    expect(tickResult).toBe('ran');
+    await flushAsyncQueue();
+
+    // Sanity: materials_used was populated by the worker, NOT by us.
+    const claimedRows = await db
+      .select()
+      .from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, dispatchJobId));
+    expect(claimedRows).toHaveLength(1);
+    const claimedMaterials = claimedRows[0]!
+      .materialsUsed as MaterialsUsed | null;
+    expect(claimedMaterials).not.toBeNull();
+    expect(claimedMaterials!).toHaveLength(1);
+    expect(claimedMaterials![0]!.slot_index).toBe(0);
+    // KEY: this is the T_g4 fill — no pre-population.
+    expect(claimedMaterials![0]!.material_id).toBe(materialId);
+    expect(claimedMaterials![0]!.estimated_grams).toBeCloseTo(
+      ESTIMATED_GRAMS,
+      2,
+    );
+
+    // Subscriber should have started.
+    expect(workerForCircular.isWatching(printerId)).toBe(true);
+    expect(stubRig.startedFor.length).toBeGreaterThanOrEqual(1);
+    expect(stubRig.startedFor[0]!.id).toBe(printerId);
+
+    // Drive the status events.
+    const baseTime = Date.now();
+    const remoteJobRef = 'cube.gcode';
+
+    stubRig.emit({
+      kind: 'progress',
+      remoteJobRef,
+      progressPct: 50,
+      rawPayload: { phase: 'p50' },
+      occurredAt: new Date(baseTime + 1000),
+    });
+    await flushAsyncQueue();
+
+    stubRig.emit({
+      kind: 'completed',
+      remoteJobRef,
+      progressPct: 100,
+      // remain_percent=20 → measured = 38.42 * 0.80 = 30.736g
+      measuredConsumption: [
+        { slot_index: 0, grams: 0, remain_percent: REMAIN_PERCENT_AT_END },
+      ],
+      rawPayload: { phase: 'completed' },
+      occurredAt: new Date(baseTime + 2000),
+    });
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+
+    // ----- Assertions -----
+
+    // (a) dispatch_job is completed.
+    const finalRows = await db
+      .select()
+      .from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, dispatchJobId));
+    const finalRow = finalRows[0]!;
+    expect(finalRow.status).toBe('completed');
+    expect(finalRow.progressPct).toBe(100);
+    expect(finalRow.completedAt).not.toBeNull();
+
+    // (b) materials_used.material_id is the loaded material.
+    const finalMaterials = finalRow.materialsUsed as MaterialsUsed | null;
+    expect(finalMaterials).not.toBeNull();
+    expect(finalMaterials!).toHaveLength(1);
+    expect(finalMaterials![0]!.material_id).toBe(materialId);
+    expect(finalMaterials![0]!.estimated_grams).toBeCloseTo(
+      ESTIMATED_GRAMS,
+      2,
+    );
+
+    // (c) Ledger contains BOTH a 'material.loaded' event (from T_g2's
+    // loadInPrinter) AND a 'material.consumed' event with
+    // provenance='measured' (from Phase B emission). This is the proof
+    // point: real-loadout path produces real consumption events.
+    const loadedRows = await db
+      .select()
+      .from(schema.ledgerEvents)
+      .where(
+        and(
+          eq(schema.ledgerEvents.kind, 'material.loaded'),
+          eq(schema.ledgerEvents.subjectId, materialId),
+        ),
+      );
+    expect(loadedRows.length).toBeGreaterThanOrEqual(1);
+    const loadedRow = loadedRows[0]!;
+    const loadedPayload = (typeof loadedRow.payload === 'string'
+      ? JSON.parse(loadedRow.payload as string)
+      : loadedRow.payload) as { printerId: string; slotIndex: number };
+    expect(loadedPayload.printerId).toBe(printerId);
+    expect(loadedPayload.slotIndex).toBe(0);
+
+    const measuredRows = await db
+      .select()
+      .from(schema.ledgerEvents)
+      .where(
+        and(
+          eq(schema.ledgerEvents.kind, 'material.consumed'),
+          eq(schema.ledgerEvents.provenanceClass, 'measured'),
+        ),
+      );
+    expect(measuredRows.length).toBeGreaterThanOrEqual(1);
+    const measuredRow = measuredRows.find((r: { payload: unknown }) => {
+      const p = (typeof r.payload === 'string'
+        ? JSON.parse(r.payload as string)
+        : r.payload) as {
+        attributedTo?: { jobId?: string; note?: string };
+      };
+      return (
+        p.attributedTo?.jobId === dispatchJobId &&
+        p.attributedTo?.note === 'slot:0'
+      );
+    });
+    expect(measuredRow).toBeDefined();
+    expect(measuredRow!.subjectId).toBe(materialId);
+    expect(measuredRow!.provenanceClass).toBe('measured');
+    const measuredPayload = (typeof measuredRow!.payload === 'string'
+      ? JSON.parse(measuredRow!.payload as string)
+      : measuredRow!.payload) as {
+      weightConsumed: number;
+      attributedTo: { kind: string; jobId: string; lootId: string; note: string };
+    };
+    expect(measuredPayload.attributedTo.kind).toBe('print');
+    expect(measuredPayload.attributedTo.jobId).toBe(dispatchJobId);
+    expect(measuredPayload.attributedTo.lootId).toBe(lootId);
+    expect(measuredPayload.weightConsumed).toBeCloseTo(
+      EXPECTED_MEASURED_GRAMS,
+      2,
+    );
+
+    // (d) Material remaining_amount decremented by BOTH Phase A (estimated)
+    // and Phase B (measured) emissions. With the loadout filled before
+    // claim, Phase A now fires for slot 0 (decrements ESTIMATED_GRAMS),
+    // and Phase B's terminal emission decrements EXPECTED_MEASURED_GRAMS.
+    // V2-007a-T13 reports query by provenance — both decrements are
+    // intentional, recording the slicer estimate AND the printer-reported
+    // actual.
+    const matRows = await db
+      .select()
+      .from(schema.materials)
+      .where(eq(schema.materials.id, materialId));
+    expect(matRows[0]!.remainingAmount).toBeCloseTo(
+      INITIAL_MATERIAL_GRAMS - ESTIMATED_GRAMS - EXPECTED_MEASURED_GRAMS,
+      2,
+    );
+
+    // (d.1) The Phase A 'material.consumed' (provenance='estimated') row
+    // exists alongside the Phase B 'measured' row. This is the unique
+    // T_g5 invariant: real-loadout path produces BOTH ledger rows.
+    const estimatedRows = await db
+      .select()
+      .from(schema.ledgerEvents)
+      .where(
+        and(
+          eq(schema.ledgerEvents.kind, 'material.consumed'),
+          eq(schema.ledgerEvents.provenanceClass, 'estimated'),
+          eq(schema.ledgerEvents.subjectId, materialId),
+        ),
+      );
+    expect(estimatedRows.length).toBeGreaterThanOrEqual(1);
+
+    // (e) Worker received the terminal notification + bus saw events.
+    expect(workerNotifyTerminalCalls).toBeGreaterThanOrEqual(1);
+    expect(busEventCounts.get(dispatchJobId) ?? 0).toBeGreaterThanOrEqual(2);
   });
 });

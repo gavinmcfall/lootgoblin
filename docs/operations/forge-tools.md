@@ -579,11 +579,89 @@ CI never sets these → tests are no-ops. Used by ops/dev to validate against ac
 
 ### Carry-forwards
 
-- **V2-005f-CF-1**: Material loadout tracking — auto-populate `dispatch_jobs.materials_used[].material_id` from the printer's currently-loaded spool inventory (today operators set this manually).
+- **V2-005f-CF-1**: Material loadout tracking — auto-populate `dispatch_jobs.materials_used[].material_id` from the printer's currently-loaded spool inventory (today operators set this manually). **Shipped — see V2-005f-CF-1 section below.**
 - **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival.
 - **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline.
 - **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening.
 - **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence.
 - **V2-005f-CF-6**: Playwright UI tests for status SSE streams (blocked on V2-009 UI scope).
 - **V2-005f-CF-7**: Encrypted CTB binary header parsing (today encrypted variants return null estimates).
+
+## V2-005f-CF-1 Material Loadout Tracking
+
+V2-005f shipped the consumption-emission plumbing, but `dispatch_jobs.materials_used[].material_id` was always empty because no source-of-truth for "what spool is loaded in printer P slot N right now?" existed. Operators had to manually pre-populate the column for any consumption ledger event to fire. CF-1 closes that gap: a first-class `printer_loadouts` table records every load/unload, and the claim worker auto-fills `material_id` from the current loadout when a dispatch is claimed.
+
+### Data model
+
+A new `printer_loadouts` table (migration 0030) records every load/unload as a row. Current state is `WHERE unloaded_at IS NULL`; history is older rows with `unloaded_at` populated. A partial unique index (`idx_printer_loadouts_current` on `(printer_id, slot_index)` where `unloaded_at IS NULL`) guarantees at-most-one open row per (printer, slot).
+
+Atomic swap on slot conflict: when an operator says "load this spool here" while a different spool is already in that slot, the incumbent row is stamped with `unloaded_at` and a new row is inserted in ONE transaction, with TWO ledger events emitted — `material.unloaded` (reason='swap') for the outgoing spool + `material.loaded` for the incoming spool (payload includes `swappedOutMaterialId`). Either both happen or neither.
+
+Migration 0030 also dropped the V2-007a-T4 free-text `materials.loaded_in_printer_ref` column — the `printer_loadouts` table is the single source of truth.
+
+### HTTP API
+
+| Method | Path | Body | Success |
+|---|---|---|---|
+| POST | `/api/v1/materials/:id/load` | `{ printerId, slotIndex, notes? }` | 200 `{ loadoutId, swappedOutMaterialId? }` |
+| POST | `/api/v1/materials/:id/unload` | `{ notes? }` | 200 `{ loadoutId, previousPrinterId, previousSlotIndex }` |
+| GET | `/api/v1/forge/printers/:id/loadout` | — | 200 `{ slots: [{ slotIndex, materialId, loadoutId, loadedAt, ... }] }` |
+| GET | `/api/v1/materials/:id/loadout-history` | — | 200 `{ history: [{ loadoutId, printerId, slotIndex, loadedAt, unloadedAt, ... }] }` |
+
+### Error codes
+
+- `404` — `material-not-found` / `printer-not-found`
+- `409` — `material-already-loaded-elsewhere` / `material-retired` / `material-not-loaded`
+- `400` — `invalid-slot` (slotIndex must be a non-negative integer)
+
+### Ledger events
+
+Every load/unload is durably recorded via the V2-007a-T3 ledger inside the same transaction as the table write — the audit trail rolls back together with the row.
+
+| Kind | Subject | Payload |
+|---|---|---|
+| `material.loaded` | `materialId` | `{ printerId, slotIndex, loadoutId, swappedOutMaterialId? }` |
+| `material.unloaded` | `materialId` | `{ printerId, slotIndex, loadoutId, reason: 'swap' \| 'manual' }` |
+
+Both rows carry `provenance_class='entered'` (operator-asserted truth, distinct from the `'measured'` and `'estimated'` rows that consumption emission writes).
+
+### Slot indexing
+
+`slot_index` is a flat global integer. For multi-AMS Bambu printers the V2-005f Bambu subscriber convention is preserved:
+
+```
+slot_index = unit * 4 + tray.id
+```
+
+So AMS unit 0 / tray 0 → slot 0, AMS unit 0 / tray 3 → slot 3, AMS unit 1 / tray 0 → slot 4, AMS unit 1 / tray 1 → slot 5, etc.
+
+Non-AMS printers (single-extruder Klipper / OctoPrint / SDCP / ChituNetwork) always use `slot_index=0`.
+
+The UI translates display strings (e.g. "AMS 2 / Slot 1" → 5) at render time; the API and DB columns always use the flat integer.
+
+### Claim worker integration
+
+When a printer-target dispatch is claimed (`runOneClaimTick`):
+
+1. The claim worker resolves the dispatch's machine-facing artifact and runs `extractSlicerEstimate` against it.
+2. It calls `getCurrentLoadout(printerId)` to map `slot_index → material_id` for every currently-loaded slot.
+3. It UPDATEs `dispatch_jobs.materials_used` with one entry per slicer-estimate slot, filling `material_id` from the loadout map.
+4. Slots that the slicer estimate references but the printer has nothing loaded into log a `forge-claim: slicer-estimate references slot with no loaded material` warning and ship `material_id: ''`. The Phase A and Phase B consumption emitters skip empty-`material_id` slots silently — the print proceeds unimpeded.
+
+The end-to-end consequence: with the loadout populated before claim, both Phase A (`provenance='estimated'`) and Phase B (`provenance='measured'`) consumption events land in the ledger automatically. V2-007a-T13 reports query by provenance — both decrements are intentional and surface separately.
+
+### Operator workflow
+
+1. **Load a fresh spool**: `POST /api/v1/materials/:id/load { printerId, slotIndex }`. Returns `{ loadoutId }` and emits a `material.loaded` ledger row.
+2. **Dispatch normally**. The claim worker auto-fills `materials_used[].material_id` from the current loadout — no manual `materials_used` setup required.
+3. **Unload or swap**:
+   - Manual unload: `POST /api/v1/materials/:id/unload`. Stamps `unloaded_at`, emits `material.unloaded` (reason='manual').
+   - Swap: just `POST /api/v1/materials/:other-id/load { printerId, slotIndex: <same> }`. Atomic swap fires automatically — the incumbent's row is closed and a new row opened in ONE transaction with two ledger events.
+4. **Inspect current loadout**: `GET /api/v1/forge/printers/:id/loadout` returns the slot list.
+5. **Audit history**: `GET /api/v1/materials/:id/loadout-history` returns every (printer, slot, load, unload) tuple this material has lived in.
+
+### Carry-forwards
+
+- **V2-005f-CF-1-CF-A**: Rename the `loadedInPrinterRef` field on the Material DTO to `loadedInPrinterId` for clarity. The string still reflects the new schema's first-class FK; only the field name needs the lift.
+- **V2-005f-CF-2** (existing, unrelated): SSE retention policy + dispatch_status_events archival.
 

@@ -384,6 +384,7 @@ export function errorResponse(
  */
 export function statusForReason(reason: string): number {
   if (reason === 'persist-failed') return 500;
+  if (reason === 'not-implemented') return 501;
   if (reason === 'material-not-found') return 404;
   if (reason === 'recipe-not-found') return 404;
   if (reason === 'source-not-found') return 404;

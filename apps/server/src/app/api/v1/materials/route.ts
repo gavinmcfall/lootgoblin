@@ -283,9 +283,15 @@ export async function GET(req: NextRequest) {
   if (q.active !== undefined) conditions.push(eq(schema.materials.active, q.active));
   // TODO V2-005f-CF-1 T_g4: re-implement `?loaded=true|false` against
   // `printer_loadouts` (EXISTS subquery on open rows). Migration 0030 dropped
-  // materials.loaded_in_printer_ref; the filter is silently a no-op until
-  // T_g4 wires the new query path.
-  void q.loaded;
+  // materials.loaded_in_printer_ref; until T_g4 wires the new query path we
+  // return 501 rather than silently returning unfiltered results.
+  if (q.loaded !== undefined) {
+    return errorResponse(
+      'not-implemented',
+      'loaded filter is being rewritten against printer_loadouts (V2-005f-CF-1 T_g4)',
+      501,
+    );
+  }
   if (q.cursor) {
     const cursorMs = Number(q.cursor);
     if (!Number.isFinite(cursorMs)) {

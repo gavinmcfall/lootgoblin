@@ -58,6 +58,24 @@ async function seedUser(): Promise<string> {
   return id;
 }
 
+/**
+ * V2-005f-CF-1 T_g2: load/unload now FK against `printers`. Tests that
+ * exercise loadInPrinter need a real printer row — seed a minimal one.
+ */
+async function seedTestPrinter(ownerId: string): Promise<string> {
+  const id = uid();
+  await db().insert(schema.printers).values({
+    id,
+    ownerId,
+    kind: 'fdm_klipper',
+    name: `Test printer ${id.slice(0, 8)}`,
+    connectionConfig: {},
+    active: true,
+    createdAt: new Date(),
+  });
+  return id;
+}
+
 beforeAll(async () => {
   for (const suffix of ['', '-journal', '-wal', '-shm']) {
     const p = `${DB_PATH}${suffix}`;
@@ -101,7 +119,8 @@ describe('createMaterial — happy paths', () => {
     expect(result.material.initialAmount).toBe(1000);
     expect(result.material.remainingAmount).toBe(1000);
     expect(result.material.active).toBe(true);
-    expect(result.material.loadedInPrinterRef).toBeNull();
+    // V2-005f-CF-1 T_g1 dropped `loaded_in_printer_ref`; load tracking now
+    // lives in `printer_loadouts`.
 
     const events = await db()
       .select()
@@ -560,10 +579,12 @@ describe('retireMaterial', () => {
   it('18. loaded-in-printer + no acknowledge → loaded-in-printer-no-ack', async () => {
     const ownerId = await seedUser();
     const m = await createTestMaterial(ownerId);
-    await db()
-      .update(schema.materials)
-      .set({ loadedInPrinterRef: 'bambu-x1c-#1:tray-2' })
-      .where(eq(schema.materials.id, m.id));
+    const printerId = await seedTestPrinter(ownerId);
+    const lr = await loadInPrinter(
+      { materialId: m.id, printerId, slotIndex: 2, userId: ownerId },
+      { dbUrl: DB_URL },
+    );
+    expect(lr.ok).toBe(true);
 
     const result = await retireMaterial(
       { materialId: m.id, actorUserId: ownerId, retirementReason: 'broken' },
@@ -574,13 +595,15 @@ describe('retireMaterial', () => {
     expect(result.reason).toBe('loaded-in-printer-no-ack');
   });
 
-  it('19. loaded + acknowledgeLoaded=true → retires, leaves loadedInPrinterRef as-is', async () => {
+  it('19. loaded + acknowledgeLoaded=true → retires, leaves open loadout row as-is', async () => {
     const ownerId = await seedUser();
     const m = await createTestMaterial(ownerId);
-    await db()
-      .update(schema.materials)
-      .set({ loadedInPrinterRef: 'bambu-x1c-#1:tray-2' })
-      .where(eq(schema.materials.id, m.id));
+    const printerId = await seedTestPrinter(ownerId);
+    const lr = await loadInPrinter(
+      { materialId: m.id, printerId, slotIndex: 2, userId: ownerId },
+      { dbUrl: DB_URL },
+    );
+    expect(lr.ok).toBe(true);
 
     const result = await retireMaterial(
       {
@@ -598,8 +621,15 @@ describe('retireMaterial', () => {
       .from(schema.materials)
       .where(eq(schema.materials.id, m.id));
     expect(rows[0]!.active).toBe(false);
-    // V2-005 will handle physical unload; T4 leaves the ref untouched.
-    expect(rows[0]!.loadedInPrinterRef).toBe('bambu-x1c-#1:tray-2');
+    // V2-005f-CF-1 T_g2 leaves the `printer_loadouts` row open — physical
+    // unload remains the operator's responsibility (consistent with the
+    // V2-007a-T4 semantics against the legacy free-text column).
+    const open = await db()
+      .select()
+      .from(schema.printerLoadouts)
+      .where(eq(schema.printerLoadouts.materialId, m.id));
+    expect(open).toHaveLength(1);
+    expect(open[0]!.unloadedAt).toBeNull();
   });
 
   it('20. active dispatch via stub → reject with active-dispatch', async () => {
@@ -625,89 +655,99 @@ describe('retireMaterial', () => {
 // ---------------------------------------------------------------------------
 
 describe('loadInPrinter', () => {
-  it('21. happy path: filament_spool with no conflict → loadedInPrinterRef set + ledger event', async () => {
+  it('21. happy path: filament_spool with no conflict → printer_loadouts row + ledger event', async () => {
     const ownerId = await seedUser();
     const m = await createTestMaterial(ownerId);
+    const printerId = await seedTestPrinter(ownerId);
 
     const result = await loadInPrinter(
-      { materialId: m.id, actorUserId: ownerId, printerRef: 'bambu-x1c-#1:tray-3' },
+      { materialId: m.id, printerId, slotIndex: 3, userId: ownerId },
       { dbUrl: DB_URL },
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const rows = await db()
+    // Open loadout row exists with the right (printer, slot).
+    const loadouts = await db()
       .select()
-      .from(schema.materials)
-      .where(eq(schema.materials.id, m.id));
-    expect(rows[0]!.loadedInPrinterRef).toBe('bambu-x1c-#1:tray-3');
+      .from(schema.printerLoadouts)
+      .where(eq(schema.printerLoadouts.materialId, m.id));
+    expect(loadouts).toHaveLength(1);
+    expect(loadouts[0]!.printerId).toBe(printerId);
+    expect(loadouts[0]!.slotIndex).toBe(3);
+    expect(loadouts[0]!.unloadedAt).toBeNull();
 
+    // Ledger event emitted with the structured T_g2 payload.
     const events = await db()
       .select()
       .from(schema.ledgerEvents)
-      .where(eq(schema.ledgerEvents.id, result.ledgerEventId));
-    expect(events[0]!.kind).toBe('material.loaded');
-    const payload = JSON.parse(events[0]!.payload!);
-    expect(payload.printerRef).toBe('bambu-x1c-#1:tray-3');
+      .where(eq(schema.ledgerEvents.subjectId, m.id));
+    const loadEvent = events.find((e) => e.kind === 'material.loaded');
+    expect(loadEvent).toBeDefined();
+    const payload = JSON.parse(loadEvent!.payload!);
+    expect(payload.printerId).toBe(printerId);
+    expect(payload.slotIndex).toBe(3);
+    expect(payload.loadoutId).toBe(result.loadoutId);
   });
 
-  it('22. another filament_spool already loaded at same printerRef → printer-slot-occupied', async () => {
+  it('22. another material in the same (printer, slot) → atomic swap + swappedOutMaterialId', async () => {
     const ownerId = await seedUser();
-    const slot = 'bambu-x1c-conflict:tray-1';
+    const printerId = await seedTestPrinter(ownerId);
 
     const first = await createTestMaterial(ownerId);
     const second = await createTestMaterial(ownerId, { colors: ['#ABCDEF'] });
 
     const r1 = await loadInPrinter(
-      { materialId: first.id, actorUserId: ownerId, printerRef: slot },
+      { materialId: first.id, printerId, slotIndex: 1, userId: ownerId },
       { dbUrl: DB_URL },
     );
     expect(r1.ok).toBe(true);
 
+    // Loading a different material into the same slot atomically swaps —
+    // the incumbent is unloaded (reason='swap') and the new row is opened.
     const r2 = await loadInPrinter(
-      { materialId: second.id, actorUserId: ownerId, printerRef: slot },
+      { materialId: second.id, printerId, slotIndex: 1, userId: ownerId },
+      { dbUrl: DB_URL },
+    );
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+    expect(r2.swappedOutMaterialId).toBe(first.id);
+  });
+
+  it('23. material already loaded ELSEWHERE → material-already-loaded-elsewhere', async () => {
+    const ownerId = await seedUser();
+    const printerA = await seedTestPrinter(ownerId);
+    const printerB = await seedTestPrinter(ownerId);
+    const m = await createTestMaterial(ownerId);
+
+    const r1 = await loadInPrinter(
+      { materialId: m.id, printerId: printerA, slotIndex: 0, userId: ownerId },
+      { dbUrl: DB_URL },
+    );
+    expect(r1.ok).toBe(true);
+
+    // Trying to load the SAME material into a different (printer, slot) is
+    // rejected — a material can only be in one place at a time.
+    const r2 = await loadInPrinter(
+      { materialId: m.id, printerId: printerB, slotIndex: 0, userId: ownerId },
       { dbUrl: DB_URL },
     );
     expect(r2.ok).toBe(false);
     if (r2.ok) return;
-    expect(r2.reason).toBe('printer-slot-occupied');
-  });
-
-  it('23. resin_bottle CAN load at same printerRef as a filament', async () => {
-    const ownerId = await seedUser();
-    const slot = 'shared-rig:slot-A';
-
-    const filament = await createTestMaterial(ownerId);
-    const resin = await createTestMaterial(ownerId, {
-      kind: 'resin_bottle',
-      unit: 'ml',
-      initialAmount: 500,
-      colors: ['#444444'],
-    });
-
-    const r1 = await loadInPrinter(
-      { materialId: filament.id, actorUserId: ownerId, printerRef: slot },
-      { dbUrl: DB_URL },
-    );
-    expect(r1.ok).toBe(true);
-
-    const r2 = await loadInPrinter(
-      { materialId: resin.id, actorUserId: ownerId, printerRef: slot },
-      { dbUrl: DB_URL },
-    );
-    expect(r2.ok).toBe(true);
+    expect(r2.reason).toBe('material-already-loaded-elsewhere');
   });
 
   it('24. material already retired → material-retired', async () => {
     const ownerId = await seedUser();
     const m = await createTestMaterial(ownerId);
+    const printerId = await seedTestPrinter(ownerId);
     await retireMaterial(
       { materialId: m.id, actorUserId: ownerId, retirementReason: 'done' },
       { dbUrl: DB_URL },
     );
 
     const result = await loadInPrinter(
-      { materialId: m.id, actorUserId: ownerId, printerRef: 'any-printer:slot-1' },
+      { materialId: m.id, printerId, slotIndex: 0, userId: ownerId },
       { dbUrl: DB_URL },
     );
     expect(result.ok).toBe(false);
@@ -721,48 +761,54 @@ describe('loadInPrinter', () => {
 // ---------------------------------------------------------------------------
 
 describe('unloadFromPrinter', () => {
-  it('25. happy path: clears loadedInPrinterRef + ledger event captures previous', async () => {
+  it('25. happy path: stamps unloaded_at on the open row + emits ledger event', async () => {
     const ownerId = await seedUser();
     const m = await createTestMaterial(ownerId);
-    const slot = 'bambu-x1c-unload-test:tray-1';
-    await loadInPrinter(
-      { materialId: m.id, actorUserId: ownerId, printerRef: slot },
+    const printerId = await seedTestPrinter(ownerId);
+    const lr = await loadInPrinter(
+      { materialId: m.id, printerId, slotIndex: 1, userId: ownerId },
       { dbUrl: DB_URL },
     );
+    expect(lr.ok).toBe(true);
 
     const result = await unloadFromPrinter(
-      { materialId: m.id, actorUserId: ownerId },
+      { materialId: m.id, userId: ownerId },
       { dbUrl: DB_URL },
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.previousPrinterRef).toBe(slot);
+    expect(result.previousPrinterId).toBe(printerId);
+    expect(result.previousSlotIndex).toBe(1);
 
-    const rows = await db()
+    // Open row is now closed.
+    const loadouts = await db()
       .select()
-      .from(schema.materials)
-      .where(eq(schema.materials.id, m.id));
-    expect(rows[0]!.loadedInPrinterRef).toBeNull();
+      .from(schema.printerLoadouts)
+      .where(eq(schema.printerLoadouts.id, result.loadoutId));
+    expect(loadouts[0]!.unloadedAt).toBeInstanceOf(Date);
 
     const events = await db()
       .select()
       .from(schema.ledgerEvents)
-      .where(eq(schema.ledgerEvents.id, result.ledgerEventId));
-    expect(events[0]!.kind).toBe('material.unloaded');
-    const payload = JSON.parse(events[0]!.payload!);
-    expect(payload.printerRef).toBe(slot);
+      .where(eq(schema.ledgerEvents.subjectId, m.id));
+    const unloadEvent = events.find((e) => e.kind === 'material.unloaded');
+    expect(unloadEvent).toBeDefined();
+    const payload = JSON.parse(unloadEvent!.payload!);
+    expect(payload.printerId).toBe(printerId);
+    expect(payload.slotIndex).toBe(1);
+    expect(payload.reason).toBe('manual');
   });
 
-  it('26. not currently loaded → not-loaded', async () => {
+  it('26. not currently loaded → material-not-loaded', async () => {
     const ownerId = await seedUser();
     const m = await createTestMaterial(ownerId);
     const result = await unloadFromPrinter(
-      { materialId: m.id, actorUserId: ownerId },
+      { materialId: m.id, userId: ownerId },
       { dbUrl: DB_URL },
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toBe('not-loaded');
+    expect(result.reason).toBe('material-not-loaded');
   });
 });
 

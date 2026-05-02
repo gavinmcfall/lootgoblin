@@ -527,22 +527,36 @@ describe('material lifecycle actions', () => {
     expect(res2.status).toBe(409);
   });
 
-  // V2-005f-CF-1 T_g1: lifecycle loadInPrinter / unloadFromPrinter return
-  // `not-implemented` until T_g2 wires them against printer_loadouts. The
-  // route maps that reason to 501 (was 400 — silent misclassification). The
-  // happy + 409-on-second-unload assertions return when T_g2 lands.
-  it('load + unload return 501 (stubbed pending V2-005f-CF-1 T_g2)', async () => {
+  // V2-005f-CF-1 T_g3: load/unload routes now talk to the new
+  // `printer_loadouts`-backed lifecycle. Happy path + 409 on second unload.
+  it('load + unload happy path (V2-005f-CF-1 T_g3)', async () => {
     const userId = await seedUser();
     const { id } = await createMaterial(userId);
+
+    // Seed a printer to load into.
+    const printerId = uid();
+    await db().insert(schema.printers).values({
+      id: printerId,
+      ownerId: userId,
+      kind: 'fdm_klipper',
+      name: 'Test printer',
+      connectionConfig: {},
+      active: true,
+      createdAt: new Date(),
+    });
+
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { POST: load } = await import('../../src/app/api/v1/materials/[id]/load/route');
     const r1 = await load(
-      makePost(`http://local/api/v1/materials/${id}/load`, { printerRef: 'p1:tray-1' }),
+      makePost(`http://local/api/v1/materials/${id}/load`, {
+        printerId,
+        slotIndex: 0,
+      }),
       { params: Promise.resolve({ id }) },
     );
-    expect(r1.status).toBe(501);
-    const b1 = (await r1.json()) as { error: string };
-    expect(b1.error).toBe('not-implemented');
+    expect(r1.status).toBe(200);
+    const b1 = (await r1.json()) as { loadoutId: string };
+    expect(b1.loadoutId).toBeTruthy();
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { POST: unload } = await import('../../src/app/api/v1/materials/[id]/unload/route');
@@ -550,9 +564,20 @@ describe('material lifecycle actions', () => {
       makePost(`http://local/api/v1/materials/${id}/unload`, {}),
       { params: Promise.resolve({ id }) },
     );
-    expect(r2.status).toBe(501);
-    const b2 = (await r2.json()) as { error: string };
-    expect(b2.error).toBe('not-implemented');
+    expect(r2.status).toBe(200);
+    const b2 = (await r2.json()) as { previousPrinterId: string; previousSlotIndex: number };
+    expect(b2.previousPrinterId).toBe(printerId);
+    expect(b2.previousSlotIndex).toBe(0);
+
+    // Second unload → 409 material-not-loaded.
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const r3 = await unload(
+      makePost(`http://local/api/v1/materials/${id}/unload`, {}),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(r3.status).toBe(409);
+    const b3 = (await r3.json()) as { error: string };
+    expect(b3.error).toBe('material-not-loaded');
   });
 });
 

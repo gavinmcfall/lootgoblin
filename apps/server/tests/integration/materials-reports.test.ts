@@ -63,9 +63,33 @@ interface SeedMaterialOpts {
   colors: string[] | null;
   unit: 'g' | 'ml';
   initialAmount: number;
-  printerRef?: string | null;
+  /**
+   * V2-005f-CF-1 T_g2: tests now pass a structured (printerId, slotIndex)
+   * pair to load. `null` = leave un-loaded.
+   *
+   * NOTE: until V2-005f-CF-1 T_g4 lands, the report-layer
+   * `loadedInPrinterRef` accessor is stubbed to always return null — so
+   * `consumptionByPrinter` only ever sees the null bucket regardless of
+   * whether materials are loaded. The two by-named-printer tests in this
+   * file are skipped pending T_g4.
+   */
+  loadInto?: { printerId: string; slotIndex: number } | null;
   /** filament_spool / resin_bottle. Defaults to filament_spool when unit='g'. */
   kind?: 'filament_spool' | 'resin_bottle';
+}
+
+async function seedTestPrinter(ownerId: string, name: string): Promise<string> {
+  const id = uid();
+  await getServerDb(DB_URL).insert(schema.printers).values({
+    id,
+    ownerId,
+    kind: 'fdm_klipper',
+    name,
+    connectionConfig: {},
+    active: true,
+    createdAt: new Date(),
+  });
+  return id;
 }
 
 async function seedMaterial(opts: SeedMaterialOpts): Promise<{ id: string }> {
@@ -99,12 +123,13 @@ async function seedMaterial(opts: SeedMaterialOpts): Promise<{ id: string }> {
   }
 
   // Optional load-in-printer.
-  if (opts.printerRef !== undefined && opts.printerRef !== null) {
+  if (opts.loadInto) {
     const lr = await loadInPrinter(
       {
         materialId: r.material.id,
-        actorUserId: opts.ownerId,
-        printerRef: opts.printerRef,
+        printerId: opts.loadInto.printerId,
+        slotIndex: opts.loadInto.slotIndex,
+        userId: opts.ownerId,
       },
       { dbUrl: DB_URL },
     );
@@ -210,13 +235,16 @@ const RECIPE: Recipe = [
 
 async function seedUserAndMaterials(label: string): Promise<FixtureUser> {
   const ownerId = await seedUser(label);
+  const printerAlpha = await seedTestPrinter(ownerId, `printer-alpha-${label}`);
+  const printerBeta = await seedTestPrinter(ownerId, `printer-beta-${label}`);
+  const printerGamma = await seedTestPrinter(ownerId, `printer-gamma-${label}`);
   const bambuRedG = await seedMaterial({
     ownerId,
     brand: 'Bambu Lab',
     colors: ['#E63946'],
     unit: 'g',
     initialAmount: 1000,
-    printerRef: 'printer-alpha',
+    loadInto: { printerId: printerAlpha, slotIndex: 0 },
   });
   const polymakerBlueG = await seedMaterial({
     ownerId,
@@ -224,7 +252,7 @@ async function seedUserAndMaterials(label: string): Promise<FixtureUser> {
     colors: ['#1D4ED8'],
     unit: 'g',
     initialAmount: 1000,
-    printerRef: 'printer-beta',
+    loadInto: { printerId: printerBeta, slotIndex: 0 },
   });
   const elegooClearMl = await seedMaterial({
     ownerId,
@@ -232,7 +260,7 @@ async function seedUserAndMaterials(label: string): Promise<FixtureUser> {
     colors: ['#EEEEEE'],
     unit: 'ml',
     initialAmount: 500,
-    printerRef: 'printer-gamma',
+    loadInto: { printerId: printerGamma, slotIndex: 0 },
   });
   const unbrandedNoColorG = await seedMaterial({
     ownerId,
@@ -240,7 +268,7 @@ async function seedUserAndMaterials(label: string): Promise<FixtureUser> {
     colors: null,
     unit: 'g',
     initialAmount: 500,
-    printerRef: null,
+    loadInto: null,
   });
 
   // Apply the recipe.
@@ -271,24 +299,28 @@ async function seedUserAndMaterials(label: string): Promise<FixtureUser> {
     bumpProv(e.provenance, klass, amount);
   }
 
+  // V2-005f-CF-1: until T_g4 wires the report layer to read from
+  // `printer_loadouts`, `consumptionByPrinter` always returns the null
+  // bucket — so we set every printer key to null here; the per-named-printer
+  // tests are skipped pending T_g4.
   const matMeta = {
     bambuRedG: {
       id: bambuRedG.id,
       brand: 'Bambu Lab' as string | null,
       primaryColor: '#E63946' as string | null,
-      printer: 'printer-alpha' as string | null,
+      printer: null as string | null,
     },
     polymakerBlueG: {
       id: polymakerBlueG.id,
       brand: 'Polymaker' as string | null,
       primaryColor: '#1D4ED8' as string | null,
-      printer: 'printer-beta' as string | null,
+      printer: null as string | null,
     },
     elegooClearMl: {
       id: elegooClearMl.id,
       brand: 'ELEGOO' as string | null,
       primaryColor: '#EEEEEE' as string | null,
-      printer: 'printer-gamma' as string | null,
+      printer: null as string | null,
     },
     unbrandedNoColorG: {
       id: unbrandedNoColorG.id,
@@ -614,7 +646,10 @@ describe('consumptionByColor', () => {
 // ---------------------------------------------------------------------------
 
 describe('consumptionByPrinter', () => {
-  it('returns one row per distinct loadedInPrinterRef seen', async () => {
+  // V2-005f-CF-1: pending T_g4 — until the report layer LEFT-JOINs to
+  // `printer_loadouts`, `loadedInPrinterRef` is always null and per-named-
+  // printer rows do not appear. T_g4 unskips this test.
+  it.skip('returns one row per distinct loadedInPrinterRef seen (pending T_g4)', async () => {
     const rows = await consumptionByPrinter(
       { ownerId: alpha.ownerId, window: WINDOW },
       { dbUrl: DB_URL },

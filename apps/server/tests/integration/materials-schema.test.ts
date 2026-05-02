@@ -350,11 +350,13 @@ describe('V2-007a-T1 materials schema migration', () => {
         .all()
         .map((r) => r.name);
 
+    // V2-005f-CF-1 T_g1 dropped the legacy `materials_loaded_idx` along with
+    // the `loaded_in_printer_ref` column; load tracking moved to the
+    // `printer_loadouts` table.
     expect(idxFor('materials')).toEqual(
       expect.arrayContaining([
         'materials_owner_active_idx',
         'materials_owner_kind_idx',
-        'materials_loaded_idx',
         'materials_product_idx',
         'materials_owner_brand_idx',
         'materials_owner_subtype_idx',

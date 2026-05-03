@@ -147,9 +147,16 @@ export function createThreeMfProvider(): ClassifierProvider {
     name: 'three-mf',
 
     async classify(input: ClassifierInput): Promise<PartialClassification> {
-      const threeMfFiles = input.files.filter(
-        (f) => path.extname(f.relativePath).toLowerCase() === THREE_MF_EXT,
-      );
+      const threeMfFiles = input.files.filter((f) => {
+        const lower = f.relativePath.toLowerCase();
+        // V2-005e-T_e2: `.gcode.3mf` is slicer output (Bambu Studio plate
+        // archive containing gcode), NOT a source 3MF model. The
+        // slicer-output provider handles those; the 3MF metadata extraction
+        // here would parse plate-specific metadata as if it were authorship,
+        // muddying classification. Skip compound extensions.
+        if (lower.endsWith('.gcode.3mf')) return false;
+        return path.extname(lower) === THREE_MF_EXT;
+      });
 
       if (threeMfFiles.length === 0) return {};
 

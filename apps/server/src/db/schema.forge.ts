@@ -904,3 +904,95 @@ export const printerLoadouts = sqliteTable(
     index('idx_printer_loadouts_material').on(t.materialId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// V2-005e-T_e1: forge_inboxes — watched filesystem drops for slicer outputs
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-user watched filesystem inboxes. The Forge inbox watcher (T_e2) tails
+ * each `path`, classifies arrivals as slicer outputs (gcode / .3mf-with-gcode
+ * / .ctb / .pwmx / etc.), runs the source-association heuristic (T_e3) to
+ * stamp `loot.parent_loot_id`, and optionally enqueues a dispatch_jobs row
+ * targeting `default_printer_id` when set.
+ *
+ * One row per (owner, named) inbox; deleting the owner cascades, deleting the
+ * default printer SET NULLs the column so the inbox keeps watching but stops
+ * auto-dispatching.
+ *
+ *   active = false     soft-disable; the watcher skips inactive rows.
+ *   notes              free-form per-row description for the UI.
+ */
+export const forgeInboxes = sqliteTable(
+  'forge_inboxes',
+  {
+    id: text('id').primaryKey(),
+    ownerId: text('owner_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    path: text('path').notNull(),
+    /**
+     * Optional default printer for jobs auto-enqueued from this inbox. NULL =
+     * watch-only (the user routes manually). ON DELETE SET NULL — removing the
+     * printer leaves the inbox in watch-only mode rather than deleting it.
+     */
+    defaultPrinterId: text('default_printer_id').references(() => printers.id, {
+      onDelete: 'set null',
+    }),
+    active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    notes: text('notes'),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => [
+    /** Watcher hot path: "all active inboxes for this owner". */
+    index('idx_forge_inboxes_owner').on(t.ownerId, t.active),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// V2-005e-T_e1: forge_pending_pairings — slices awaiting source association
+// ---------------------------------------------------------------------------
+
+/**
+ * Backstop queue for slice Loot rows whose source Loot the heuristic (T_e3)
+ * couldn't confidently identify at ingest time. The pairing UI lets the user
+ * pick the source Loot manually; resolving the row stamps
+ * `loot.parent_loot_id` and sets `resolved_at` / `resolved_to_loot_id`.
+ *
+ *   slice_loot_id          FK → loot.id, CASCADE — drop the pending row when
+ *                          the slice itself is deleted.
+ *   source_filename_hint   captured at watcher time so the pairing UI has
+ *                          context even if the on-disk file was renamed.
+ *   resolved_to_loot_id    FK → loot.id, SET NULL — preserves history if the
+ *                          source the user picked is later removed.
+ *
+ * The partial UNIQUE index `idx_pending_pairings_slice` enforces "at most one
+ * open pending row per slice" — closed (resolved_at NOT NULL) rows are kept
+ * for audit and freely repeat.
+ */
+export const forgePendingPairings = sqliteTable(
+  'forge_pending_pairings',
+  {
+    id: text('id').primaryKey(),
+    sliceLootId: text('slice_loot_id')
+      .notNull()
+      .references(() => loot.id, { onDelete: 'cascade' }),
+    sourceFilenameHint: text('source_filename_hint'),
+    ingestedAt: integer('ingested_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+    resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
+    resolvedToLootId: text('resolved_to_loot_id').references(() => loot.id, {
+      onDelete: 'set null',
+    }),
+  },
+  (t) => [
+    /** At most one open pending row per slice. */
+    uniqueIndex('idx_pending_pairings_slice')
+      .on(t.sliceLootId)
+      .where(sql`resolved_at IS NULL`),
+  ],
+);

@@ -314,6 +314,24 @@ export async function register() {
       logger.error({ err }, 'forge.status: worker setup failed');
     }
 
+    // V2-005e-T_e2 forge inbox watchers — re-attach a chokidar watcher per
+    // active forge_inboxes row. Failures per-row are caught + logged inside
+    // recoverInboxWatchers so a missing path on one inbox does not block
+    // the others. Runs after migrations + central worker but before the
+    // claim worker (no ordering requirement; the inbox-arrival handler is
+    // a stub in T_e2 and does not enqueue dispatch_jobs yet — T_e3 wires
+    // that).
+    let inboxWatchersRegistered = false;
+    try {
+      const { recoverInboxWatchers } = await import(
+        './forge/inboxes/ingest'
+      );
+      await recoverInboxWatchers();
+      inboxWatchersRegistered = true;
+    } catch (err) {
+      logger.error({ err }, 'forge-inbox: recoverInboxWatchers threw');
+    }
+
     // V2-005a-T4 forge claim worker — drains dispatch_jobs WHERE status='claimable'
     // for the in-process central_worker agent. Default dispatcher routes
     // printer-target jobs through the DispatchHandlerRegistry registered above;
@@ -366,6 +384,20 @@ export async function register() {
         void forgeStatusWorker.stop().catch((err: unknown) =>
           logger.warn({ err }, 'forge-status: stop threw on shutdown'),
         );
+      }
+      // V2-005e-T_e2: stop every active forge inbox watcher so the chokidar
+      // FSWatcher handles release before the process exits.
+      if (inboxWatchersRegistered) {
+        void (async () => {
+          try {
+            const { shutdownAllInboxWatchers } = await import(
+              './forge/inboxes/ingest'
+            );
+            await shutdownAllInboxWatchers();
+          } catch (err) {
+            logger.warn({ err }, 'forge-inbox: shutdown threw');
+          }
+        })();
       }
     };
     process.once('SIGTERM', () => shutdown('SIGTERM'));

@@ -45,8 +45,16 @@ interface MockTcpSocket {
   fireData: (data: Buffer | string) => void;
   fireError: (err: Error) => void;
   destroyed: () => boolean;
-  /** Number of registered error listeners — lets tests poll for listener installation under parallel load. */
+  /** Number of registered error listeners — kept for test introspection. */
   errorListenerCount: number;
+  /**
+   * Resolves the first time the commander registers an error listener via
+   * `on('error', …)` or `once('error', …)`. Used by tests that need to drive
+   * a connect-time error deterministically: `await m.whenErrorListenerRegistered`
+   * is race-free under any CI parallelism. (Replaces a pre-existing
+   * poll-with-cap pattern that flaked under heavy load — FF-L19 bis.)
+   */
+  whenErrorListenerRegistered: Promise<void>;
 }
 
 /**
@@ -72,6 +80,15 @@ function createMockTcpSocket(opts?: {
   let destroyed = false;
   const autoConnect = opts?.autoConnect !== false;
   const reply = opts?.reply;
+
+  let resolveErrorListenerRegistered: () => void;
+  const whenErrorListenerRegistered = new Promise<void>((resolve) => {
+    resolveErrorListenerRegistered = resolve;
+  });
+  const markErrorListenerRegistered = () => {
+    // First registration wins; subsequent calls are no-ops via Promise semantics.
+    resolveErrorListenerRegistered();
+  };
 
   const fireDataInternal = (data: Buffer | string) => {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
@@ -109,7 +126,10 @@ function createMockTcpSocket(opts?: {
     }),
     on: vi.fn((event: string, listener: (...args: any[]) => void) => {
       if (event === 'data') dataListeners.push(listener as (d: Buffer) => void);
-      else if (event === 'error') errorListeners.push(listener as (e: Error) => void);
+      else if (event === 'error') {
+        errorListeners.push(listener as (e: Error) => void);
+        markErrorListenerRegistered();
+      }
       else if (event === 'close') closeListeners.push(listener as () => void);
     }),
     once: vi.fn((event: string, listener: (...args: any[]) => void) => {
@@ -120,6 +140,7 @@ function createMockTcpSocket(opts?: {
           (listener as (e: Error) => void)(err);
         };
         errorListeners.push(wrapped as (e: Error) => void);
+        markErrorListenerRegistered();
       } else if (event === 'connect') {
         connectListenersOnce.push(listener as () => void);
       }
@@ -141,6 +162,7 @@ function createMockTcpSocket(opts?: {
     get errorListenerCount() {
       return errorListeners.length;
     },
+    whenErrorListenerRegistered,
   } as MockTcpSocket;
 }
 
@@ -423,11 +445,10 @@ describe('createChituNetworkHandler', () => {
       }),
     );
 
-    // Wait until the commander has actually registered an error listener on
-    // the socket. Under parallel test load the fixed flush count was
-    // insufficient — fileRead → connect() → listener registration is async
-    // and may not complete in 6 microtasks. Poll-with-cap is robust.
-    for (let i = 0; i < 200 && m.errorListenerCount === 0; i++) await flush();
+    // Wait deterministically for the commander to register its error listener.
+    // The earlier poll-with-cap (200 iterations × flush()) flaked under heavy
+    // CI parallelism (FF-L19 bis); awaiting the mock's promise is race-free.
+    await m.whenErrorListenerRegistered;
     const err = new Error('connect ECONNREFUSED 192.168.1.99:3000');
     (err as Error & { code?: string }).code = 'ECONNREFUSED';
     m.fireError(err);

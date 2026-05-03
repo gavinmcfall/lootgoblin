@@ -20,7 +20,14 @@
  */
 
 import { sql } from 'drizzle-orm';
-import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import {
+  sqliteTable,
+  text,
+  integer,
+  index,
+  uniqueIndex,
+  type AnySQLiteColumn,
+} from 'drizzle-orm/sqlite-core';
 import { user } from './schema.auth';
 
 // ---------------------------------------------------------------------------
@@ -149,6 +156,21 @@ export const loot = sqliteTable(
      * Allows the UI to flag drifted items without deleting the record.
      */
     fileMissing: integer('file_missing', { mode: 'boolean' }).notNull().default(false),
+    /**
+     * V2-005e-T_e1: Slice → source Loot fast-path FK. When this Loot row is a
+     * sliced-output artifact (gcode / .3mf-with-gcode / etc.) ingested via the
+     * forge inbox watcher, `parent_loot_id` points at the source-model Loot it
+     * was sliced from. Every slice has at most one source; ON DELETE SET NULL
+     * preserves the slice row when its source is removed.
+     *
+     * Distinct from the `loot_relationships` m:n graph (V3+ remix/derivative
+     * edges) — this is a single, indexed FK for the dispatch-time lookup
+     * "given this slice, what's the source it came from?".
+     */
+    parentLootId: text('parent_loot_id').references(
+      (): AnySQLiteColumn => loot.id,
+      { onDelete: 'set null' },
+    ),
     createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
     updatedAt: ts('updated_at').notNull().default(sql`(unixepoch() * 1000)`),
   },
@@ -157,6 +179,8 @@ export const loot = sqliteTable(
     index('loot_collection_id_idx').on(t.collectionId),
     /** Reconciliation query: what's drifted (WHERE file_missing = 1). */
     index('loot_file_missing_idx').on(t.fileMissing),
+    /** V2-005e-T_e1: slice → source fast-path lookup. */
+    index('idx_loot_parent').on(t.parentLootId),
   ],
 );
 

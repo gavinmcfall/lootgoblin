@@ -665,3 +665,114 @@ The end-to-end consequence: with the loadout populated before claim, both Phase 
 - **V2-005f-CF-1-CF-A**: Rename the `loadedInPrinterRef` field on the Material DTO to `loadedInPrinterId` for clarity. The string still reflects the new schema's first-class FK; only the field name needs the lift.
 - **V2-005f-CF-2** (existing, unrelated): SSE retention policy + dispatch_status_events archival.
 
+## V2-005e Slicer Dispatchers + Watched Inbox
+
+V2-005e closes the gap between "operator slices in their preferred GUI" and "lootgoblin dispatches the result to a printer." The operator slices in Bambu Studio / OrcaSlicer / Lychee / Chitubox / etc., exports the sliced file to a watched directory on the lootgoblin host, and lootgoblin auto-ingests the slice + auto-links it to its source STL/3MF Loot. The operator then dispatches via the existing V2-005d `POST /api/v1/forge/dispatch` flow. Status feeds + consumption emission take over via V2-005f (see V2-005f section above).
+
+This shipped server-side only. UI buttons (Loot detail "Send to Slicer", Inboxes config page, Pending pairings queue browse) and browser-extension augmentation are deferred to V2-005e-CF-1 / CF-2 / CF-3.
+
+### Watched inbox configuration
+
+A `forge_inboxes` table holds operator-configured directories. Each inbox has:
+
+- `name` — human label
+- `path` — absolute filesystem path on the lootgoblin host
+- `defaultPrinterId` — optional default dispatch target
+- `active` — toggle for pause/resume without deletion
+- `notes` — free-text
+
+A chokidar watcher tails each active inbox; new file events trigger the matcher. On lootgoblin startup, instrumentation re-attaches watchers for every active inbox (boot resilience — same shape as the V2-005f status worker reconnect).
+
+HTTP API (owner-or-admin):
+
+```
+POST   /api/v1/forge/inboxes      { name, path, defaultPrinterId?, notes? }
+GET    /api/v1/forge/inboxes
+GET    /api/v1/forge/inboxes/:id
+PATCH  /api/v1/forge/inboxes/:id  { name?, path?, defaultPrinterId?, active?, notes? }
+DELETE /api/v1/forge/inboxes/:id
+```
+
+### Three-tier source-Loot association
+
+When a slice file lands in a watched inbox, the matcher attempts three strategies in order — first hit wins:
+
+1. **Sidecar metadata** (highest confidence)
+   - `.gcode.3mf` / `.3mf`: opened with JSZip; `Metadata/model_settings.config` is parsed for source filename and 3MF UUID
+   - Plain `.gcode`: header is regex-scraped for `; thumbnail_source = ...`, `; source = ...`, `; original_filename = ...`
+   - Match runs against existing Loot rows by basename + UUID when present
+2. **Filename heuristic** (medium confidence)
+   - Slicer-suffix patterns are stripped (`_PLA_0.2mm`, `_2color`, `_4h32m`, `_(plate1)`, etc.)
+   - Fuzzy match against owner's source Loot basenames using Dice's coefficient
+   - Threshold: ≥ 0.7 similarity ratio
+3. **Pending pairings queue** (no match)
+   - A `forge_pending_pairings` row is inserted with `resolved_at=NULL`
+   - The slice still ingests + dispatches normally — it just lands unattributed (`loot.parent_loot_id = NULL`)
+   - Operator resolves manually:
+     ```
+     GET  /api/v1/forge/pending-pairings
+     POST /api/v1/forge/pending-pairings/:id/resolve  { sourceLootId }
+     ```
+
+The `slicer-output` classifier rule tags arriving files based on extension (`.gcode`, `.gcode.3mf`, `.bgcode`, `.ctb`, `.cbddlp`, `.jxs`, `.sl1`, `.sl1s`). The 3MF classifier provider was narrowed to skip `.gcode.3mf` so plain Bambu Studio source `.3mf` files don't get mis-tagged as slices.
+
+### Slicer launch URI registry
+
+A TS-side constant `SLICER_LAUNCH_REGISTRY` maps 11 slicer kinds to URI deep-link templates:
+
+| Slicer | URI scheme | Notes |
+|---|---|---|
+| Bambu Studio | `bambu-connect://import-file?url=...` | direct deep link |
+| OrcaSlicer | `orcaslicer://open?url=...` | direct deep link |
+| ChiTuBox | `chitubox://open?file=...` | direct deep link |
+| Lychee Slicer | `lychee://open?file=...` | direct deep link |
+| PrusaSlicer | none | download fallback |
+| SuperSlicer | none | download fallback |
+| Cura | none | download fallback |
+| Photon Workshop | none | download fallback |
+| Halot Box | none | download fallback |
+| PreForm | none | download fallback |
+| Asiga Composer | none | download fallback |
+
+Operators (and a future UI) query:
+
+```
+GET /api/v1/forge/slicers/launch-uri?slicerKind=bambu_studio&lootFileId=<id>
+```
+
+Response for a slicer with a registered scheme:
+
+```json
+{ "uri": "bambu-connect://import-file?url=https://lootgoblin.local/api/v1/loot/files/<id>", "fallback": null }
+```
+
+Response for a slicer with no scheme:
+
+```json
+{ "uri": "", "fallback": "download" }
+```
+
+Front-end calling this endpoint should branch: when `uri` is non-empty, navigate the user-agent to it (the OS hands off to the slicer); when `fallback === "download"`, trigger a `Content-Disposition: attachment` download from the same Loot file URL instead.
+
+### Browser limitation: URLs work, local FS paths don't
+
+**Most browsers refuse to pass local filesystem paths to URI handlers from remote-origin pages.** The launch URI deliberately uses lootgoblin's HTTP file-serving URL (the `{url}` placeholder) — browsers WILL pass remote URLs to registered URI handlers, so the slicer opens with the file fetched from lootgoblin's URL.
+
+This sidesteps the UX gap the original V2-005e plan stub flagged. True one-click open-in-slicer with a local FS path requires a browser extension that can bypass remote-origin restrictions — that's the V2-005e-CF-2 carry-forward.
+
+### Operator workflow
+
+1. Configure an inbox once: `POST /api/v1/forge/inboxes { name, path }`
+2. Slice in your preferred GUI; export to the watched directory
+3. Lootgoblin auto-ingests + auto-links to source Loot (or queues for manual resolve via the pending-pairings endpoint)
+4. Dispatch via the existing V2-005d `POST /api/v1/forge/dispatch` flow
+5. Status feeds + consumption emission take over (see V2-005f section above)
+
+### Carry-forwards
+
+- **V2-005e-CF-1**: Loot detail UI — "Send to Slicer" buttons + Inboxes config UI.
+- **V2-005e-CF-2**: Browser extension augmentation — true one-click open-in-slicer with a local FS path (bypasses the remote-origin browser limitation above).
+- **V2-005e-CF-3**: Pending-pairings queue browse UI.
+- **V2-005e-CF-4**: Sidecar metadata extraction for additional formats — `.ctb` header source-file reference, NanoDLP zip metadata, `.sl1` sidecar.
+- **V2-005e-CF-Z**: Proper FS adapter handoff for slice files (today they're stored AS-IS at the inbox-arrived path; should move to per-inbox stash root with path-template-driven placement, matching the rest of V2-002's portable-paths convention).
+

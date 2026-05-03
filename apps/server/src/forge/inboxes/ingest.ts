@@ -36,6 +36,10 @@ import {
 } from '../../stash/classifier-providers';
 import { listActiveInboxes } from './lifecycle';
 import type { ForgeInboxRow } from './types';
+import {
+  matchSliceArrival,
+  type SliceArrivalMatchResult,
+} from '../slice-pairings/matcher';
 
 interface ActiveWatcher {
   inboxId: string;
@@ -81,6 +85,17 @@ export interface SliceArrivalArgs {
   filePath: string;
   /** Injected for testing. Defaults to the module-cached classifier. */
   classifier?: Classifier;
+  /**
+   * V2-005e-T_e3 test seam — override the three-tier matcher. When
+   * provided, called instead of `matchSliceArrival` after the file is
+   * classified as slicer-output. Tests use this to assert the matcher
+   * wiring (sidecar / heuristic / pending) without standing up real Loot
+   * + Collection rows. Defaults to the production matcher.
+   */
+  match?: (args: {
+    inbox: ForgeInboxRow;
+    filePath: string;
+  }) => Promise<SliceArrivalMatchResult>;
 }
 
 export interface SliceArrivalOutcome {
@@ -93,6 +108,13 @@ export interface SliceArrivalOutcome {
    * reason; T_e3 + future tests assert on `processed === true`.
    */
   processed: boolean;
+  /**
+   * V2-005e-T_e3: when isSlicerOutput=true, the result of the three-tier
+   * source-Loot association (sidecar → heuristic → pending-pairings queue).
+   * Undefined when the file was not classified as slicer-output OR when the
+   * caller injected a custom matcher that returned undefined (test seam).
+   */
+  match?: SliceArrivalMatchResult;
 }
 
 /**
@@ -165,9 +187,22 @@ export async function handleSliceArrival(
     return { classified: true, isSlicerOutput: false, classification, processed: true };
   }
 
-  // T_e2 hand-off seam — log only. T_e3 replaces this body with the
-  // three-tier source-Loot association + applier hand-off + optional
-  // dispatch_jobs auto-enqueue against `inbox.defaultPrinterId`.
+  // V2-005e-T_e3: slicer-output detected — hand off to the three-tier
+  // source-Loot matcher. The matcher ingests the file as a slice Loot row,
+  // attempts sidecar + heuristic matches, and queues a pending-pairings row
+  // when neither tier finds a confident source.
+  const matchFn = args.match ?? ((a) => matchSliceArrival(a));
+  let match: SliceArrivalMatchResult;
+  try {
+    match = await matchFn({ inbox, filePath });
+  } catch (err) {
+    logger.error(
+      { err, inboxId: inbox.id, filePath },
+      'forge-inbox: slice-pairing matcher threw',
+    );
+    return { classified: true, isSlicerOutput: true, classification, processed: true };
+  }
+
   logger.info(
     {
       inboxId: inbox.id,
@@ -175,11 +210,21 @@ export async function handleSliceArrival(
       filePath,
       primaryFormat: classification.primaryFormat?.value,
       defaultPrinterId: inbox.defaultPrinterId,
+      sliceLootId: match.sliceLootId,
+      parentLootId: match.parentLootId,
+      pendingPairingId: match.pendingPairingId,
+      skipReason: match.skipReason,
     },
-    'forge-inbox: slicer-output detected (T_e3 will perform source-Loot match + ingest)',
+    'forge-inbox: slicer-output processed via three-tier matcher',
   );
 
-  return { classified: true, isSlicerOutput: true, classification, processed: true };
+  return {
+    classified: true,
+    isSlicerOutput: true,
+    classification,
+    processed: true,
+    match,
+  };
 }
 
 // ---------------------------------------------------------------------------

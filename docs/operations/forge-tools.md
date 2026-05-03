@@ -551,6 +551,12 @@ Reconnect storms can cause duplicate status events for the same dispatch. The co
 
 `dispatch_status_events` rows are NOT deduped — each event gets its own UUID. The audit log preserves all signal including reconnect storms.
 
+### Retention
+
+`dispatch_status_events` grows unboundedly under live operation (back-of-envelope: 100 printers × ~1 progress event/10s × 24h ≈ 864k rows/day). The retention worker (`apps/server/src/workers/dispatch-status-retention-worker.ts`) deletes rows older than `DISPATCH_STATUS_EVENTS_RETENTION_DAYS` (default `30`) on a 12-hour tick (±5 min jitter). Set the env var to `0` or any negative value to **disable** retention and preserve the audit log forever — useful during early deployment / debugging when every status frame matters for diagnosis.
+
+Primary durability is preserved regardless of retention: `dispatch_jobs.completedAt` retains the lifecycle timestamps; `ledger_events` retains all consumption events permanently. The audit log is tertiary — debug signal + live-progress replay only — and an aggressive retention policy is safe.
+
 ### HTTP API
 
 - `GET /api/v1/forge/dispatch/:id/status` — owner-or-admin. Returns `{ dispatch_job_id, status, progress_pct, last_status_at, events: [...latest 50 ordered DESC] }`.
@@ -580,7 +586,7 @@ CI never sets these → tests are no-ops. Used by ops/dev to validate against ac
 ### Carry-forwards
 
 - **V2-005f-CF-1**: Material loadout tracking — auto-populate `dispatch_jobs.materials_used[].material_id` from the printer's currently-loaded spool inventory (today operators set this manually). **Shipped — see V2-005f-CF-1 section below.**
-- **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival.
+- **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival. **Shipped (V2-cleanup-batch-3-T2)** — see "Retention" sub-section above.
 - **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline.
 - **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening.
 - **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence.
@@ -663,7 +669,7 @@ The end-to-end consequence: with the loadout populated before claim, both Phase 
 ### Carry-forwards
 
 - **V2-005f-CF-1-CF-A** (done in V2-cleanup-batch-3-T1): Renamed the `loadedInPrinterRef` field on the Material DTO to `loadedInPrinterId` for clarity. The value still reflects the new schema's first-class FK; the rename was a pure naming refactor.
-- **V2-005f-CF-2** (existing, unrelated): SSE retention policy + dispatch_status_events archival.
+- **V2-005f-CF-2** (existing, unrelated): SSE retention policy + dispatch_status_events archival. **Shipped (V2-cleanup-batch-3-T2)** — see V2-005f "Retention" section above.
 
 ## V2-005e Slicer Dispatchers + Watched Inbox
 

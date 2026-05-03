@@ -18,6 +18,10 @@ export async function register() {
     const { startForgeSlicerWorker, stopForgeSlicerWorker } = await import(
       './workers/forge-slicer-worker'
     );
+    const {
+      startDispatchStatusRetentionWorker,
+      stopDispatchStatusRetentionWorker,
+    } = await import('./workers/dispatch-status-retention-worker');
     const { startScheduler } = await import('./workers/tasks');
     const { logger } = await import('./logger');
 
@@ -359,6 +363,11 @@ export async function register() {
     // gcode row + transitions slicing → claimable. On failure: maps the
     // adapter reason to a DispatchFailureReason and markFailed.
     startForgeSlicerWorker();
+    // V2-cleanup-batch-3-T2 (CF-2) — dispatch_status_events retention. Deletes
+    // rows older than DISPATCH_STATUS_EVENTS_RETENTION_DAYS (default 30) on a
+    // 12h tick. Set the env var to 0 (or negative) to disable retention and
+    // preserve the audit log forever.
+    startDispatchStatusRetentionWorker();
 
     const abort = new AbortController();
     startScheduler(abort.signal).catch((err) => logger.error({ err }, 'scheduler crashed'));
@@ -377,6 +386,7 @@ export async function register() {
       stopForgeClaimWorker();
       stopForgeConverterWorker();
       stopForgeSlicerWorker();
+      stopDispatchStatusRetentionWorker();
       // V2-005f-T_dcf10: tear down per-printer status subscriptions so the
       // process can exit cleanly. Fire-and-forget — graceful-shutdown timing
       // is owned by the orchestrator.

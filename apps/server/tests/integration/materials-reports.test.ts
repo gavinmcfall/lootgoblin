@@ -68,7 +68,7 @@ interface SeedMaterialOpts {
    * pair to load. `null` = leave un-loaded.
    *
    * NOTE: until V2-005f-CF-1 T_g4 lands, the report-layer
-   * `loadedInPrinterRef` accessor is stubbed to always return null — so
+   * `loadedInPrinterId` accessor is stubbed to always return null — so
    * `consumptionByPrinter` only ever sees the null bucket regardless of
    * whether materials are loaded. The two by-named-printer tests in this
    * file are skipped pending T_g4.
@@ -300,7 +300,7 @@ async function seedUserAndMaterials(label: string): Promise<FixtureUser> {
   }
 
   // V2-005f-CF-1 T_g4: report layer now LEFT JOINs to open `printer_loadouts`
-  // rows, so each material's `loadedInPrinterRef` resolves to the printer it
+  // rows, so each material's `loadedInPrinterId` resolves to the printer it
   // was loaded into above. The unbranded material was deliberately not loaded
   // and therefore buckets under printer=null.
   const matMeta = {
@@ -647,9 +647,9 @@ describe('consumptionByColor', () => {
 
 describe('consumptionByPrinter', () => {
   // V2-005f-CF-1 T_g4: report layer LEFT JOINs to open printer_loadouts.
-  // Each material's loadedInPrinterRef resolves to the printer id it was
+  // Each material's loadedInPrinterId resolves to the printer id it was
   // seeded against; named-printer rows now appear.
-  it('returns one row per distinct loadedInPrinterRef seen', async () => {
+  it('returns one row per distinct loadedInPrinterId seen', async () => {
     const rows = await consumptionByPrinter(
       { ownerId: alpha.ownerId, window: WINDOW },
       { dbUrl: DB_URL },

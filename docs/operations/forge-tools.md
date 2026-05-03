@@ -662,7 +662,7 @@ The end-to-end consequence: with the loadout populated before claim, both Phase 
 
 ### Carry-forwards
 
-- **V2-005f-CF-1-CF-A**: Rename the `loadedInPrinterRef` field on the Material DTO to `loadedInPrinterId` for clarity. The string still reflects the new schema's first-class FK; only the field name needs the lift.
+- **V2-005f-CF-1-CF-A** (done in V2-cleanup-batch-3-T1): Renamed the `loadedInPrinterRef` field on the Material DTO to `loadedInPrinterId` for clarity. The value still reflects the new schema's first-class FK; the rename was a pure naming refactor.
 - **V2-005f-CF-2** (existing, unrelated): SSE retention policy + dispatch_status_events archival.
 
 ## V2-005e Slicer Dispatchers + Watched Inbox

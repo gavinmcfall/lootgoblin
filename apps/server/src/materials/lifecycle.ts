@@ -24,7 +24,7 @@
  *   - V2-005 active-dispatch check is injected via `checkActiveDispatches`;
  *     the default is a no-op `{ exists: false, jobIds: [] }`. T15 e2e
  *     tests or V2-005 wires the real check against `dispatch_jobs`.
- *   - `loadedInPrinterRef` is opaque to T4 — we treat it as a string
+ *   - `loadedInPrinterId` is opaque to T4 — we treat it as a string
  *     (e.g. `'bambu-x1c-#1:tray-2'`). Cross-printer slot semantics are
  *     deferred to V2-005 Forge.
  */
@@ -292,13 +292,13 @@ export async function createMaterial(
 /**
  * Retire a Material. Sets `active=false`, records `retirementReason` and
  * `retiredAt`. `remainingAmount` is preserved (historical reporting).
- * `loadedInPrinterRef` is left as-is — V2-005 will handle physical unload
+ * `loadedInPrinterId` is left as-is — V2-005 will handle physical unload
  * via dispatch reconciliation.
  *
  * Reason codes:
  *   material-not-found            — no row with that id
  *   already-retired               — active=false already
- *   loaded-in-printer-no-ack      — loadedInPrinterRef set but caller did
+ *   loaded-in-printer-no-ack      — loadedInPrinterId set but caller did
  *                                   not pass acknowledgeLoaded:true
  *   active-dispatch               — V2-005 stub returned {exists:true}
  *   persist-failed                — DB raised

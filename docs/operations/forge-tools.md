@@ -530,8 +530,11 @@ ChituNetwork (legacy ChituBox firmware on Phrozen / Uniformation / older Elegoo)
 | PRINTING | 10s | dispatch sent M6030 (worker signal) OR M27 reports active print |
 | NEAR_COMPLETION | 2s | M27 reports ≥90% bytes-printed |
 | JUST_FINISHED | 30s | transition from PRINTING/NEAR back to idle (5 min then back to IDLE) |
+| OFFLINE | 60s → 5min exponential | 5 consecutive M27 failures |
 
 For 100 printers running idle: ~5 req/s aggregate. For 100 printers actively printing: ~10 req/s. The cadence is bounded.
+
+After 5 consecutive M27 failures, the subscriber transitions to OFFLINE state with exponential backoff (60s → 120s → 240s → 300s cap). Emits one `unreachable` StatusEvent on entry. Recovers to IDLE on first successful M27 reply. This caps unreachable-printer poll cost at ~1 req every 5 min instead of every 60s — at 100 offline printers the steady-state load drops from ~1.7 req/s to ~0.33 req/s.
 
 ### Multi-slot consumption (AMS et al.)
 
@@ -587,7 +590,7 @@ CI never sets these → tests are no-ops. Used by ops/dev to validate against ac
 
 - **V2-005f-CF-1**: Material loadout tracking — auto-populate `dispatch_jobs.materials_used[].material_id` from the printer's currently-loaded spool inventory (today operators set this manually). **Shipped — see V2-005f-CF-1 section below.**
 - **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival. **Shipped (V2-cleanup-batch-3-T2)** — see "Retention" sub-section above.
-- **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline.
+- **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline. **Shipped (V2-cleanup-batch-3-T3)** — see "Adaptive polling — ChituNetwork" sub-section above for the OFFLINE state row + exponential-backoff details.
 - **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening.
 - **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence.
 - **V2-005f-CF-6**: Playwright UI tests for status SSE streams (blocked on V2-009 UI scope).

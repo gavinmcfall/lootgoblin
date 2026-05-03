@@ -33,7 +33,7 @@
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { and, desc, eq, isNotNull, lt } from 'drizzle-orm';
+import { and, desc, eq, lt } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { getServerDb, schema } from '@/db/client';
@@ -43,6 +43,7 @@ import { MATERIAL_KINDS, MATERIAL_UNITS, COLOR_PATTERNS } from '@/db/schema.mate
 
 import {
   errorResponse,
+  fetchCurrentLoadoutsByMaterialIds,
   findByIdempotencyKey,
   requireAuth,
   statusForReason,
@@ -165,7 +166,11 @@ export async function POST(req: NextRequest) {
     );
     if (prior) {
       if (normalizeStored(prior) === normalized) {
-        return NextResponse.json({ material: toMaterialDto(prior) }, { status: 200 });
+        const priorLoadouts = await fetchCurrentLoadoutsByMaterialIds([prior.id]);
+        return NextResponse.json(
+          { material: toMaterialDto(prior, priorLoadouts.get(prior.id) ?? null) },
+          { status: 200 },
+        );
       }
       return NextResponse.json(
         {
@@ -237,7 +242,11 @@ export async function POST(req: NextRequest) {
         idempotencyKey,
       );
       if (winner) {
-        return NextResponse.json({ material: toMaterialDto(winner) }, { status: 200 });
+        const winnerLoadouts = await fetchCurrentLoadoutsByMaterialIds([winner.id]);
+        return NextResponse.json(
+          { material: toMaterialDto(winner, winnerLoadouts.get(winner.id) ?? null) },
+          { status: 200 },
+        );
       }
       logger.error(
         { err: claim.err, materialId: result.material.id },
@@ -247,6 +256,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Newly created materials are not yet loaded in any printer. Fast-path
+  // pass undefined so the DTO surfaces loadedInPrinterRef=null without a
+  // round-trip query (a freshly inserted Material cannot have an open
+  // loadout yet).
   return NextResponse.json({ material: toMaterialDto(result.material) }, { status: 201 });
 }
 
@@ -281,14 +294,16 @@ export async function GET(req: NextRequest) {
   if (q.kind) conditions.push(eq(schema.materials.kind, q.kind));
   if (q.brand) conditions.push(eq(schema.materials.brand, q.brand));
   if (q.active !== undefined) conditions.push(eq(schema.materials.active, q.active));
+  // TODO V2-005f-CF-1 T_g4: re-implement `?loaded=true|false` against
+  // `printer_loadouts` (EXISTS subquery on open rows). Migration 0030 dropped
+  // materials.loaded_in_printer_ref; until T_g4 wires the new query path we
+  // return 501 rather than silently returning unfiltered results.
   if (q.loaded !== undefined) {
-    if (q.loaded) {
-      conditions.push(isNotNull(schema.materials.loadedInPrinterRef));
-    } else {
-      // Postgres-friendly: `column = NULL` returns NULL; use sql here for clarity.
-      // better-sqlite3 + drizzle handles eq(col, null) correctly via IS NULL.
-      conditions.push(eq(schema.materials.loadedInPrinterRef, null as unknown as string));
-    }
+    return errorResponse(
+      'not-implemented',
+      'loaded filter is being rewritten against printer_loadouts (V2-005f-CF-1 T_g4)',
+      501,
+    );
   }
   if (q.cursor) {
     const cursorMs = Number(q.cursor);
@@ -312,8 +327,15 @@ export async function GET(req: NextRequest) {
       ? String(sliced[sliced.length - 1]!.createdAt.getTime())
       : undefined;
 
+  // V2-005f-CF-1 T_g4: bulk-fetch open loadouts for the materials we're
+  // returning, then resolve `loadedInPrinterRef` per row from the map.
+  // Single SELECT regardless of page size — no N+1.
+  const loadoutByMaterial = await fetchCurrentLoadoutsByMaterialIds(
+    sliced.map((m) => m.id),
+  );
+
   return NextResponse.json({
-    materials: sliced.map(toMaterialDto),
+    materials: sliced.map((m) => toMaterialDto(m, loadoutByMaterial.get(m.id) ?? null)),
     ...(nextCursor ? { nextCursor } : {}),
   });
 }

@@ -61,7 +61,7 @@
  *   - Convert Map → sorted array using the per-report sort order.
  */
 
-import { and, eq, gte, lt } from 'drizzle-orm';
+import { and, eq, gte, isNull, lt } from 'drizzle-orm';
 
 import { getServerDb, schema } from '../db/client';
 import type { MaterialUnit } from '../db/schema.materials';
@@ -203,8 +203,13 @@ interface ConsumedPayload {
  */
 type MaterialLite = Pick<
   typeof schema.materials.$inferSelect,
-  'id' | 'ownerId' | 'brand' | 'colors' | 'loadedInPrinterRef' | 'unit'
->;
+  'id' | 'ownerId' | 'brand' | 'colors' | 'unit'
+> & {
+  // V2-005f-CF-1 T_g4: derived from a LEFT JOIN to `printer_loadouts` filtered
+  // on `unloaded_at IS NULL` — i.e. the printer this material is CURRENTLY
+  // loaded in (if any). null = not currently loaded.
+  loadedInPrinterRef: string | null;
+};
 
 async function fetchOwnedConsumptionEvents(
   ownerId: string,
@@ -228,13 +233,23 @@ async function fetchOwnedConsumptionEvents(
       ownerId: schema.materials.ownerId,
       brand: schema.materials.brand,
       colors: schema.materials.colors,
-      loadedInPrinterRef: schema.materials.loadedInPrinterRef,
       unit: schema.materials.unit,
+      // V2-005f-CF-1 T_g4: LEFT JOIN to the open printer_loadouts row (if any)
+      // so the per-printer report can bucket by current loadout. NULL when
+      // the material is not currently loaded in any printer slot.
+      loadedInPrinterRef: schema.printerLoadouts.printerId,
     })
     .from(schema.ledgerEvents)
     .innerJoin(
       schema.materials,
       eq(schema.materials.id, schema.ledgerEvents.subjectId),
+    )
+    .leftJoin(
+      schema.printerLoadouts,
+      and(
+        eq(schema.printerLoadouts.materialId, schema.materials.id),
+        isNull(schema.printerLoadouts.unloadedAt),
+      ),
     )
     .where(
       and(
@@ -272,7 +287,8 @@ async function fetchOwnedConsumptionEvents(
         ownerId: r.ownerId,
         brand: r.brand,
         colors: r.colors,
-        loadedInPrinterRef: r.loadedInPrinterRef,
+        // V2-005f-CF-1 T_g4: from LEFT JOIN to open printer_loadouts row.
+        loadedInPrinterRef: r.loadedInPrinterRef ?? null,
         unit: r.unit,
       },
     });

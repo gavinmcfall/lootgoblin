@@ -30,7 +30,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 
 import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
@@ -77,17 +77,6 @@ export interface RetireMaterialInput {
   actorUserId: string;
   retirementReason: string;
   acknowledgeLoaded?: boolean;
-}
-
-export interface LoadInPrinterInput {
-  materialId: string;
-  actorUserId: string;
-  printerRef: string;
-}
-
-export interface UnloadFromPrinterInput {
-  materialId: string;
-  actorUserId: string;
 }
 
 /**
@@ -229,7 +218,6 @@ export async function createMaterial(
     remainingAmount: input.initialAmount, // force-set: caller cannot override
     unit: unitKind.unit,
     purchaseData: input.purchaseData,
-    loadedInPrinterRef: null,
     active: true,
     retirementReason: null,
     retiredAt: null,
@@ -345,8 +333,32 @@ export async function retireMaterial(
     return { ok: false, reason: 'already-retired' };
   }
 
-  if (current.loadedInPrinterRef !== null && input.acknowledgeLoaded !== true) {
-    return { ok: false, reason: 'loaded-in-printer-no-ack' };
+  // V2-005f-CF-1 T_g2: loaded-gate against printer_loadouts. Block retirement
+  // when the material has an open loadout row, unless the caller explicitly
+  // acknowledges they're aware ("yes, retire even though it's still loaded —
+  // I'll handle the physical unload"). Mirrors the V2-007a-T4 semantics
+  // against the legacy free-text column.
+  const openLoadouts = await db
+    .select({
+      id: schema.printerLoadouts.id,
+      printerId: schema.printerLoadouts.printerId,
+      slotIndex: schema.printerLoadouts.slotIndex,
+    })
+    .from(schema.printerLoadouts)
+    .where(
+      and(
+        eq(schema.printerLoadouts.materialId, input.materialId),
+        isNull(schema.printerLoadouts.unloadedAt),
+      ),
+    )
+    .limit(1);
+  if (openLoadouts.length > 0 && input.acknowledgeLoaded !== true) {
+    const open = openLoadouts[0]!;
+    return {
+      ok: false,
+      reason: 'loaded-in-printer-no-ack',
+      details: `material currently loaded in printer ${open.printerId} slot ${open.slotIndex}; pass acknowledgeLoaded:true to retire anyway`,
+    };
   }
 
   // V2-005 dispatch check — defaults to no-op until Forge ships.
@@ -409,182 +421,26 @@ export async function retireMaterial(
 }
 
 // ---------------------------------------------------------------------------
-// loadInPrinter
+// loadInPrinter / unloadFromPrinter — V2-005f-CF-1 T_g2
 // ---------------------------------------------------------------------------
 
 /**
- * Mark a Material as loaded in a printer. For `kind='filament_spool'`, we
- * additionally enforce that no OTHER active filament spool of the same
- * owner is loaded at the same `printerRef`. This is an app-layer constraint
- * — no DB UNIQUE constraint exists because the field is sparse and the
- * uniqueness scope depends on `kind`.
- *
- * Reason codes:
- *   material-id-required
- *   printer-ref-required
- *   material-not-found
- *   material-retired
- *   printer-slot-occupied         — filament_spool conflict on same owner+printerRef
- *   persist-failed
+ * The load/unload lifecycle now lives in `forge/loadouts/lifecycle.ts` against
+ * the `printer_loadouts` table (atomic swap, idempotent re-load,
+ * cross-printer/slot conflict detection, ledger emission). The function names
+ * are preserved here as re-exports so callers (route handlers, tests) keep
+ * resolving the same symbols. T_g3 rewrites the HTTP routes to consume the
+ * new `(printerId, slotIndex)` argument shape.
  */
-export async function loadInPrinter(
-  input: LoadInPrinterInput,
-  opts?: { dbUrl?: string; now?: Date },
-): Promise<{ ok: true; ledgerEventId: string } | LifecycleFailure> {
-  if (typeof input.materialId !== 'string' || input.materialId.length === 0) {
-    return { ok: false, reason: 'material-id-required' };
-  }
-  if (typeof input.printerRef !== 'string' || input.printerRef.length === 0) {
-    return { ok: false, reason: 'printer-ref-required' };
-  }
-
-  const db = getServerDb(opts?.dbUrl);
-  const existing = await db
-    .select()
-    .from(schema.materials)
-    .where(eq(schema.materials.id, input.materialId));
-
-  if (existing.length === 0) {
-    return { ok: false, reason: 'material-not-found' };
-  }
-  const current = existing[0]!;
-  if (current.active === false) {
-    return { ok: false, reason: 'material-retired' };
-  }
-
-  // Filament-spool exclusivity check (per owner + printerRef). Resin bottles
-  // and other kinds intentionally skip this — V2-005 may extend later.
-  if (current.kind === 'filament_spool') {
-    const conflicts = await db
-      .select({ id: schema.materials.id })
-      .from(schema.materials)
-      .where(
-        and(
-          eq(schema.materials.ownerId, current.ownerId),
-          eq(schema.materials.kind, 'filament_spool'),
-          eq(schema.materials.active, true),
-          eq(schema.materials.loadedInPrinterRef, input.printerRef),
-          ne(schema.materials.id, input.materialId),
-        ),
-      );
-    if (conflicts.length > 0) {
-      return {
-        ok: false,
-        reason: 'printer-slot-occupied',
-        details: `conflicting material id: ${conflicts[0]!.id}`,
-      };
-    }
-  }
-
-  const now = opts?.now ?? new Date();
-
-  try {
-    const ledgerEventId = (
-      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
-    ).transaction((tx) => {
-      const t = tx as ReturnType<typeof getServerDb>;
-      t.update(schema.materials)
-        .set({ loadedInPrinterRef: input.printerRef })
-        .where(eq(schema.materials.id, input.materialId))
-        .run();
-      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
-        kind: 'material.loaded',
-        actorUserId: input.actorUserId,
-        subjectType: 'material',
-        subjectId: input.materialId,
-        payload: { printerRef: input.printerRef },
-        provenanceClass: 'entered',
-        ingestedAt: now,
-      });
-      return eventId;
-    });
-    return { ok: true, ledgerEventId };
-  } catch (err) {
-    logger.warn(
-      { err, materialId: input.materialId, printerRef: input.printerRef },
-      'loadInPrinter: persist failed — update + ledger rolled back',
-    );
-    return {
-      ok: false,
-      reason: 'persist-failed',
-      details: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// unloadFromPrinter
-// ---------------------------------------------------------------------------
-
-/**
- * Clear `loadedInPrinterRef` on a Material. The previous value is captured
- * in the ledger event payload + return value (so callers / V2-005 can
- * correlate without re-querying).
- *
- * Reason codes:
- *   material-id-required
- *   material-not-found
- *   not-loaded                   — loadedInPrinterRef is already NULL
- *   persist-failed
- */
-export async function unloadFromPrinter(
-  input: UnloadFromPrinterInput,
-  opts?: { dbUrl?: string; now?: Date },
-): Promise<
-  | { ok: true; ledgerEventId: string; previousPrinterRef: string | null }
-  | LifecycleFailure
-> {
-  if (typeof input.materialId !== 'string' || input.materialId.length === 0) {
-    return { ok: false, reason: 'material-id-required' };
-  }
-
-  const db = getServerDb(opts?.dbUrl);
-  const existing = await db
-    .select()
-    .from(schema.materials)
-    .where(eq(schema.materials.id, input.materialId));
-
-  if (existing.length === 0) {
-    return { ok: false, reason: 'material-not-found' };
-  }
-  const current = existing[0]!;
-  if (current.loadedInPrinterRef === null) {
-    return { ok: false, reason: 'not-loaded' };
-  }
-
-  const previous = current.loadedInPrinterRef;
-  const now = opts?.now ?? new Date();
-
-  try {
-    const ledgerEventId = (
-      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
-    ).transaction((tx) => {
-      const t = tx as ReturnType<typeof getServerDb>;
-      t.update(schema.materials)
-        .set({ loadedInPrinterRef: null })
-        .where(eq(schema.materials.id, input.materialId))
-        .run();
-      const { eventId } = persistLedgerEventInTx(t as LedgerTxHandle, {
-        kind: 'material.unloaded',
-        actorUserId: input.actorUserId,
-        subjectType: 'material',
-        subjectId: input.materialId,
-        payload: { printerRef: previous },
-        provenanceClass: 'entered',
-        ingestedAt: now,
-      });
-      return eventId;
-    });
-    return { ok: true, ledgerEventId, previousPrinterRef: previous };
-  } catch (err) {
-    logger.warn(
-      { err, materialId: input.materialId },
-      'unloadFromPrinter: persist failed — update + ledger rolled back',
-    );
-    return {
-      ok: false,
-      reason: 'persist-failed',
-      details: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
+export {
+  loadInPrinter,
+  unloadFromPrinter,
+} from '../forge/loadouts/lifecycle';
+export type {
+  LoadInPrinterArgs,
+  LoadInPrinterResult,
+  LoadInPrinterReason,
+  UnloadFromPrinterArgs,
+  UnloadFromPrinterResult,
+  UnloadFromPrinterReason,
+} from '../forge/loadouts/lifecycle';

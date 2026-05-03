@@ -71,6 +71,7 @@ import { mapAdapterReasonToSchema } from '../forge/dispatch/failure-reason-map';
 import type { DispatchContext } from '../forge/dispatch/handler';
 import { extractSlicerEstimate } from '../forge/dispatch/slicer-estimate/extractor';
 import { emitConsumptionForDispatch } from '../forge/status/consumption-emitter';
+import { getCurrentLoadout } from '../forge/loadouts/queries';
 import type { MaterialsUsed } from '../db/schema.forge';
 
 // ---------------------------------------------------------------------------
@@ -361,12 +362,14 @@ async function loadArtifactForJob(
  *      artifact yet → no-op.
  *   2. Run `extractSlicerEstimate` against that path. Parser failures and
  *      unsupported formats return null (the framework swallows throws).
- *   3. UPDATE `dispatch_jobs.materials_used` with the per-slot estimate.
- *      `material_id` is left empty — V2-005f-CF-1 will populate it once
- *      material-loadout tracking is wired.
- *   4. Call `emitConsumptionForDispatch` to record the Phase-A estimated
- *      ledger row(s). With `material_id=''` everywhere this is a no-op for
- *      now; the call site is in place for CF-1.
+ *   3. Look up the printer's current loadout via getCurrentLoadout — map
+ *      slot_index → material_id (V2-005f-CF-1 T_g4). Slots without a loaded
+ *      material log a warning and ship `material_id: ''` so Phase B safely
+ *      skips emission for those slots.
+ *   4. UPDATE `dispatch_jobs.materials_used` with the per-slot estimate.
+ *   5. Call `emitConsumptionForDispatch` to record the Phase-A estimated
+ *      ledger row(s). Slots with empty material_id are skipped by the
+ *      emitter; slots with a real material_id produce ledger rows.
  *
  * Best-effort. Failures are logged and swallowed — dispatch continues
  * regardless. The materials_used cache is purely metadata + bookkeeping
@@ -376,6 +379,7 @@ async function loadArtifactForJob(
 async function extractAndPersistSlicerEstimate(args: {
   dispatchJobId: string;
   lootId: string;
+  printerId: string;
   dbUrl?: string;
 }): Promise<void> {
   const artifact = await loadArtifactForJob(args.dispatchJobId, args.dbUrl);
@@ -396,14 +400,31 @@ async function extractAndPersistSlicerEstimate(args: {
     return;
   }
 
-  const materialsUsed: MaterialsUsed = estimate.slots.map((s) => ({
-    slot_index: s.slot_index,
-    // V2-005f-CF-1: material loadout tracking not yet wired. Leave empty so
-    // Phase A / Phase B both safely skip emission until CF-1 lands.
-    material_id: '',
-    estimated_grams: s.estimated_grams,
-    measured_grams: null,
-  }));
+  // V2-005f-CF-1 T_g4: resolve material_id per slot from the printer's current
+  // open loadout. Unmatched slots fall through to material_id='' + warning;
+  // Phase B's emitter skips empty material_ids.
+  const loadout = await getCurrentLoadout(args.printerId, { dbUrl: args.dbUrl });
+  const loadoutBySlot = new Map(loadout.map((l) => [l.slotIndex, l.materialId]));
+
+  const materialsUsed: MaterialsUsed = estimate.slots.map((s) => {
+    const material_id = loadoutBySlot.get(s.slot_index) ?? '';
+    if (material_id === '') {
+      logger.warn(
+        {
+          printerId: args.printerId,
+          slotIndex: s.slot_index,
+          dispatchJobId: args.dispatchJobId,
+        },
+        'forge-claim: slicer-estimate references slot with no loaded material — consumption will skip this slot',
+      );
+    }
+    return {
+      slot_index: s.slot_index,
+      material_id,
+      estimated_grams: s.estimated_grams,
+      measured_grams: null,
+    };
+  });
 
   const db = getServerDb(args.dbUrl);
   // better-sqlite3 needs `.run()` to actually execute (the awaited builder is
@@ -583,6 +604,7 @@ export async function runOneClaimTick(opts: {
       await extractAndPersistSlicerEstimate({
         dispatchJobId: candidate.id,
         lootId: candidate.lootId,
+        printerId: candidate.targetId,
         dbUrl: opts.dbUrl,
       });
     } catch (err) {

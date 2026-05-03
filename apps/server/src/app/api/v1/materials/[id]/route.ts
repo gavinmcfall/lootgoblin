@@ -27,7 +27,12 @@ import { logger } from '@/logger';
 import { COLOR_PATTERNS } from '@/db/schema.materials';
 import { validateColors } from '@/materials/validate';
 
-import { errorResponse, loadMaterialForActor, toMaterialDto } from '../_shared';
+import {
+  errorResponse,
+  fetchCurrentLoadoutsByMaterialIds,
+  loadMaterialForActor,
+  toMaterialDto,
+} from '../_shared';
 
 const HEX = /^#[0-9A-Fa-f]{6}$/;
 
@@ -61,7 +66,9 @@ const IMMUTABLE_KEYS = [
   'active',
   'retiredAt',
   'retirementReason',
-  'loadedInPrinterRef',
+  // V2-005f-CF-1 T_g1: `loadedInPrinterRef` was dropped from materials in
+  // migration 0030. Load state now lives in `printer_loadouts`; PATCH cannot
+  // touch it via either name.
   'idempotencyKey',
   'createdAt',
 ] as const;
@@ -73,7 +80,10 @@ export async function GET(
   const { id } = await context.params;
   const loaded = await loadMaterialForActor(req, id, 'read');
   if (!loaded.ok) return loaded.response;
-  return NextResponse.json({ material: toMaterialDto(loaded.row) });
+  const loadouts = await fetchCurrentLoadoutsByMaterialIds([loaded.row.id]);
+  return NextResponse.json({
+    material: toMaterialDto(loaded.row, loadouts.get(loaded.row.id) ?? null),
+  });
 }
 
 export async function PATCH(
@@ -152,5 +162,8 @@ export async function PATCH(
     logger.error({ id }, 'materials: post-update SELECT returned no row');
     return errorResponse('internal', 'post-update read failed', 500);
   }
-  return NextResponse.json({ material: toMaterialDto(updated) });
+  const loadouts = await fetchCurrentLoadoutsByMaterialIds([updated.id]);
+  return NextResponse.json({
+    material: toMaterialDto(updated, loadouts.get(updated.id) ?? null),
+  });
 }

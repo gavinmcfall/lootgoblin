@@ -79,7 +79,11 @@ beforeEach(async () => {
   await dbc.delete(schema.recycleEvents);
   await dbc.delete(schema.mixBatches);
   await dbc.delete(schema.mixRecipes);
+  // V2-005f-CF-1 T_g1: printer_loadouts FK-references both materials and
+  // printers; clean it before either parent.
+  await dbc.delete(schema.printerLoadouts);
   await dbc.delete(schema.materials);
+  await dbc.delete(schema.printers);
   mockAuthenticate.mockReset();
 });
 
@@ -147,16 +151,34 @@ async function getMaterial(opts: {
 async function loadMaterial(opts: {
   ownerId: string;
   id: string;
-  printerRef: string;
+  printerId: string;
+  slotIndex: number;
 }): Promise<{ status: number; json: Record<string, unknown> }> {
   mockAuthenticate.mockResolvedValueOnce(actor(opts.ownerId));
   const { POST } = await import('../../src/app/api/v1/materials/[id]/load/route');
   const res = await POST(
-    makePost(`http://local/api/v1/materials/${opts.id}/load`, { printerRef: opts.printerRef }),
+    makePost(`http://local/api/v1/materials/${opts.id}/load`, {
+      printerId: opts.printerId,
+      slotIndex: opts.slotIndex,
+    }),
     { params: Promise.resolve({ id: opts.id }) },
   );
   const json = (await res.json()) as Record<string, unknown>;
   return { status: res.status, json };
+}
+
+async function seedTestPrinter(ownerId: string): Promise<string> {
+  const id = uid();
+  await db().insert(schema.printers).values({
+    id,
+    ownerId,
+    kind: 'fdm_klipper',
+    name: `Test printer ${id.slice(0, 8)}`,
+    connectionConfig: {},
+    active: true,
+    createdAt: new Date(),
+  });
+  return id;
 }
 
 async function postConsumption(opts: {
@@ -217,12 +239,23 @@ describe('E2E /api/v1/materials lifecycle', () => {
     expect((after1.json.material as { active: boolean }).active).toBe(true);
     expect((after1.json.material as { loadedInPrinterRef: string | null }).loadedInPrinterRef).toBeNull();
 
-    // 2. Load into a printer.
-    const loadRes = await loadMaterial({ ownerId: userId, id: materialId, printerRef: 'p1:tray-1' });
+    // 2. Load into a printer (real printer row required after T_g2).
+    const printerId = await seedTestPrinter(userId);
+    const loadRes = await loadMaterial({
+      ownerId: userId,
+      id: materialId,
+      printerId,
+      slotIndex: 0,
+    });
     expect(loadRes.status).toBe(200);
 
+    // V2-005f-CF-1 T_g4: DTO's `loadedInPrinterRef` is now derived from the
+    // open `printer_loadouts` row for this material. After load it points to
+    // `printerId`; after unload it returns to null.
     const after2 = await getMaterial({ ownerId: userId, id: materialId });
-    expect((after2.json.material as { loadedInPrinterRef: string | null }).loadedInPrinterRef).toBe('p1:tray-1');
+    expect((after2.json.material as { loadedInPrinterRef: string | null }).loadedInPrinterRef).toBe(
+      printerId,
+    );
 
     // 3. Admin records a consumption event (50g print).
     const consumeRes = await postConsumption({

@@ -449,7 +449,13 @@ describe('persistLedgerEventInTx — atomic-caller mode (G-CF-1)', () => {
         actorUserId: 'user-tx-now',
         subjectType: 'material',
         subjectId: 'mat-tx-now',
-        payload: { printerRef: 'printer-1' },
+        // V2-005f-CF-1 T_g2: payload shape moved from free-text printerRef
+        // to the structured `printer_loadouts` keys.
+        payload: {
+          printerId: 'printer-1',
+          slotIndex: 0,
+          loadoutId: 'loadout-tx-now',
+        },
         ingestedAt: fixed,
       });
       eventId = result.eventId;

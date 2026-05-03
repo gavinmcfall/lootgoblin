@@ -211,6 +211,13 @@
       "when": 1777622766148,
       "tag": "0029_v2_005f_status_events",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1777705607501,
+      "tag": "0030_v2_005f_cf_1_printer_loadouts",
+      "breakpoints": true
     }
   ]
 }

@@ -80,7 +80,11 @@ beforeEach(async () => {
   await dbc.delete(schema.recycleEvents);
   await dbc.delete(schema.mixBatches);
   await dbc.delete(schema.mixRecipes);
+  // V2-005f-CF-1 T_g1: printer_loadouts FK-references both materials and
+  // printers; drop it before either parent.
+  await dbc.delete(schema.printerLoadouts);
   await dbc.delete(schema.materials);
+  await dbc.delete(schema.printers);
   mockAuthenticate.mockReset();
 });
 
@@ -113,12 +117,31 @@ function makeGet(url: string): import('next/server').NextRequest {
 
 // ─── HTTP-level helpers ─────────────────────────────────────────────────────
 
+async function seedTestPrinter(ownerId: string, name: string): Promise<string> {
+  const id = uid();
+  await db().insert(schema.printers).values({
+    id,
+    ownerId,
+    kind: 'fdm_klipper',
+    name,
+    connectionConfig: {},
+    active: true,
+    createdAt: new Date(),
+  });
+  return id;
+}
+
 async function postFilamentSpool(opts: {
   ownerId: string;
   brand: string;
   colorHex: string;
   initialAmount: number;
-  printerRef?: string;
+  /**
+   * V2-005f-CF-1 T_g3: load takes the structured (printerId, slotIndex)
+   * pair. Caller is responsible for seeding the printer before passing
+   * `loadInto`.
+   */
+  loadInto?: { printerId: string; slotIndex: number };
 }): Promise<string> {
   mockAuthenticate.mockResolvedValueOnce(actor(opts.ownerId));
   const { POST } = await import('../../src/app/api/v1/materials/route');
@@ -135,12 +158,13 @@ async function postFilamentSpool(opts: {
   );
   expect(res.status).toBe(201);
   const j = (await res.json()) as { material: { id: string } };
-  if (opts.printerRef) {
+  if (opts.loadInto) {
     mockAuthenticate.mockResolvedValueOnce(actor(opts.ownerId));
     const { POST: load } = await import('../../src/app/api/v1/materials/[id]/load/route');
     const lr = await load(
       makePost(`http://local/api/v1/materials/${j.material.id}/load`, {
-        printerRef: opts.printerRef,
+        printerId: opts.loadInto.printerId,
+        slotIndex: opts.loadInto.slotIndex,
       }),
       { params: Promise.resolve({ id: j.material.id }) },
     );
@@ -246,19 +270,21 @@ describe('E2E /api/v1/reports/consumption through HTTP', () => {
   it('all dimensions populate with provenance sums matching totalAmount', async () => {
     const userId = await seedUser();
     // 3 materials with varied brand/color/printer attribution.
+    const printerX1 = await seedTestPrinter(userId, 'printer-X1');
+    const printerMK4 = await seedTestPrinter(userId, 'printer-MK4');
     const bambuRed = await postFilamentSpool({
       ownerId: userId,
       brand: 'Bambu Lab',
       colorHex: '#FF0000',
       initialAmount: 1000,
-      printerRef: 'printer-X1',
+      loadInto: { printerId: printerX1, slotIndex: 0 },
     });
     const polymakerBlue = await postFilamentSpool({
       ownerId: userId,
       brand: 'Polymaker',
       colorHex: '#0000FF',
       initialAmount: 1000,
-      printerRef: 'printer-MK4',
+      loadInto: { printerId: printerMK4, slotIndex: 0 },
     });
     const elegooGreen = await postFilamentSpool({
       ownerId: userId,

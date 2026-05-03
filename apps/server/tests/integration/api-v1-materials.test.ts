@@ -11,8 +11,8 @@
  *   - PATCH /api/v1/materials/:id: cosmetic update happy, immutable-field
  *     400, 404 cross-owner.
  *   - POST /api/v1/materials/:id/retire: 200 happy, 409 already-retired.
- *   - POST /api/v1/materials/:id/load + /unload: happy paths + 409 on
- *     not-loaded.
+ *   - POST /api/v1/materials/:id/load + /unload: 501 stubs pending
+ *     V2-005f-CF-1 T_g2; happy + 409-on-second-unload return when T_g2 lands.
  *   - POST /api/v1/materials/mix-recipes: 201 + idempotency.
  *   - POST /api/v1/materials/mix-batches: 201, 409 idempotency mismatch.
  *   - POST /api/v1/materials/recycle-events: 201 happy.
@@ -402,6 +402,19 @@ describe('GET /api/v1/materials', () => {
     expect(body.materials.length).toBe(2);
     expect(body.nextCursor).toBeTruthy();
   });
+
+  // V2-005f-CF-1 T_g1: migration 0030 dropped loaded_in_printer_ref. The
+  // ?loaded= filter is rewritten against printer_loadouts in T_g4. Until then
+  // the route returns 501 rather than silently ignoring the filter.
+  it('returns 501 when ?loaded= filter is supplied', async () => {
+    const userId = await seedUser();
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { GET } = await import('../../src/app/api/v1/materials/route');
+    const res = await GET(makeGet('http://local/api/v1/materials?loaded=true'));
+    expect(res.status).toBe(501);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('not-implemented');
+  });
 });
 
 // ===========================================================================
@@ -514,16 +527,36 @@ describe('material lifecycle actions', () => {
     expect(res2.status).toBe(409);
   });
 
-  it('load + unload happy + 409 on second unload', async () => {
+  // V2-005f-CF-1 T_g3: load/unload routes now talk to the new
+  // `printer_loadouts`-backed lifecycle. Happy path + 409 on second unload.
+  it('load + unload happy path (V2-005f-CF-1 T_g3)', async () => {
     const userId = await seedUser();
     const { id } = await createMaterial(userId);
+
+    // Seed a printer to load into.
+    const printerId = uid();
+    await db().insert(schema.printers).values({
+      id: printerId,
+      ownerId: userId,
+      kind: 'fdm_klipper',
+      name: 'Test printer',
+      connectionConfig: {},
+      active: true,
+      createdAt: new Date(),
+    });
+
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { POST: load } = await import('../../src/app/api/v1/materials/[id]/load/route');
     const r1 = await load(
-      makePost(`http://local/api/v1/materials/${id}/load`, { printerRef: 'p1:tray-1' }),
+      makePost(`http://local/api/v1/materials/${id}/load`, {
+        printerId,
+        slotIndex: 0,
+      }),
       { params: Promise.resolve({ id }) },
     );
     expect(r1.status).toBe(200);
+    const b1 = (await r1.json()) as { loadoutId: string };
+    expect(b1.loadoutId).toBeTruthy();
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { POST: unload } = await import('../../src/app/api/v1/materials/[id]/unload/route');
@@ -532,13 +565,19 @@ describe('material lifecycle actions', () => {
       { params: Promise.resolve({ id }) },
     );
     expect(r2.status).toBe(200);
+    const b2 = (await r2.json()) as { previousPrinterId: string; previousSlotIndex: number };
+    expect(b2.previousPrinterId).toBe(printerId);
+    expect(b2.previousSlotIndex).toBe(0);
 
+    // Second unload → 409 material-not-loaded.
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const r3 = await unload(
       makePost(`http://local/api/v1/materials/${id}/unload`, {}),
       { params: Promise.resolve({ id }) },
     );
     expect(r3.status).toBe(409);
+    const b3 = (await r3.json()) as { error: string };
+    expect(b3.error).toBe('material-not-loaded');
   });
 });
 

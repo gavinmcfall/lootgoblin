@@ -130,12 +130,27 @@ const MaterialRetiredPayload = z.object({
   kind: MATERIAL_KIND,
 });
 
+/**
+ * V2-005f-CF-1 T_g2: load/unload payloads after the migration to
+ * `printer_loadouts`. The legacy V2-007a-T4 free-text `printerRef` shape was
+ * dropped in migration 0030; new events carry the structured per-slot id.
+ *
+ * `swappedOutMaterialId` is set on `material.loaded` when an atomic swap
+ * happened (the slot was occupied; that material's `material.unloaded` event
+ * has been emitted in the same tx, with `reason='swap'`).
+ */
 const MaterialLoadedPayload = z.object({
-  printerRef: z.string(),
+  printerId: z.string().min(1),
+  slotIndex: z.number().int().nonnegative(),
+  loadoutId: z.string().min(1),
+  swappedOutMaterialId: z.string().min(1).optional(),
 });
 
 const MaterialUnloadedPayload = z.object({
-  printerRef: z.string(),
+  printerId: z.string().min(1),
+  slotIndex: z.number().int().nonnegative(),
+  loadoutId: z.string().min(1),
+  reason: z.enum(['manual', 'swap']),
 });
 
 const MixDraw = z.object({

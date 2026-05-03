@@ -117,16 +117,30 @@ const cases: KindCase[] = [
     wrongType: { field: 'remainingAtRetirement', value: 'lots' },
   },
   {
+    // V2-005f-CF-1 T_g2: payload migrated from free-text printerRef to the
+    // structured (printerId, slotIndex, loadoutId) shape backed by
+    // printer_loadouts. swappedOutMaterialId is set on atomic-swap.
     kind: 'material.loaded',
-    valid: { printerRef: 'X1C-A' },
-    requiredFields: ['printerRef'],
-    wrongType: { field: 'printerRef', value: 7 },
+    valid: {
+      printerId: 'printer-uuid',
+      slotIndex: 0,
+      loadoutId: 'loadout-uuid',
+    },
+    requiredFields: ['printerId', 'slotIndex', 'loadoutId'],
+    wrongType: { field: 'slotIndex', value: 'two' },
   },
   {
+    // V2-005f-CF-1 T_g2: same migration as material.loaded, plus a closed
+    // 'manual' | 'swap' reason enum (no free-form strings allowed).
     kind: 'material.unloaded',
-    valid: { printerRef: 'X1C-A' },
-    requiredFields: ['printerRef'],
-    wrongType: { field: 'printerRef', value: false },
+    valid: {
+      printerId: 'printer-uuid',
+      slotIndex: 0,
+      loadoutId: 'loadout-uuid',
+      reason: 'manual',
+    },
+    requiredFields: ['printerId', 'slotIndex', 'loadoutId', 'reason'],
+    wrongType: { field: 'reason', value: 'unmounted' },
   },
   {
     kind: 'material.mix_created',

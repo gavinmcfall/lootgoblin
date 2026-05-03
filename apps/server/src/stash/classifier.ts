@@ -49,6 +49,18 @@ export type ClassificationResult = {
   /** Primary content format (e.g. 'stl', '3mf', 'step'). */
   primaryFormat?: ClassifiedField<string>;
   /**
+   * V2-005e-T_e2: Discriminator for slicer-output artifacts (gcode / .gcode.3mf
+   * / .bgcode / .ctb / .cbddlp / .jxs / .sl1 / .sl1s). Set by
+   * `slicer-output` provider when the file matches the slicer-output extension
+   * list. Used by the Forge inbox watcher to route files into the slice
+   * dispatch path (kind='slicer-output') vs the source-model path
+   * (primaryFormat='3mf'/'stl' etc.).
+   *
+   * Boolean true = "this is slicer output". The provider only emits this when
+   * confidence is 1.0 (extension match is unambiguous).
+   */
+  slicerOutput?: ClassifiedField<boolean>;
+  /**
    * Fields the classifier could NOT confidently infer and need user input.
    * Caller MUST populate these before persisting as Loot.
    *
@@ -103,6 +115,8 @@ export type PartialClassification = {
   license?: { value: string; confidence: number };
   tags?: { value: string[]; confidence: number };
   primaryFormat?: { value: string; confidence: number };
+  /** V2-005e-T_e2: see ClassificationResult.slicerOutput. */
+  slicerOutput?: { value: boolean; confidence: number };
 };
 
 /** Main orchestrator. */
@@ -214,6 +228,31 @@ export function createClassifier(options: ClassifierOptions): Classifier {
           } satisfies ClassifiedField<string>;
         }
         // Below threshold: field stays undefined.
+      }
+
+      // ── slicerOutput (boolean discriminator — V2-005e-T_e2) ──────────────
+      // True wins: any provider asserting slicer-output marks the result, so
+      // a low-confidence non-slicer provider can't suppress a high-confidence
+      // slicer match. False is never persisted (absence == "not slicer output").
+      {
+        let bestConfidence = -1;
+        let bestSource: string | undefined;
+        for (const { name, partial } of providerOutputs) {
+          const evidence = partial.slicerOutput;
+          if (evidence == null) continue;
+          if (evidence.value !== true) continue;
+          if (evidence.confidence > bestConfidence) {
+            bestConfidence = evidence.confidence;
+            bestSource = name;
+          }
+        }
+        if (bestSource !== undefined && bestConfidence >= confidenceThreshold) {
+          result.slicerOutput = {
+            value: true,
+            confidence: bestConfidence,
+            source: bestSource,
+          };
+        }
       }
 
       // ── Tags field (union) ───────────────────────────────────────────────

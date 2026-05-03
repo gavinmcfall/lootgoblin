@@ -13,3 +13,7 @@ export { createDatapackageProvider } from './datapackage';
 export { createFilenameProvider } from './filename';
 export { createFolderPatternProvider } from './folder-pattern';
 export { createExifProvider } from './exif';
+export {
+  createSlicerOutputProvider,
+  detectSlicerOutputFormat,
+} from './slicer-output';

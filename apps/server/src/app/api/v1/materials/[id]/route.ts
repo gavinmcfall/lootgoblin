@@ -11,7 +11,7 @@
  *   - kind, ownerId, initialAmount, unit (structural)
  *   - remainingAmount (decrements via consumption events only)
  *   - active / retiredAt / retirementReason (use POST :id/retire)
- *   - loadedInPrinterRef (use POST :id/load + :id/unload)
+ *   - loadedInPrinterId (use POST :id/load + :id/unload)
  *   - id, createdAt, idempotencyKey
  *
  * No DELETE — retire is the lifecycle exit. A DELETE on this URL returns
@@ -66,7 +66,7 @@ const IMMUTABLE_KEYS = [
   'active',
   'retiredAt',
   'retirementReason',
-  // V2-005f-CF-1 T_g1: `loadedInPrinterRef` was dropped from materials in
+  // V2-005f-CF-1 T_g1: `loadedInPrinterId` was dropped from materials in
   // migration 0030. Load state now lives in `printer_loadouts`; PATCH cannot
   // touch it via either name.
   'idempotencyKey',

@@ -147,7 +147,7 @@ export async function loadMaterialForActor(
 /**
  * Pre-fetch the open `printer_loadouts` rows for a set of material ids in a
  * single query, returning a Map<materialId, { printerId }> so the DTO mapper
- * can resolve `loadedInPrinterRef` without an N+1 query per material.
+ * can resolve `loadedInPrinterId` without an N+1 query per material.
  *
  * Returns an empty map for an empty input.
  */
@@ -190,7 +190,7 @@ export interface MaterialDto {
   remainingAmount: number;
   unit: string;
   purchaseData: Record<string, unknown> | null;
-  loadedInPrinterRef: string | null;
+  loadedInPrinterId: string | null;
   active: boolean;
   retirementReason: string | null;
   retiredAt: string | null;
@@ -201,7 +201,7 @@ export interface MaterialDto {
 /**
  * Build a MaterialDto.
  *
- * V2-005f-CF-1 T_g4: `loadedInPrinterRef` is sourced from the printer's
+ * V2-005f-CF-1 T_g4: `loadedInPrinterId` is sourced from the printer's
  * current open loadout (row in `printer_loadouts` with `unloaded_at IS NULL`)
  * via the optional `currentLoadout` argument. Callers MUST pre-fetch loadouts
  * in bulk and pass them in to avoid N+1 query thrash; passing `undefined`
@@ -228,7 +228,7 @@ export function toMaterialDto(
     purchaseData: row.purchaseData ?? null,
     // V2-005f-CF-1 T_g4: derived from the printer's current open loadout for
     // this material (caller pre-fetches in bulk). null = not currently loaded.
-    loadedInPrinterRef: currentLoadout?.printerId ?? null,
+    loadedInPrinterId: currentLoadout?.printerId ?? null,
     active: row.active === true,
     retirementReason: row.retirementReason ?? null,
     retiredAt: row.retiredAt ? row.retiredAt.toISOString() : null,

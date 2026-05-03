@@ -237,7 +237,7 @@ describe('E2E /api/v1/materials lifecycle', () => {
     const after1 = await getMaterial({ ownerId: userId, id: materialId });
     expect(after1.status).toBe(200);
     expect((after1.json.material as { active: boolean }).active).toBe(true);
-    expect((after1.json.material as { loadedInPrinterRef: string | null }).loadedInPrinterRef).toBeNull();
+    expect((after1.json.material as { loadedInPrinterId: string | null }).loadedInPrinterId).toBeNull();
 
     // 2. Load into a printer (real printer row required after T_g2).
     const printerId = await seedTestPrinter(userId);
@@ -249,11 +249,11 @@ describe('E2E /api/v1/materials lifecycle', () => {
     });
     expect(loadRes.status).toBe(200);
 
-    // V2-005f-CF-1 T_g4: DTO's `loadedInPrinterRef` is now derived from the
+    // V2-005f-CF-1 T_g4: DTO's `loadedInPrinterId` is now derived from the
     // open `printer_loadouts` row for this material. After load it points to
     // `printerId`; after unload it returns to null.
     const after2 = await getMaterial({ ownerId: userId, id: materialId });
-    expect((after2.json.material as { loadedInPrinterRef: string | null }).loadedInPrinterRef).toBe(
+    expect((after2.json.material as { loadedInPrinterId: string | null }).loadedInPrinterId).toBe(
       printerId,
     );
 

@@ -12,9 +12,13 @@ import {
   createChituNetworkSubscriber,
   parseM27Reply,
   nextState,
+  computeOfflineInterval,
   CHITU_POLL_INTERVALS_MS,
   CHITU_NEAR_COMPLETION_THRESHOLD_PCT,
   CHITU_JUST_FINISHED_DURATION_MS,
+  CHITU_OFFLINE_FAILURE_THRESHOLD,
+  CHITU_OFFLINE_INITIAL_INTERVAL_MS,
+  CHITU_OFFLINE_MAX_INTERVAL_MS,
   type ChituPollingState,
 } from '@/forge/status/subscribers/chitu-network';
 import type { TcpSocketLike, TcpSocketFactory } from '@/forge/dispatch/chitu-network/commander';
@@ -642,5 +646,155 @@ describe('V2-005f-T_dcf8 createChituNetworkSubscriber', () => {
     factoryRig.sockets[0]!.fireClose();
     expect(timerRig.pending.find((t) => t.ms === 10)).toBeUndefined();
     expect(factoryRig.sockets).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // V2-005f-CF-3: OFFLINE state + smart polling backoff
+  // -------------------------------------------------------------------------
+
+  /**
+   * Drive a single failed M27 poll: flush the poll timer at `pollMs`, then
+   * flush the m27 timeout timer (5_000ms by default) WITHOUT delivering any
+   * data. The sendM27 promise rejects, doPoll catches, increments
+   * consecutiveFailures, re-arms the next poll.
+   */
+  async function failOneM27(pollMs: number): Promise<void> {
+    expect(timerRig.flushOnce((t) => t.ms === pollMs)).toBe(true);
+    // Let the poll callback's microtasks queue sendM27's pendingM27.
+    await Promise.resolve();
+    await Promise.resolve();
+    // Fire the M27 timeout timer (5_000ms) — sendM27 rejects.
+    expect(timerRig.flushOnce((t) => t.ms === 5_000)).toBe(true);
+    // Allow doPoll's catch + state transition microtasks to settle.
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  describe('OFFLINE state (T3)', () => {
+    it('transitions IDLE → OFFLINE after 5 consecutive M27 failures', async () => {
+      const { sub, promise } = startSubscriber();
+      await promise;
+      factoryRig.sockets[0]!.fireConnect();
+
+      // Drive 5 consecutive M27 failures — first poll at IDLE 60s, subsequent
+      // also IDLE 60s until threshold flips state to OFFLINE on the 5th.
+      await failOneM27(60_000);
+      await failOneM27(60_000);
+      await failOneM27(60_000);
+      await failOneM27(60_000);
+      await failOneM27(60_000);
+
+      // One unreachable event emitted on entry to OFFLINE.
+      const unreachable = events.filter((e) => e.kind === 'unreachable');
+      expect(unreachable).toHaveLength(1);
+      // No progress events.
+      expect(events.some((e) => e.kind === 'progress')).toBe(false);
+      // Next poll uses the OFFLINE base interval (5 failures → 60s).
+      expect(timerRig.pending.find((t) => t.ms === 60_000)).toBeDefined();
+
+      await sub.stop();
+    });
+
+    it('OFFLINE stays OFFLINE on continued failures', async () => {
+      const { sub, promise } = startSubscriber();
+      await promise;
+      factoryRig.sockets[0]!.fireConnect();
+
+      // Drive 5 → OFFLINE.
+      for (let i = 0; i < 5; i += 1) await failOneM27(60_000);
+      expect(events.filter((e) => e.kind === 'unreachable')).toHaveLength(1);
+
+      // Drive 5 more failures while OFFLINE — interval grows per backoff.
+      // 6 → 120s, 7 → 240s, 8 → 300s (cap), 9 → 300s, 10 → 300s.
+      await failOneM27(60_000); // failure #6 — was scheduled at OFFLINE base 60s
+      await failOneM27(120_000); // #7
+      await failOneM27(240_000); // #8
+      await failOneM27(300_000); // #9 (cap)
+      await failOneM27(300_000); // #10 (cap)
+
+      // Still exactly one unreachable (no duplicates per OFFLINE poll).
+      expect(events.filter((e) => e.kind === 'unreachable')).toHaveLength(1);
+      // Next poll still scheduled at the cap.
+      expect(timerRig.pending.find((t) => t.ms === 300_000)).toBeDefined();
+
+      await sub.stop();
+    });
+
+    it('computeOfflineInterval grows exponentially: 60s → 120s → 240s → 300s cap', () => {
+      // Below threshold: clamped to base.
+      expect(computeOfflineInterval(0)).toBe(CHITU_OFFLINE_INITIAL_INTERVAL_MS);
+      expect(computeOfflineInterval(4)).toBe(CHITU_OFFLINE_INITIAL_INTERVAL_MS);
+      // At threshold: base.
+      expect(computeOfflineInterval(CHITU_OFFLINE_FAILURE_THRESHOLD)).toBe(60_000);
+      // Exponential.
+      expect(computeOfflineInterval(6)).toBe(120_000);
+      expect(computeOfflineInterval(7)).toBe(240_000);
+      // Cap kicks in at 8+.
+      expect(computeOfflineInterval(8)).toBe(CHITU_OFFLINE_MAX_INTERVAL_MS);
+      expect(computeOfflineInterval(9)).toBe(CHITU_OFFLINE_MAX_INTERVAL_MS);
+      expect(computeOfflineInterval(50)).toBe(CHITU_OFFLINE_MAX_INTERVAL_MS);
+      // Cap matches the documented 5-min ceiling.
+      expect(CHITU_OFFLINE_MAX_INTERVAL_MS).toBe(5 * 60_000);
+    });
+
+    it('OFFLINE → IDLE on first successful M27', async () => {
+      const { sub, promise } = startSubscriber();
+      await promise;
+      factoryRig.sockets[0]!.fireConnect();
+
+      // Drive 5 failures → OFFLINE.
+      for (let i = 0; i < 5; i += 1) await failOneM27(60_000);
+      expect(events.filter((e) => e.kind === 'unreachable')).toHaveLength(1);
+
+      // Now deliver a successful 'Not currently printing' reply on the next
+      // OFFLINE poll. doPoll resets consecutiveFailures, transitions to IDLE,
+      // then nextState('IDLE', 'not-printing') stays IDLE — no event emitted.
+      await deliverM27Reply('Not currently printing', 60_000);
+
+      // Still only one unreachable event; no progress/completed.
+      expect(events.filter((e) => e.kind === 'unreachable')).toHaveLength(1);
+      expect(events.filter((e) => e.kind === 'progress')).toHaveLength(0);
+      // After recovery, the next poll is queued at IDLE cadence (60_000)
+      // — same interval but now driven by IDLE, not OFFLINE base.
+      expect(timerRig.pending.find((t) => t.ms === 60_000)).toBeDefined();
+
+      // A subsequent successful Print: ... reply should now drive into PRINTING.
+      await deliverM27Reply('Print: 5000/100000', 60_000);
+      expect(events.filter((e) => e.kind === 'progress')).toHaveLength(1);
+
+      await sub.stop();
+    });
+
+    it('does not emit progress events while OFFLINE', async () => {
+      const { sub, promise } = startSubscriber();
+      await promise;
+      factoryRig.sockets[0]!.fireConnect();
+
+      for (let i = 0; i < 5; i += 1) await failOneM27(60_000);
+
+      // Verify no progress events during the failure ticks → only one
+      // unreachable (on entry).
+      expect(events.map((e) => e.kind)).toEqual(['unreachable']);
+
+      await sub.stop();
+    });
+
+    it('emits unreachable event ONCE on IDLE → OFFLINE transition (not on every OFFLINE poll)', async () => {
+      const { sub, promise } = startSubscriber();
+      await promise;
+      factoryRig.sockets[0]!.fireConnect();
+
+      // Drive 5 → OFFLINE (1 unreachable emitted).
+      for (let i = 0; i < 5; i += 1) await failOneM27(60_000);
+      // Three more failures while already OFFLINE — must NOT emit additional
+      // unreachable events.
+      await failOneM27(60_000); // poll was queued at OFFLINE 60s base
+      await failOneM27(120_000);
+      await failOneM27(240_000);
+
+      expect(events.filter((e) => e.kind === 'unreachable')).toHaveLength(1);
+
+      await sub.stop();
+    });
   });
 });

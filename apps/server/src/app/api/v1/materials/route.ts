@@ -257,7 +257,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Newly created materials are not yet loaded in any printer. Fast-path
-  // pass undefined so the DTO surfaces loadedInPrinterRef=null without a
+  // pass undefined so the DTO surfaces loadedInPrinterId=null without a
   // round-trip query (a freshly inserted Material cannot have an open
   // loadout yet).
   return NextResponse.json({ material: toMaterialDto(result.material) }, { status: 201 });
@@ -328,7 +328,7 @@ export async function GET(req: NextRequest) {
       : undefined;
 
   // V2-005f-CF-1 T_g4: bulk-fetch open loadouts for the materials we're
-  // returning, then resolve `loadedInPrinterRef` per row from the map.
+  // returning, then resolve `loadedInPrinterId` per row from the map.
   // Single SELECT regardless of page size — no N+1.
   const loadoutByMaterial = await fetchCurrentLoadoutsByMaterialIds(
     sliced.map((m) => m.id),

@@ -72,19 +72,50 @@ import type { StatusSubscriber } from '../types';
 // Public surface
 // ---------------------------------------------------------------------------
 
-export type ChituPollingState = 'IDLE' | 'PRINTING' | 'NEAR_COMPLETION' | 'JUST_FINISHED';
+export type ChituPollingState =
+  | 'IDLE'
+  | 'PRINTING'
+  | 'NEAR_COMPLETION'
+  | 'JUST_FINISHED'
+  | 'OFFLINE';
+
+/**
+ * V2-005f-CF-3: smart polling backoff. After CHITU_OFFLINE_FAILURE_THRESHOLD
+ * consecutive M27 failures the subscriber transitions to OFFLINE and switches
+ * to exponential backoff between CHITU_OFFLINE_INITIAL_INTERVAL_MS and
+ * CHITU_OFFLINE_MAX_INTERVAL_MS. Reset to IDLE on the first successful M27
+ * reply.
+ */
+export const CHITU_OFFLINE_FAILURE_THRESHOLD = 5;
+export const CHITU_OFFLINE_INITIAL_INTERVAL_MS = 60_000; // 1 min
+export const CHITU_OFFLINE_MAX_INTERVAL_MS = 5 * 60_000; // 5 min cap
 
 export const CHITU_POLL_INTERVALS_MS: Record<ChituPollingState, number> = {
   IDLE: 60_000,
   PRINTING: 10_000,
   NEAR_COMPLETION: 2_000,
   JUST_FINISHED: 30_000,
+  // OFFLINE base — actual interval scales with consecutiveFailures via
+  // computeOfflineInterval() and is capped at CHITU_OFFLINE_MAX_INTERVAL_MS.
+  OFFLINE: CHITU_OFFLINE_INITIAL_INTERVAL_MS,
 };
 
 export const CHITU_NEAR_COMPLETION_THRESHOLD_PCT = 90;
 export const CHITU_JUST_FINISHED_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 export const CHITU_DEFAULT_TCP_PORT = 3000;
 export const CHITU_M27_TIMEOUT_MS = 5_000;
+
+/**
+ * Exponential backoff for OFFLINE polling. Starts at the failure threshold:
+ *   5 failures → 60s; 6 → 120s; 7 → 240s; 8+ → 300s (cap).
+ * Failure counts below the threshold map to the base interval (the OFFLINE
+ * state is only entered AT the threshold so this is a safe floor).
+ */
+export function computeOfflineInterval(failures: number): number {
+  const offlineFailures = Math.max(0, failures - CHITU_OFFLINE_FAILURE_THRESHOLD);
+  const interval = CHITU_OFFLINE_INITIAL_INTERVAL_MS * Math.pow(2, offlineFailures);
+  return Math.min(interval, CHITU_OFFLINE_MAX_INTERVAL_MS);
+}
 
 export type ChituM27Reply =
   | { bytesPrinted: number; totalBytes: number }
@@ -160,6 +191,10 @@ export function nextState(
   current: ChituPollingState,
   m27Result: ChituM27Reply,
 ): ChituPollingState {
+  // OFFLINE exit is governed by the polling loop on a successful M27 reply
+  // (the loop transitions OFFLINE → IDLE explicitly). If we get here while
+  // OFFLINE, preserve OFFLINE — the loop has not yet observed success.
+  if (current === 'OFFLINE') return current;
   if (m27Result === null) return current; // unknown / malformed — stay
   if (m27Result === 'not-printing') {
     if (current === 'PRINTING' || current === 'NEAR_COMPLETION') return 'JUST_FINISHED';
@@ -237,6 +272,12 @@ export function createChituNetworkSubscriber(
     reject: (err: Error) => void;
     timer: unknown;
   } | null = null;
+  // V2-005f-CF-3: tracks consecutive M27 failures across polls. Increments on
+  // each failed sendM27/parse cycle; resets to 0 on the first successful
+  // reply (or on transport reopen). Drives entry into OFFLINE state and the
+  // exponential-backoff cadence.
+  let consecutiveFailures = 0;
+  let printerIdForLog: string | null = null;
 
   function clearPollTimer(): void {
     if (pollHandle !== null) {
@@ -311,7 +352,10 @@ export function createChituNetworkSubscriber(
 
   function scheduleNextPoll(): void {
     clearPollTimer();
-    const interval = CHITU_POLL_INTERVALS_MS[state];
+    const interval =
+      state === 'OFFLINE'
+        ? computeOfflineInterval(consecutiveFailures)
+        : CHITU_POLL_INTERVALS_MS[state];
     pollHandle = setTimer(() => {
       pollHandle = null;
       void doPoll();
@@ -321,16 +365,63 @@ export function createChituNetworkSubscriber(
   async function doPoll(): Promise<void> {
     if (socket === null || helpersRef === null) return;
     let result: ChituM27Reply;
+    let pollFailed = false;
+    let lastErrorMessage: string | undefined;
     try {
       const line = await sendM27();
       result = parseM27Reply(line);
     } catch (err) {
+      lastErrorMessage = (err as Error)?.message;
       logger.warn(
-        { err: (err as Error)?.message },
+        { err: lastErrorMessage },
         'chitu-status: M27 poll failed',
       );
       result = null;
+      pollFailed = true;
     }
+
+    // V2-005f-CF-3: failure tracking + OFFLINE state management. Runs BEFORE
+    // nextState() so the loop owns OFFLINE entry/exit (nextState is pure and
+    // doesn't see consecutiveFailures).
+    if (pollFailed) {
+      consecutiveFailures += 1;
+      if (
+        consecutiveFailures >= CHITU_OFFLINE_FAILURE_THRESHOLD &&
+        state !== 'OFFLINE'
+      ) {
+        logger.warn(
+          { printerId: printerIdForLog, consecutiveFailures },
+          'chitu-status: transitioning to OFFLINE state',
+        );
+        state = 'OFFLINE';
+        // Emit ONE 'unreachable' event on entry (idempotent — the worker
+        // dedups by status; we only emit on the IDLE → OFFLINE edge).
+        helpersRef.emitProtocolEvent({
+          kind: 'unreachable',
+          remoteJobRef: '',
+          rawPayload: { consecutiveFailures, lastError: lastErrorMessage },
+          occurredAt: new Date(),
+        });
+      }
+      // While OFFLINE (or below threshold), skip nextState/event emission.
+      // Re-arm at the appropriate cadence and bail.
+      if (socket !== null) scheduleNextPoll();
+      return;
+    }
+
+    // Successful M27 reply: reset failure counter and recover from OFFLINE
+    // back to IDLE. The next poll's nextState() will refine to PRINTING/etc.
+    if (consecutiveFailures > 0) {
+      logger.info(
+        { printerId: printerIdForLog, prevFailures: consecutiveFailures },
+        'chitu-status: M27 succeeded — clearing failure counter',
+      );
+      consecutiveFailures = 0;
+    }
+    if (state === 'OFFLINE') {
+      state = 'IDLE';
+    }
+
     const prev = state;
     state = nextState(state, result);
 
@@ -402,6 +493,8 @@ export function createChituNetworkSubscriber(
       state = 'IDLE';
       recvBuf = '';
       pendingM27 = null;
+      consecutiveFailures = 0;
+      printerIdForLog = printer.id;
       const sock = tcpFactory();
       socket = sock;
       helpersRef = helpers;

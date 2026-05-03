@@ -38,7 +38,7 @@
  *    "recycled: Y" as separate metrics.
  *
  * 7. **Brand/color/printer attribution joins to the source Material row at
- *    report time.** `loadedInPrinterRef` is the "what printer ate this"
+ *    report time.** `loadedInPrinterId` is the "what printer ate this"
  *    attribution. Caveat: if a material is unloaded then re-loaded, the
  *    snapshot at consumption time may differ from the current snapshot.
  *    v2-007a does not denormalize printer attribution onto the ledger
@@ -208,7 +208,7 @@ type MaterialLite = Pick<
   // V2-005f-CF-1 T_g4: derived from a LEFT JOIN to `printer_loadouts` filtered
   // on `unloaded_at IS NULL` — i.e. the printer this material is CURRENTLY
   // loaded in (if any). null = not currently loaded.
-  loadedInPrinterRef: string | null;
+  loadedInPrinterId: string | null;
 };
 
 async function fetchOwnedConsumptionEvents(
@@ -237,7 +237,7 @@ async function fetchOwnedConsumptionEvents(
       // V2-005f-CF-1 T_g4: LEFT JOIN to the open printer_loadouts row (if any)
       // so the per-printer report can bucket by current loadout. NULL when
       // the material is not currently loaded in any printer slot.
-      loadedInPrinterRef: schema.printerLoadouts.printerId,
+      loadedInPrinterId: schema.printerLoadouts.printerId,
     })
     .from(schema.ledgerEvents)
     .innerJoin(
@@ -288,7 +288,7 @@ async function fetchOwnedConsumptionEvents(
         brand: r.brand,
         colors: r.colors,
         // V2-005f-CF-1 T_g4: from LEFT JOIN to open printer_loadouts row.
-        loadedInPrinterRef: r.loadedInPrinterRef ?? null,
+        loadedInPrinterId: r.loadedInPrinterId ?? null,
         unit: r.unit,
       },
     });
@@ -419,11 +419,11 @@ export async function consumptionByColor(
 /**
  * Total consumption per loaded-in-printer reference within the window.
  *
- * - Bucketing key: the material's `loadedInPrinterRef` AT REPORT TIME.
+ * - Bucketing key: the material's `loadedInPrinterId` AT REPORT TIME.
  *   Materials with no printer attribution bucket under `printerRef=null`.
  * - Sort order: alphabetical, with `null` last.
  *
- * Caveat: `loadedInPrinterRef` reflects the current load state, not the
+ * Caveat: `loadedInPrinterId` reflects the current load state, not the
  * load state AT consumption time. If a material was unloaded after a print
  * the attribution may now be `null`. v2-007a does not denormalize printer
  * onto the ledger payload — a follow-up task (when print-job FKs land in
@@ -438,7 +438,7 @@ export async function consumptionByPrinter(
   const keyByBucket = new Map<string, PrinterKey>();
 
   for (const ev of events) {
-    const printerRef: string | null = ev.material.loadedInPrinterRef ?? null;
+    const printerRef: string | null = ev.material.loadedInPrinterId ?? null;
     const k = JSON.stringify({ printerRef });
     if (!buckets.has(k)) {
       buckets.set(k, newAccumulator());

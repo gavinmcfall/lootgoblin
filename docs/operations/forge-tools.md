@@ -530,8 +530,11 @@ ChituNetwork (legacy ChituBox firmware on Phrozen / Uniformation / older Elegoo)
 | PRINTING | 10s | dispatch sent M6030 (worker signal) OR M27 reports active print |
 | NEAR_COMPLETION | 2s | M27 reports ≥90% bytes-printed |
 | JUST_FINISHED | 30s | transition from PRINTING/NEAR back to idle (5 min then back to IDLE) |
+| OFFLINE | 60s → 5min exponential | 5 consecutive M27 failures |
 
 For 100 printers running idle: ~5 req/s aggregate. For 100 printers actively printing: ~10 req/s. The cadence is bounded.
+
+After 5 consecutive M27 failures, the subscriber transitions to OFFLINE state with exponential backoff (60s → 120s → 240s → 300s cap). Emits one `unreachable` StatusEvent on entry. Recovers to IDLE on first successful M27 reply. This caps unreachable-printer poll cost at ~1 req every 5 min instead of every 60s — at 100 offline printers the steady-state load drops from ~1.7 req/s to ~0.33 req/s.
 
 ### Multi-slot consumption (AMS et al.)
 
@@ -550,6 +553,12 @@ OctoPrint, Moonraker, SDCP, and ChituNetwork do not surface per-slot consumption
 Reconnect storms can cause duplicate status events for the same dispatch. The consumption emitter dedupes against the ledger via `(dispatch_job_id, slot_index, provenanceClass)` triple — implemented as a `note='slot:N'` field on the `material.consumed` ledger payload, queried via `json_extract` before each emission. Duplicate consumption is a silent no-op.
 
 `dispatch_status_events` rows are NOT deduped — each event gets its own UUID. The audit log preserves all signal including reconnect storms.
+
+### Retention
+
+`dispatch_status_events` grows unboundedly under live operation (back-of-envelope: 100 printers × ~1 progress event/10s × 24h ≈ 864k rows/day). The retention worker (`apps/server/src/workers/dispatch-status-retention-worker.ts`) deletes rows older than `DISPATCH_STATUS_EVENTS_RETENTION_DAYS` (default `30`) on a 12-hour tick (±5 min jitter). Set the env var to `0` or any negative value to **disable** retention and preserve the audit log forever — useful during early deployment / debugging when every status frame matters for diagnosis.
+
+Primary durability is preserved regardless of retention: `dispatch_jobs.completedAt` retains the lifecycle timestamps; `ledger_events` retains all consumption events permanently. The audit log is tertiary — debug signal + live-progress replay only — and an aggressive retention policy is safe.
 
 ### HTTP API
 
@@ -580,8 +589,8 @@ CI never sets these → tests are no-ops. Used by ops/dev to validate against ac
 ### Carry-forwards
 
 - **V2-005f-CF-1**: Material loadout tracking — auto-populate `dispatch_jobs.materials_used[].material_id` from the printer's currently-loaded spool inventory (today operators set this manually). **Shipped — see V2-005f-CF-1 section below.**
-- **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival.
-- **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline.
+- **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival. **Shipped (V2-cleanup-batch-3-T2)** — see "Retention" sub-section above.
+- **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline. **Shipped (V2-cleanup-batch-3-T3)** — see "Adaptive polling — ChituNetwork" sub-section above for the OFFLINE state row + exponential-backoff details.
 - **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening.
 - **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence.
 - **V2-005f-CF-6**: Playwright UI tests for status SSE streams (blocked on V2-009 UI scope).
@@ -662,8 +671,8 @@ The end-to-end consequence: with the loadout populated before claim, both Phase 
 
 ### Carry-forwards
 
-- **V2-005f-CF-1-CF-A**: Rename the `loadedInPrinterRef` field on the Material DTO to `loadedInPrinterId` for clarity. The string still reflects the new schema's first-class FK; only the field name needs the lift.
-- **V2-005f-CF-2** (existing, unrelated): SSE retention policy + dispatch_status_events archival.
+- **V2-005f-CF-1-CF-A** (done in V2-cleanup-batch-3-T1): Renamed the `loadedInPrinterRef` field on the Material DTO to `loadedInPrinterId` for clarity. The value still reflects the new schema's first-class FK; the rename was a pure naming refactor.
+- **V2-005f-CF-2** (existing, unrelated): SSE retention policy + dispatch_status_events archival. **Shipped (V2-cleanup-batch-3-T2)** — see V2-005f "Retention" section above.
 
 ## V2-005e Slicer Dispatchers + Watched Inbox
 

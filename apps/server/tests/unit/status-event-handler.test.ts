@@ -68,6 +68,9 @@ beforeEach(() => {
 
 afterEach(async () => {
   const db = getDb(DB_URL) as any;
+  // dispatch_warnings.dispatch_job_id FKs to dispatch_jobs.id with CASCADE,
+  // so this MUST come before dispatchJobs (V2-005f-CF-5a T_a6 followup).
+  await db.delete(schema.dispatchWarnings);
   await db.delete(schema.dispatchStatusEvents);
   await db.delete(schema.dispatchJobs);
   await db.delete(schema.lootFiles);

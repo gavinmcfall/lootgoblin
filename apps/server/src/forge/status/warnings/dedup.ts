@@ -100,7 +100,11 @@ export async function dedupAndPersistWarning(
       id: schema.dispatchWarnings.id,
       count: schema.dispatchWarnings.count,
     })
-    .all() as Array<{ id: string; count: number }>;
+    // RETURNING after ON CONFLICT DO UPDATE returns the EXISTING row's id
+    // (not the locally generated `id` above). This is intentional —
+    // `warningId` is the canonical dedup-row id callers expect, stable
+    // across repeats.
+    .all();
 
   const row = result[0]!;
   return { isFirst: row.count === 1, warningId: row.id };

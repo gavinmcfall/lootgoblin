@@ -400,7 +400,11 @@ export function createStatusEventSink(
     // through the normal path below). This covers rare OctoPrint
     // `firmware_error` events that carry no specific code.
     if (event.kind === 'warning' && event.errorCode) {
-      const protocol = derivePrinterProtocol(printerKind) ?? 'unknown';
+      // Step 2 (~line 384) already returned early when derivePrinterProtocol
+      // is null, so the assertion holds here. Using `!` over `?? 'unknown'`
+      // keeps that invariant load-bearing — if a future refactor removes
+      // step 2's guard, TS won't silently fall back to 'unknown' rows.
+      const protocol = derivePrinterProtocol(printerKind)!;
       try {
         const { isFirst } = await dedupAndPersistWarning(
           {

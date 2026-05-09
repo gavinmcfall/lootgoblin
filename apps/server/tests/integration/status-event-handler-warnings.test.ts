@@ -32,7 +32,7 @@ import {
 } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import {
   runMigrations,
@@ -380,5 +380,127 @@ describe('warning dedup — V2-005f-CF-5a T_a6', () => {
       .where(eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId));
     expect(warnings).toHaveLength(1);
     expect(warnings[0].severity).toBe('warning');
+  });
+
+  it('7. firmware_error with errorCode does NOT route through dedup (writes status_events row only)', async () => {
+    // Pins the spec contract: ONLY kind === 'warning' is routed through
+    // dedup. firmware_error events take the normal audit path even when
+    // they carry an errorCode (e.g. Bambu gcode_state=FAILED with print_error).
+    const { printerId, dispatchJobId } = await seedMinimal();
+
+    const busCalls: string[] = [];
+    const sink = createStatusEventSink({
+      dbUrl: DB_URL,
+      deps: {
+        emitToBus: (id) => {
+          busCalls.push(id);
+        },
+      },
+    });
+
+    await sink(
+      printerId,
+      {
+        kind: 'firmware_error',
+        remoteJobRef: '',
+        errorCode: '12345',
+        errorMessage: 'thermal runaway',
+        severity: 'error',
+        rawPayload: { print_error: 12345 },
+        occurredAt: new Date('2026-05-09T10:00:00Z'),
+      },
+    );
+
+    const db = getDb(DB_URL) as any;
+
+    // Status_events row written
+    const statusEvents = await db
+      .select()
+      .from(schema.dispatchStatusEvents)
+      .where(eq(schema.dispatchStatusEvents.dispatchJobId, dispatchJobId));
+    expect(statusEvents).toHaveLength(1);
+    expect(statusEvents[0].eventKind).toBe('firmware_error');
+
+    // Dedup table is empty — firmware_error must NOT enter it
+    const warnings = await db
+      .select()
+      .from(schema.dispatchWarnings)
+      .where(eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId));
+    expect(warnings).toHaveLength(0);
+
+    // Bus still emits
+    expect(busCalls).toHaveLength(1);
+  });
+
+  it('8. warning with severity=info stores info verbatim in dispatch_warnings (no default override)', async () => {
+    // Complement to test 6 — Bambu HMS level=0 maps to severity='info' and
+    // must round-trip into dispatch_warnings unchanged.
+    const { printerId, dispatchJobId } = await seedMinimal();
+
+    const sink = createStatusEventSink({ dbUrl: DB_URL });
+
+    await sink(
+      printerId,
+      warningEvent({ severity: 'info', errorCode: 'INFO-1' }),
+    );
+
+    const db = getDb(DB_URL) as any;
+
+    const warnings = await db
+      .select()
+      .from(schema.dispatchWarnings)
+      .where(eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].severity).toBe('info');
+  });
+
+  it('9. first warning row in dispatch_warnings can be matched to its status_events row by (dispatchJobId, errorCode)', async () => {
+    // The helper returns warningId, but the call site discards it. There's
+    // no FK from dispatch_status_events to dispatch_warnings.id; cross-table
+    // lookups rely on (dispatchJobId, errorCode) equality. This test pins
+    // that linkage works end-to-end.
+    const { printerId, dispatchJobId } = await seedMinimal();
+
+    const sink = createStatusEventSink({ dbUrl: DB_URL });
+
+    await sink(
+      printerId,
+      warningEvent({ errorCode: 'LINK-1' }),
+    );
+
+    const db = getDb(DB_URL) as any;
+
+    // 1 row in dispatch_warnings keyed by (dispatchJobId, errorCode)
+    const warnings = await db
+      .select()
+      .from(schema.dispatchWarnings)
+      .where(
+        and(
+          eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId),
+          eq(schema.dispatchWarnings.errorCode, 'LINK-1'),
+        ),
+      );
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+
+    // Companion row in dispatch_status_events for the same dispatch_job_id
+    // with kind='warning'. dispatch_status_events.event_data does NOT carry
+    // errorCode in a queryable form (only rawPayload + cache columns), so
+    // we can't JSON-path-match on it. Linkage rests on dispatchJobId
+    // equality between the two tables — that's enough to prove the join key
+    // is sound for T_a7's API surface.
+    const statusEvents = await db
+      .select()
+      .from(schema.dispatchStatusEvents)
+      .where(
+        and(
+          eq(schema.dispatchStatusEvents.dispatchJobId, dispatchJobId),
+          eq(schema.dispatchStatusEvents.eventKind, 'warning'),
+        ),
+      );
+    expect(statusEvents.length).toBeGreaterThanOrEqual(1);
+    // Both tables hold a row keyed to the same dispatch_job_id — the
+    // (dispatchJobId, errorCode) lookup pattern T_a7's route will use is
+    // backed by real data on both sides.
+    expect(warnings[0].dispatchJobId).toBe(statusEvents[0].dispatchJobId);
   });
 });

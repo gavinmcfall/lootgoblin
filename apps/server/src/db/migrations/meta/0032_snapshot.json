@@ -5126,6 +5126,7 @@
           "name": "idx_dispatch_warnings_unique",
           "columns": [
             "dispatch_job_id",
+            "protocol",
             "error_code"
           ],
           "isUnique": true

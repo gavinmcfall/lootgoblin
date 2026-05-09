@@ -18,7 +18,7 @@
 --   - `dispatch_job_id` FK → dispatch_jobs.id ON DELETE CASCADE
 --   - `error_code`      protocol-native code (e.g. Bambu HMS code, SDCP
 --                       ErrorStatusReason). Not globally unique — unique per
---                       (dispatch_job_id, error_code) pair.
+--                       (dispatch_job_id, protocol, error_code) tuple.
 --   - `protocol`        STATUS_SOURCE_PROTOCOLS discriminator
 --   - `severity`        'info' | 'warning' | 'error' (app-layer validated)
 --   - `message`         operator-readable description, may be NULL
@@ -27,8 +27,12 @@
 --   - `count`           total occurrence count
 --
 -- Indexes:
---   - `idx_dispatch_warnings_unique` UNIQUE on (dispatch_job_id, error_code) —
---     the T_a6 ON CONFLICT dedup target.
+--   - `idx_dispatch_warnings_unique` UNIQUE on (dispatch_job_id, protocol,
+--     error_code) — the T_a6 ON CONFLICT dedup target. `protocol` is part of
+--     the key because numeric error-code spaces overlap across protocols
+--     (Bambu HMS vs SDCP ErrorStatusReason); today each dispatch_job → one
+--     printer → one protocol so it can't collide, but the schema enforces its
+--     own invariant.
 --   - `idx_dispatch_warnings_job` on (dispatch_job_id, last_seen_at) — "all
 --     active warnings for job X, newest first" UI / SSE hot path.
 --
@@ -50,5 +54,5 @@ CREATE TABLE `dispatch_warnings` (
 	FOREIGN KEY (`dispatch_job_id`) REFERENCES `dispatch_jobs`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `idx_dispatch_warnings_unique` ON `dispatch_warnings` (`dispatch_job_id`,`error_code`);--> statement-breakpoint
+CREATE UNIQUE INDEX `idx_dispatch_warnings_unique` ON `dispatch_warnings` (`dispatch_job_id`,`protocol`,`error_code`);--> statement-breakpoint
 CREATE INDEX `idx_dispatch_warnings_job` ON `dispatch_warnings` (`dispatch_job_id`,`last_seen_at`);

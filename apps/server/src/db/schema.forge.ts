@@ -725,14 +725,17 @@ export const forgeTargetCredentials = sqliteTable(
 /**
  * Lifecycle event kinds emitted by status subscribers (T_dcf3+).
  *
- *   started      — printer accepted job + began executing
- *   progress     — periodic update (pct / layer_num / mc_remaining_min)
- *   paused       — print paused (user / filament out / lid open)
- *   resumed      — print resumed after a pause
- *   completed    — print finished successfully
- *   failed       — print failed (error_code + protocol-specific detail)
- *   reconnected  — subscriber regained connectivity after `unreachable`
- *   unreachable  — subscriber can't reach printer (transient or terminal)
+ *   started        — printer accepted job + began executing
+ *   progress       — periodic update (pct / layer_num / mc_remaining_min)
+ *   paused         — print paused (user / filament out / lid open)
+ *   resumed        — print resumed after a pause
+ *   completed      — print finished successfully
+ *   failed         — print failed (error_code + protocol-specific detail)
+ *   cancelled      — operator-initiated termination (distinct from firmware fault)
+ *   firmware_error — firmware-detected fault; carries errorCode + optional errorMessage
+ *   warning        — non-terminal advisory (Bambu HMS, plugin warnings); carries severity
+ *   reconnected    — subscriber regained connectivity after `unreachable`
+ *   unreachable    — subscriber can't reach printer (transient or terminal)
  *
  * App-layer validates against this list (no DB CHECK constraint, project
  * pattern). The full event payload lives in `dispatch_status_events.event_data`
@@ -1021,8 +1024,12 @@ export const forgePendingPairings = sqliteTable(
  *     its warning rows.
  *
  * Indexes:
- *   - `idx_dispatch_warnings_unique` UNIQUE on (dispatch_job_id, error_code) —
- *     the O(1) dedup key. T_a6's upsert logic uses ON CONFLICT on this index.
+ *   - `idx_dispatch_warnings_unique` UNIQUE on (dispatch_job_id, protocol,
+ *     error_code) — the O(1) dedup key. T_a6's upsert logic uses ON CONFLICT
+ *     on this index. `protocol` is part of the key because numeric error-code
+ *     spaces overlap across protocols (Bambu HMS vs SDCP ErrorStatusReason);
+ *     today each dispatch_job → one printer → one protocol so it can't
+ *     collide, but the schema enforces its own invariant.
  *   - `idx_dispatch_warnings_job` on (dispatch_job_id, last_seen_at) — hot path
  *     for "all active warnings for this job" UI / SSE reads, ordered newest-first.
  */
@@ -1052,7 +1059,7 @@ export const dispatchWarnings = sqliteTable(
   },
   (t) => [
     /** Dedup key — T_a6 ON CONFLICT target. */
-    uniqueIndex('idx_dispatch_warnings_unique').on(t.dispatchJobId, t.errorCode),
+    uniqueIndex('idx_dispatch_warnings_unique').on(t.dispatchJobId, t.protocol, t.errorCode),
     /** "All active warnings for job X, newest first" UI / SSE hot path. */
     index('idx_dispatch_warnings_job').on(t.dispatchJobId, t.lastSeenAt),
   ],

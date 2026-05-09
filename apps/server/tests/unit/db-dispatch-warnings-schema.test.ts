@@ -2,14 +2,17 @@
  * Unit tests for V2-005f-CF-5a-T_a1 schema — dispatch_warnings table +
  * STATUS_EVENT_KINDS / DISPATCH_FAILURE_REASONS extensions.
  *
- *   - dispatch_warnings is the per-(dispatch_job, error_code) dedup table for
- *     repeating protocol warnings (e.g. Bambu HMS spam). One row per unique
- *     (dispatch_job_id, error_code) pair; `count` + `last_seen_at` are updated
- *     on each repeated occurrence rather than inserting duplicate rows.
+ *   - dispatch_warnings is the per-(dispatch_job, protocol, error_code) dedup
+ *     table for repeating protocol warnings (e.g. Bambu HMS spam). One row per
+ *     unique (dispatch_job_id, protocol, error_code) tuple; `count` +
+ *     `last_seen_at` are updated on each repeated occurrence rather than
+ *     inserting duplicate rows.
  *   - FK from dispatch_warnings.dispatch_job_id → dispatch_jobs.id is ON
  *     DELETE CASCADE: deleting a dispatch job drops its warning rows.
  *   - `idx_dispatch_warnings_unique` is a UNIQUE index on (dispatch_job_id,
- *     error_code) — this is the O(1) dedup key that T_a6's upsert logic uses.
+ *     protocol, error_code) — this is the O(1) dedup key that T_a6's upsert
+ *     logic uses. `protocol` is part of the key because numeric error-code
+ *     spaces overlap across protocols (Bambu HMS vs SDCP ErrorStatusReason).
  *   - STATUS_EVENT_KINDS is extended from 8 to 11 values (add `cancelled`,
  *     `firmware_error`, `warning` before the transport pair).
  *   - DISPATCH_FAILURE_REASONS gains `cancelled` + `firmware-error`.
@@ -64,7 +67,7 @@ describe('dispatch_warnings schema (T_a1)', () => {
     expect(fk!.on_delete).toBe('CASCADE');
   });
 
-  it('idx_dispatch_warnings_unique is a unique index on (dispatch_job_id, error_code)', () => {
+  it('idx_dispatch_warnings_unique is a unique index on (dispatch_job_id, protocol, error_code)', () => {
     const db = getDb(`file:${DB_PATH}`) as any;
     const idxs = db.all(sql`PRAGMA index_list('dispatch_warnings')`) as Array<{
       name: string;
@@ -73,6 +76,19 @@ describe('dispatch_warnings schema (T_a1)', () => {
     const idx = idxs.find((i) => i.name === 'idx_dispatch_warnings_unique');
     expect(idx).toBeDefined();
     expect(idx!.unique).toBe(1);
+
+    // Inspect column composition + order via PRAGMA index_info — the unique
+    // key must be the 3-tuple (dispatch_job_id, protocol, error_code) in that
+    // exact order so T_a6's ON CONFLICT clause can target it.
+    const info = db.all(sql`PRAGMA index_info('idx_dispatch_warnings_unique')`) as Array<{
+      seqno: number;
+      cid: number;
+      name: string;
+    }>;
+    const orderedNames = [...info]
+      .sort((a, b) => a.seqno - b.seqno)
+      .map((c) => c.name);
+    expect(orderedNames).toEqual(['dispatch_job_id', 'protocol', 'error_code']);
   });
 
   it('STATUS_EVENT_KINDS extended to 11 values', () => {

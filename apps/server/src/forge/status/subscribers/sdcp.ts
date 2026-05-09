@@ -132,6 +132,13 @@ interface SdcpStatusPayload {
  *   - Status=3 (FAIL)    → 'firmware_error' (was 'failed')
  *   - Status=8 (STOPPED) → 'cancelled' (operator stop, NEW)
  *   - Status=9 (COMPLETE alt) → 'completed' (NEW; SDCP has two complete codes)
+ *
+ * Unmapped intentionally (all → null = no event emitted): 4 (LIFTING),
+ * 5 (PAUSING), 6 (PAUSED — pause state communicated via gcode-level events;
+ * SDCP printers usually don't surface distinct paused-print events at this
+ * layer), 7 (unknown reserved), 10 (FILE_CHECKING — pre-print validation,
+ * no dispatch impact). See planning/odad/research/v2-005f-cf-5-protocol-failure-signals.md
+ * for the full SDCP_STATUS enum.
  */
 export function mapSdcpStatus(status: number | undefined): StatusEventKind | null {
   switch (status) {
@@ -148,6 +155,8 @@ export function mapSdcpStatus(status: number | undefined): StatusEventKind | nul
     case 9:
       return 'completed'; // COMPLETE (alt code) — CF-5a
     default:
+      // 4=LIFTING, 5=PAUSING, 6=PAUSED, 7=reserved, 10=FILE_CHECKING — see
+      // jsdoc above for rationale on each.
       return null;
   }
 }
@@ -201,12 +210,22 @@ export function buildSdcpEvent(
   // String or numeric — coerce to decimal string. No hex formatting (SDCP codes
   // are small integers, not bitmask values). Only set on firmware_error to keep
   // the event shape clean for other kinds.
-  const errorCode =
-    kind === 'firmware_error' &&
-    (typeof printInfo.ErrorStatusReason === 'string' ||
-      typeof printInfo.ErrorStatusReason === 'number')
-      ? String(printInfo.ErrorStatusReason)
-      : undefined;
+  //
+  // Guards (review followups):
+  //   - empty string → undefined (unhelpful dedup key)
+  //   - NaN / non-finite numeric → undefined (firmware bug case)
+  //   - SDCP_PRINT_CAUSE code 0 is NOT documented as a no-error sentinel
+  //     (unlike Bambu's print_error). Pass through — let dedup record what
+  //     firmware sends. So `ErrorStatusReason: 0` produces errorCode='0'.
+  let errorCode: string | undefined;
+  if (kind === 'firmware_error') {
+    const reason = printInfo.ErrorStatusReason;
+    if (typeof reason === 'string' && reason.length > 0) {
+      errorCode = reason;
+    } else if (typeof reason === 'number' && Number.isFinite(reason)) {
+      errorCode = String(reason);
+    }
+  }
 
   const event: StatusEvent = {
     kind,

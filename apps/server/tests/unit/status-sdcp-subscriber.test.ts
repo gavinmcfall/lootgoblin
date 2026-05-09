@@ -680,6 +680,53 @@ describe('CF-5a SDCP — T_a5', () => {
     await sub.stop();
   });
 
+  // Review followup: empty-string ErrorStatusReason is rejected (would be a
+  // useless dedup key). Mirrors the Number.isFinite/length>0 guards used for
+  // other numeric/string PrintInfo fields.
+  it('Status=3 with ErrorStatusReason="" → kind=firmware_error, errorCode undefined', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'fail.ctb', ErrorStatusReason: '' }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBeUndefined();
+    await sub.stop();
+  });
+
+  // Review followup: NaN ErrorStatusReason (firmware bug case) is rejected.
+  // String(NaN) would produce 'NaN' as errorCode, polluting the dedup key.
+  // NOTE: tested via buildSdcpEvent directly — JSON.stringify(NaN) coerces to
+  // null over the wire, so we can't drive this end-to-end through the WS rig.
+  // The guard (Number.isFinite) is still load-bearing in case a non-JSON
+  // transport ever feeds NaN through (or a typed mock bypasses serialization).
+  it('Status=3 with ErrorStatusReason=NaN → kind=firmware_error, errorCode undefined', () => {
+    const ev = buildSdcpEvent(
+      statusMsg({ Status: 3, Filename: 'fail.ctb', ErrorStatusReason: NaN }) as Parameters<
+        typeof buildSdcpEvent
+      >[0],
+      'firmware_error',
+      new Date(0),
+    );
+    expect(ev.kind).toBe('firmware_error');
+    expect(ev.errorCode).toBeUndefined();
+  });
+
+  // Review followup: SDCP_PRINT_CAUSE code 0 is NOT documented as a no-error
+  // sentinel (unlike Bambu's print_error). Pass through as errorCode='0'.
+  it('Status=3 with ErrorStatusReason=0 → kind=firmware_error, errorCode "0"', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'fail.ctb', ErrorStatusReason: 0 }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBe('0');
+    await sub.stop();
+  });
+
   it('maps Status=2 (COMPLETE) → kind=completed (regression)', async () => {
     const { sub, promise } = startSubscriber();
     await promise;

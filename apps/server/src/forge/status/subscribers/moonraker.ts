@@ -145,17 +145,22 @@ interface HistoryStatusMapping {
 /**
  * V2-005f-CF-5a T_a2: map Moonraker history job status → typed StatusEventKind.
  *
- * - cancelled / interrupted  → 'cancelled' (operator-intentional stops)
+ * - cancelled                 → 'cancelled' (operator-intentional stop)
+ * - interrupted               → 'cancelled' (see note below)
  * - klippy_shutdown / klippy_disconnect / server_exit → 'firmware_error' + errorCode
- * - error                    → 'firmware_error' (no code; Klipper-level fault)
- * - completed                → 'completed'
- * - anything else            → 'failed' (unknown terminal state)
+ * - error                     → 'firmware_error' (no code; Klipper-level fault)
+ * - completed                 → 'completed'
+ * - anything else             → 'failed' (unknown terminal state)
  */
 function mapHistoryStatus(status: string | undefined): HistoryStatusMapping | null {
   switch (status) {
     case 'completed':
       return { kind: 'completed' };
     case 'cancelled':
+    // 'interrupted' here means the Moonraker service was terminated mid-print
+    // (process kill, not operator stop). Plan locks it as 'cancelled' for V2; the
+    // classification may move to 'firmware_error' once operational data accumulates.
+    // See CF-5a-CF-D in carry-forward roster.
     case 'interrupted':
       return { kind: 'cancelled' };
     case 'klippy_shutdown':
@@ -177,7 +182,7 @@ function buildSubscribeMessage(): string {
     method: 'printer.objects.subscribe',
     params: {
       objects: {
-        print_stats: ['state', 'filename', 'print_duration', 'total_duration', 'filament_used', 'info'],
+        print_stats: ['state', 'filename', 'print_duration', 'total_duration', 'filament_used', 'info', 'message'],
         display_status: ['progress', 'message'],
         virtual_sdcard: ['progress'],
         webhooks: ['state'],
@@ -224,6 +229,7 @@ function buildEventFromStatus(
   const sd = payload.virtual_sdcard ?? {};
   const progressSrc = typeof display.progress === 'number' ? display.progress : sd.progress;
   // V2-005f-CF-5a T_a2: populate errorMessage from print_stats.message on firmware_error.
+  // V2-005f-CF-5a: Klipper emits empty `message` during normal operation; only set errorMessage when truthy.
   const errorMessage =
     kind === 'firmware_error' && typeof printStats.message === 'string' && printStats.message !== ''
       ? printStats.message

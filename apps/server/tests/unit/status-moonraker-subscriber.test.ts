@@ -222,6 +222,10 @@ describe('V2-005f-T_dcf4 createMoonrakerSubscriber', () => {
     expect(sent.id).toBe(1);
     expect(sent.params.objects.print_stats).toContain('state');
     expect(sent.params.objects.print_stats).toContain('filename');
+    // V2-005f-CF-5a T_a2 regression: 'message' must be in the subscription so
+    // Klipper delta updates carry print_stats.message on state='error'. Without
+    // this, errorMessage is silently always undefined in production.
+    expect(sent.params.objects.print_stats).toContain('message');
     expect(sent.params.objects.display_status).toContain('progress');
     // Subscriber considers itself "connected" only after subscribe-reply.
     ws.fireMessage({ jsonrpc: '2.0', id: 1, result: { status: {}, eventtime: 0 } });
@@ -622,6 +626,108 @@ describe('CF-5a state distinctions — V2-005f-CF-5a T_a2', () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]!.kind).toBe('cancelled');
+
+    await sub.stop();
+  });
+
+  it('maps notify_history_changed status=klippy_disconnect → kind=firmware_error with errorCode', async () => {
+    const { sub } = startSubscriber();
+    factoryRig.sockets[0]!.fireOpen();
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_history_changed',
+      params: [
+        {
+          action: 'finished',
+          job: { filename: 'test.gcode', status: 'klippy_disconnect' },
+        },
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBe('klippy_disconnect');
+
+    await sub.stop();
+  });
+
+  it('maps notify_history_changed status=server_exit → kind=firmware_error with errorCode', async () => {
+    const { sub } = startSubscriber();
+    factoryRig.sockets[0]!.fireOpen();
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_history_changed',
+      params: [
+        {
+          action: 'finished',
+          job: { filename: 'test.gcode', status: 'server_exit' },
+        },
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBe('server_exit');
+
+    await sub.stop();
+  });
+
+  it('maps notify_history_changed status=error → kind=firmware_error with no errorCode', async () => {
+    const { sub } = startSubscriber();
+    factoryRig.sockets[0]!.fireOpen();
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_history_changed',
+      params: [
+        {
+          action: 'finished',
+          job: { filename: 'test.gcode', status: 'error' },
+        },
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBeUndefined();
+
+    await sub.stop();
+  });
+
+  it('maps print_stats.state=error WITHOUT message → errorMessage undefined (not empty string)', async () => {
+    const { sub } = startSubscriber();
+    factoryRig.sockets[0]!.fireOpen();
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_status_update',
+      params: [
+        { print_stats: { state: 'error', filename: 'my.gcode' } },
+        12345.0,
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorMessage).toBeUndefined();
+
+    await sub.stop();
+  });
+
+  it('maps notify_history_changed unknown status → kind=failed (default branch)', async () => {
+    const { sub } = startSubscriber();
+    factoryRig.sockets[0]!.fireOpen();
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_history_changed',
+      params: [
+        {
+          action: 'finished',
+          job: { filename: 'test.gcode', status: 'in_progress' },
+        },
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('failed');
 
     await sub.stop();
   });

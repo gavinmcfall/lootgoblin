@@ -14,6 +14,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   createReconnectingSubscriber,
+  jittered,
+  RECONNECT_JITTER_PCT,
   type OpenTransportHelpers,
   type TransportHandle,
 } from '@/forge/status/subscribers/_reconnect-base';
@@ -346,16 +348,21 @@ describe('V2-005f createReconnectingSubscriber', () => {
       clearTimeout: timerRig.clearTimer,
     });
     await sub.start(makePrinter(), null, (e) => events.push(e));
-    expect(timerRig.pending[0]!.ms).toBe(10);
+    // V2-005f-CF-4 T_h1: ±20% jitter applied — base 10ms → [8, 12].
+    expect(timerRig.pending[0]!.ms).toBeGreaterThanOrEqual(8);
+    expect(timerRig.pending[0]!.ms).toBeLessThanOrEqual(12);
 
     transportRig.failNext(new Error('e2'));
     timerRig.flushOnce();
-    expect(timerRig.pending[0]!.ms).toBe(20);
+    // base 20ms → [16, 24].
+    expect(timerRig.pending[0]!.ms).toBeGreaterThanOrEqual(16);
+    expect(timerRig.pending[0]!.ms).toBeLessThanOrEqual(24);
 
     transportRig.failNext(new Error('e3'));
     timerRig.flushOnce();
-    // Schedule exhausted → cap on last entry (20).
-    expect(timerRig.pending[0]!.ms).toBe(20);
+    // Schedule exhausted → cap on last entry (20), still jittered to [16, 24].
+    expect(timerRig.pending[0]!.ms).toBeGreaterThanOrEqual(16);
+    expect(timerRig.pending[0]!.ms).toBeLessThanOrEqual(24);
 
     await sub.stop();
   });
@@ -379,5 +386,25 @@ describe('V2-005f createReconnectingSubscriber', () => {
     await sub.stop();
     await expect(sub.stop()).resolves.toBeUndefined();
     expect(sub.isConnected()).toBe(false);
+  });
+});
+
+describe('jittered() — V2-005f-CF-4 T_h1', () => {
+  it('exports RECONNECT_JITTER_PCT = 0.20', () => {
+    expect(RECONNECT_JITTER_PCT).toBe(0.20);
+  });
+
+  it('produces values within ±20% of the input', () => {
+    const samples = Array.from({ length: 1000 }, () => jittered(5000));
+    const min = Math.min(...samples);
+    const max = Math.max(...samples);
+    expect(min).toBeGreaterThanOrEqual(4000);
+    expect(max).toBeLessThanOrEqual(6000);
+  });
+
+  it('produces a reasonable spread (not all identical)', () => {
+    const samples = Array.from({ length: 1000 }, () => jittered(10_000));
+    const unique = new Set(samples);
+    expect(unique.size).toBeGreaterThan(100);
   });
 });

@@ -74,6 +74,37 @@ import type {
  */
 const DEFAULT_TEARDOWN_GRACE_MS = 30_000;
 
+/**
+ * V2-005f-CF-4 T_h2 — boot-recovery stagger window.
+ *
+ * On lootgoblin restart, `recover()` queries all `dispatch_jobs WHERE
+ * status='dispatched' AND target_kind='printer'` and schedules each
+ * `notifyDispatched` call at `hash(printerId) % BOOT_STAGGER_WINDOW_MS`
+ * offset. Spreads the boot reconnect burst over a 30 s window so N
+ * printers don't all reconnect simultaneously.
+ *
+ * Live dispatches (claim worker → onJobDispatched → notifyDispatched)
+ * stay immediate — claim concurrency is already bounded ≤4 parallel
+ * per V2-005a-T4. Hardcoded — Q2=A in CF-4 brainstorm.
+ */
+export const BOOT_STAGGER_WINDOW_MS = 30_000;
+
+/**
+ * djb2 hash → ms offset within `BOOT_STAGGER_WINDOW_MS`. Stable, no
+ * crypto dependency, deterministic per `printerId`. Empty string maps
+ * to 0 by definition (loop body never executes; `hash` stays 5381 →
+ * `5381 % 30_000 = 5381` — guard with explicit early-return so the
+ * defensive empty-string contract is documented).
+ */
+export function computeBootStaggerOffset(printerId: string): number {
+  if (printerId.length === 0) return 0;
+  let hash = 5381;
+  for (let i = 0; i < printerId.length; i++) {
+    hash = ((hash << 5) + hash + printerId.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % BOOT_STAGGER_WINDOW_MS;
+}
+
 // ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
@@ -381,22 +412,35 @@ export function createForgeStatusWorker(
         'forge-status: recovering dispatched jobs after restart',
       );
 
-      // Sequential recovery — one printer's startSubscription does a DB
-      // read + credential decrypt + transport open. Doing them serially
-      // keeps log ordering predictable and avoids a thundering herd of
-      // outbound connections at boot.
+      // V2-005f-CF-4 T_h2 — boot-recovery stagger.
+      //
+      // Schedule each notifyDispatched at hash(printerId) % 30_000ms
+      // offset. Spreads the reconnect burst across a 30 s window so N
+      // printers don't all reconnect simultaneously. The actual
+      // notifyDispatched call (which does loadPrinter + getCredential +
+      // subscriber.start) runs inside the timer callback. Errors are
+      // swallowed inside the callback so a single bad row can't kill
+      // the recovery sweep.
       for (const row of rows) {
-        try {
-          await this.notifyDispatched({
-            dispatchJobId: row.id,
-            printerId: row.targetId,
-          });
-        } catch (err) {
-          logger.error(
-            { err, dispatchJobId: row.id, printerId: row.targetId },
-            'forge-status: recovery notifyDispatched threw — continuing',
-          );
-        }
+        const printerId = row.targetId;
+        const dispatchJobId = row.id;
+        const offset = computeBootStaggerOffset(printerId);
+        // The cb is typed `() => void` but we return the IIFE's promise
+        // so test timer harnesses can await full settlement. In
+        // production the global setTimeout ignores the return value, so
+        // returning a promise is harmless. Errors are swallowed inside
+        // so a single bad row can't kill the recovery sweep.
+        const cb = async (): Promise<void> => {
+          try {
+            await this.notifyDispatched({ dispatchJobId, printerId });
+          } catch (err) {
+            logger.error(
+              { err, dispatchJobId, printerId },
+              'forge-status: recovery notifyDispatched threw — continuing',
+            );
+          }
+        };
+        setTimer(cb as unknown as () => void, offset);
       }
     },
 

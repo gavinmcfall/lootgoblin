@@ -479,10 +479,13 @@ describe('V2-005f-T_dcf7 createSdcpSubscriber', () => {
 
     ws.fireClose();
     expect(sub.isConnected()).toBe(false);
-    // A reconnect timer (10ms from our schedule override) should be queued
-    expect(timerRig.pending.find((t) => t.ms === 10)).toBeDefined();
+    // A reconnect timer (10ms from our schedule override) should be queued.
+    // V2-005f-CF-4 T_h1: ±20% jitter applied → [8, 12].
+    expect(
+      timerRig.pending.find((t) => t.ms >= 8 && t.ms <= 12),
+    ).toBeDefined();
 
-    timerRig.flushOnce((t) => t.ms === 10);
+    timerRig.flushOnce((t) => t.ms >= 8 && t.ms <= 12);
     await new Promise((r) => setTimeout(r, 0));
     expect(factoryRig.calls.length).toBeGreaterThanOrEqual(2);
 
@@ -524,8 +527,11 @@ describe('V2-005f-T_dcf7 createSdcpSubscriber', () => {
     factoryRig.sockets[0]!.fireOpen();
     await sub.stop();
     factoryRig.sockets[0]!.fireClose();
-    // No reconnect timer queued after stop
-    expect(timerRig.pending.find((t) => t.ms === 10)).toBeUndefined();
+    // No reconnect timer queued after stop.
+    // V2-005f-CF-4 T_h1: ±20% jitter applied → [8, 12].
+    expect(
+      timerRig.pending.find((t) => t.ms >= 8 && t.ms <= 12),
+    ).toBeUndefined();
     expect(factoryRig.calls).toHaveLength(1);
   });
 

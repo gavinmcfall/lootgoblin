@@ -115,6 +115,22 @@ export interface ReconnectingSubscriberOptions {
 const DEFAULT_BACKOFF_MS: readonly number[] = [5_000, 10_000, 30_000, 60_000, 300_000];
 
 /**
+ * V2-005f-CF-4 T_h1 — per-subscriber backoff jitter.
+ *
+ * ±20% randomization on each backoff interval. Spreads N-printer reconnect
+ * waves across a window so a mass disconnect (power cycle / network blip /
+ * lootgoblin restart) doesn't produce a thundering herd at exactly T+5s.
+ *
+ * Hardcoded — Q2=A in CF-4 brainstorm. CF-4-CF-A defers env-tuning until
+ * production data justifies the surface area.
+ */
+export const RECONNECT_JITTER_PCT = 0.20;
+
+export function jittered(intervalMs: number): number {
+  return intervalMs * (1 + (Math.random() - 0.5) * 2 * RECONNECT_JITTER_PCT);
+}
+
+/**
  * Build a `StatusSubscriber` whose lifecycle / reconnect machinery is
  * implemented by the base, with protocol-specifics injected via
  * `openTransport`.
@@ -168,7 +184,11 @@ export function createReconnectingSubscriber(
     if (stopped) return;
     if (reconnectHandle !== null) return;
     const idx = Math.min(attempt, backoffSchedule.length - 1);
-    const delay = backoffSchedule[idx] ?? backoffSchedule[backoffSchedule.length - 1] ?? 5_000;
+    const baseDelay =
+      backoffSchedule[idx] ?? backoffSchedule[backoffSchedule.length - 1] ?? 5_000;
+    // V2-005f-CF-4 T_h1 — ±20% jitter so N subscribers reconnecting after a
+    // shared disconnect don't all hit at the same instant.
+    const delay = jittered(baseDelay);
     attempt += 1;
     reconnectHandle = setTimer(() => {
       reconnectHandle = null;

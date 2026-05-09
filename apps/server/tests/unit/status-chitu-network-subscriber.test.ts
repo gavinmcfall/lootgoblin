@@ -557,7 +557,10 @@ describe('V2-005f-T_dcf8 createChituNetworkSubscriber', () => {
     sock.fireClose();
     expect(sub.isConnected()).toBe(false);
     // First reconnect backoff (we overrode to 10ms).
-    expect(timerRig.pending.find((t) => t.ms === 10)).toBeDefined();
+    // V2-005f-CF-4 T_h1: ±20% jitter applied → [8, 12].
+    expect(
+      timerRig.pending.find((t) => t.ms >= 8 && t.ms <= 12),
+    ).toBeDefined();
 
     await sub.stop();
   });
@@ -644,7 +647,10 @@ describe('V2-005f-T_dcf8 createChituNetworkSubscriber', () => {
     factoryRig.sockets[0]!.fireConnect();
     await sub.stop();
     factoryRig.sockets[0]!.fireClose();
-    expect(timerRig.pending.find((t) => t.ms === 10)).toBeUndefined();
+    // V2-005f-CF-4 T_h1: ±20% jitter applied → [8, 12].
+    expect(
+      timerRig.pending.find((t) => t.ms >= 8 && t.ms <= 12),
+    ).toBeUndefined();
     expect(factoryRig.sockets).toHaveLength(1);
   });
 

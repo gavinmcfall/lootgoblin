@@ -149,19 +149,35 @@ export function mapCurrentState(state: string | undefined): StatusEventKind | nu
 }
 
 /**
- * Map an OctoPrint `event.type` to a StatusEventKind. Authoritative for
- * terminal states.
+ * Map an OctoPrint `event.type` (and optional `reason`) to a StatusEventKind.
+ * Authoritative for terminal states.
+ *
+ * Mapping rules (explicit conditionals — no fallthrough + comment):
+ *   PrintCancelled                   → 'cancelled'   (distinct from firmware fault)
+ *   PrintFailed reason='cancelled'   → 'cancelled'   (user-initiated via OctoPrint UI)
+ *   PrintFailed reason='error'       → 'firmware_error'
+ *   PrintFailed (no reason / other)  → 'failed'      (conservative fallback)
+ *   Error                            → 'firmware_error' (mid-print firmware fault)
+ *   PrintCancelling                  → null (transient state — handled separately)
  */
-export function mapEventType(type: string | undefined): StatusEventKind | null {
+export function mapEventType(
+  type: string | undefined,
+  reason?: string,
+): StatusEventKind | null {
   if (!type) return null;
   switch (type) {
     case 'PrintStarted':
       return 'started';
     case 'PrintDone':
       return 'completed';
-    case 'PrintFailed':
     case 'PrintCancelled':
+      return 'cancelled';
+    case 'PrintFailed':
+      if (reason === 'cancelled') return 'cancelled';
+      if (reason === 'error') return 'firmware_error';
       return 'failed';
+    case 'Error':
+      return 'firmware_error';
     case 'PrintPaused':
       return 'paused';
     case 'PrintResumed':
@@ -184,14 +200,70 @@ interface OctoprintCurrentPayload {
 
 interface OctoprintEventPayload {
   type?: string;
-  payload?: { name?: string; path?: string };
+  payload?: {
+    name?: string;
+    path?: string;
+    /** PrintFailed reason: 'cancelled' | 'error' | other */
+    reason?: string;
+    /** PrintFailed human-readable message */
+    message?: string;
+    /** OctoPrint Error event: human-readable error string */
+    error?: string;
+    /**
+     * OctoPrint Error event: consequence of the error.
+     * e.g. 'disconnect', 'cancel'
+     */
+    consequence?: string;
+    /**
+     * PrintCancelling event: true when the cancel was triggered by a firmware
+     * error rather than an operator action.
+     */
+    firmwareError?: boolean;
+  };
 }
+
+/**
+ * OctoPrint plugin event payload. Each plugin sends a message with the
+ * plugin name and arbitrary data.
+ */
+interface OctoprintPluginPayload {
+  /** Plugin identifier (e.g. 'OctoPrint-Spool Manager'). */
+  plugin?: string;
+  data?: {
+    /** Plugin-defined warning/event code. */
+    code?: string;
+    /** Human-readable message from the plugin. */
+    message?: string;
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * Conservative allowlist of plugin identifiers whose events we map to
+ * StatusEvent 'warning'. Unknown plugins are silently dropped to the
+ * audit-only path (rawPayload only, no emitted event).
+ *
+ * To add a new plugin: append its exact `plugin` string here and document
+ * the payload shape in a comment.
+ */
+const PLUGIN_WARNING_ALLOWLIST: ReadonlySet<string> = new Set([
+  // Filament runout / low-filament advisories.
+  // data shape: { action: 'warning', code: string, message: string }
+  'OctoPrint-Spool Manager',
+]);
 
 interface OctoprintInnerMessage {
   current?: OctoprintCurrentPayload;
   history?: OctoprintCurrentPayload;
   event?: OctoprintEventPayload;
-  // plugin / connected / serverReachable / etc — ignored
+  /**
+   * Plugin message: OctoPrint pushes these when a server-side plugin emits
+   * a message. Shape: `{ plugin: '<name>', data: { ... } }`.
+   * Well-known plugins in PLUGIN_WARNING_ALLOWLIST are mapped to 'warning'
+   * StatusEvents; others are silently dropped (audit-only).
+   */
+  plugin?: OctoprintPluginPayload;
+  // connected / serverReachable / etc — ignored
 }
 
 function decodeInnerMessage(json: string): OctoprintInnerMessage | null {
@@ -247,11 +319,18 @@ function buildEventFromCurrent(
   };
 }
 
+interface EventExtras {
+  errorCode?: string;
+  errorMessage?: string;
+  severity?: 'info' | 'warning' | 'error';
+}
+
 function buildEventFromEvent(
   kind: StatusEventKind,
   evt: OctoprintEventPayload,
   rawPayload: unknown,
   occurredAt: Date,
+  extras: EventExtras = {},
 ): StatusEvent {
   return {
     kind,
@@ -262,6 +341,27 @@ function buildEventFromEvent(
           ? evt.payload.path
           : '',
     progressPct: kind === 'completed' ? 100 : undefined,
+    ...extras,
+    rawPayload,
+    occurredAt,
+  };
+}
+
+function buildEventFromPlugin(
+  pluginPayload: OctoprintPluginPayload,
+  rawPayload: unknown,
+  occurredAt: Date,
+): StatusEvent {
+  const pluginName = pluginPayload.plugin ?? 'unknown-plugin';
+  const data = pluginPayload.data;
+  const code = typeof data?.code === 'string' ? data.code : 'warning';
+  const message = typeof data?.message === 'string' ? data.message : undefined;
+  return {
+    kind: 'warning',
+    remoteJobRef: '',
+    severity: 'warning',
+    errorCode: `${pluginName}/${code}`,
+    errorMessage: message,
     rawPayload,
     occurredAt,
   };
@@ -416,13 +516,77 @@ export function createOctoprintSubscriber(
           return;
         }
         if (inner.event) {
-          const kind = mapEventType(inner.event.type);
+          const evt = inner.event;
+          const now = new Date();
+
+          // PrintCancelling with firmwareError=true — emit 'cancelled' with
+          // errorCode='firmware-cancel' to signal a firmware-initiated cancel.
+          // This is a transient pre-cancel event; the subsequent PrintCancelled
+          // will still arrive. We emit here for early notification.
+          if (evt.type === 'PrintCancelling' && evt.payload?.firmwareError === true) {
+            helpers.emitProtocolEvent(
+              buildEventFromEvent('cancelled', evt, inner, now, {
+                errorCode: 'firmware-cancel',
+              }),
+            );
+            return;
+          }
+
+          const reason = typeof evt.payload?.reason === 'string'
+            ? evt.payload.reason
+            : undefined;
+          const kind = mapEventType(evt.type, reason);
           if (kind !== null) {
-            helpers.emitProtocolEvent(buildEventFromEvent(kind, inner.event, inner, new Date()));
+            const extras: EventExtras = {};
+
+            if (evt.type === 'Error') {
+              // OctoPrint Error event: `payload.reason` is the 7-value enum code
+              // (e.g. 'gcode_other_error', 'firmware_error', 'disconnected').
+              // `payload.error` is the human-readable text. `payload.consequence`
+              // indicates the post-error action (e.g. 'disconnect', 'cancel').
+              if (reason !== undefined) {
+                extras.errorCode = reason;
+              }
+              const errorStr = typeof evt.payload?.error === 'string'
+                ? evt.payload.error
+                : undefined;
+              if (errorStr !== undefined) {
+                extras.errorMessage = errorStr;
+              }
+              // Any consequence means the error was severe enough to require
+              // firmware action — mark severity='error'.
+              if (evt.payload?.consequence !== undefined) {
+                extras.severity = 'error';
+              }
+            } else if (kind === 'firmware_error') {
+              // PrintFailed reason=error: carry the human-readable message when present.
+              // errorCode is intentionally undefined — OctoPrint PrintFailed does not
+              // provide a machine-readable error code. T_a6 must handle firmware_error
+              // events that lack errorCode.
+              const msg = typeof evt.payload?.message === 'string'
+                ? evt.payload.message
+                : undefined;
+              if (msg !== undefined) {
+                extras.errorMessage = msg;
+              }
+            }
+
+            helpers.emitProtocolEvent(buildEventFromEvent(kind, evt, inner, now, extras));
           }
           return;
         }
-        // plugin/connected/serverReachable/etc — ignored.
+        if (inner.plugin) {
+          // Plugin warning events: only map allowlisted plugins.
+          // Unknown plugins are silently dropped (audit-only path — no emitted
+          // StatusEvent, but the raw message is already available in the WS
+          // audit log if needed).
+          const pluginName = inner.plugin.plugin;
+          if (typeof pluginName === 'string' && PLUGIN_WARNING_ALLOWLIST.has(pluginName)) {
+            helpers.emitProtocolEvent(buildEventFromPlugin(inner.plugin, inner, new Date()));
+          }
+          return;
+        }
+        // connected/serverReachable/etc — ignored.
       }
 
       function handleFrame(frame: SockJsFrame): void {

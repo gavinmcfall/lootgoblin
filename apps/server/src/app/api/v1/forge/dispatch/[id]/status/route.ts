@@ -3,7 +3,7 @@
  *
  * Returns the dispatch_job's latest cached state (status + progress_pct +
  * last_status_at) plus the latest 50 dispatch_status_events ordered by
- * occurred_at DESC.
+ * occurred_at DESC, and all active dispatch_warnings ordered newest-first.
  *
  * Owner-or-admin ACL. Cross-owner → 404 (not 403) to avoid leaking the
  * existence of another user's dispatch — same policy as the V2-005a-T5
@@ -15,6 +15,9 @@
  *   - `/status` returns the fine-grained protocol-level status feed
  *     (progress, layer, remaining minutes, etc.) accumulated by the
  *     V2-005f status subscribers.
+ *
+ * V2-005f-CF-5a T_a7: the `warnings` array is sourced from `dispatch_warnings`
+ * using the `idx_dispatch_warnings_job` index (dispatch_job_id + last_seen_at).
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -70,12 +73,45 @@ export async function GET(
     ingested_at: e.ingestedAt.getTime(),
   }));
 
+  // All active warnings for this dispatch, newest-first (idx_dispatch_warnings_job).
+  // `protocol` is included so the UI can surface "warning from Bambu vs SDCP"; numeric
+  // error-code spaces overlap across protocols so the label matters for disambiguation.
+  // If this turns out to be unnecessary exposure, remove via a future CF-5a-CF-E cleanup.
+  const warningRows = await db
+    .select({
+      warning_id: schema.dispatchWarnings.id,
+      error_code: schema.dispatchWarnings.errorCode,
+      protocol: schema.dispatchWarnings.protocol,
+      severity: schema.dispatchWarnings.severity,
+      message: schema.dispatchWarnings.message,
+      first_seen_at: schema.dispatchWarnings.firstSeenAt,
+      last_seen_at: schema.dispatchWarnings.lastSeenAt,
+      count: schema.dispatchWarnings.count,
+    })
+    .from(schema.dispatchWarnings)
+    .where(eq(schema.dispatchWarnings.dispatchJobId, id))
+    .orderBy(desc(schema.dispatchWarnings.lastSeenAt));
+
+  const warnings = warningRows.map((w) => ({
+    warning_id: w.warning_id,
+    error_code: w.error_code,
+    protocol: w.protocol,
+    severity: w.severity,
+    message: w.message ?? null,
+    // timestamp_ms columns arrive as Date objects from Drizzle; serialize to
+    // epoch millis matching the existing occurred_at / ingested_at convention.
+    first_seen_at: (w.first_seen_at as Date).getTime(),
+    last_seen_at: (w.last_seen_at as Date).getTime(),
+    count: w.count,
+  }));
+
   return NextResponse.json({
     dispatch_job_id: row.id,
     status: row.status,
     progress_pct: row.progressPct ?? null,
     last_status_at: row.lastStatusAt ? row.lastStatusAt.getTime() : null,
     events,
+    warnings,
   });
 }
 

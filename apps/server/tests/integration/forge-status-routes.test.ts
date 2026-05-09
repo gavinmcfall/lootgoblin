@@ -69,6 +69,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  await db().delete(schema.dispatchWarnings);
   await db().delete(schema.dispatchStatusEvents);
   await db().delete(schema.dispatchJobs);
   await db().delete(schema.printers);
@@ -347,6 +348,148 @@ describe('GET /api/v1/forge/dispatch/:id/status', () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.dispatch_job_id).toBe(aliceDispatch);
+  });
+});
+
+// ===========================================================================
+// GET /api/v1/forge/dispatch/:id/status — warnings array (V2-005f-CF-5a T_a7)
+// ===========================================================================
+
+async function seedWarning(args: {
+  dispatchJobId: string;
+  errorCode: string;
+  protocol?: string;
+  severity?: string;
+  message?: string | null;
+  count?: number;
+  firstSeenAt?: Date;
+  lastSeenAt?: Date;
+}): Promise<string> {
+  const id = uid();
+  const now = new Date();
+  await db().insert(schema.dispatchWarnings).values({
+    id,
+    dispatchJobId: args.dispatchJobId,
+    errorCode: args.errorCode,
+    protocol: args.protocol ?? 'bambu_mqtt',
+    severity: args.severity ?? 'warning',
+    message: args.message ?? null,
+    count: args.count ?? 1,
+    firstSeenAt: args.firstSeenAt ?? now,
+    lastSeenAt: args.lastSeenAt ?? now,
+  });
+  return id;
+}
+
+describe('GET /status warnings array — V2-005f-CF-5a T_a7', () => {
+  it('returns warnings array with deduped entries, newest first', async () => {
+    const userId = await seedUser();
+    const dispatchId = await seedDispatch({ ownerId: userId });
+
+    const t1 = new Date('2025-06-01T00:00:01Z');
+    const t2 = new Date('2025-06-01T00:00:10Z');
+
+    // warning A: first seen at t1, last seen at t2 (seen 4 times)
+    const warnAId = await seedWarning({
+      dispatchJobId: dispatchId,
+      errorCode: '0C00-0300-0003-0008',
+      protocol: 'bambu_mqtt',
+      severity: 'warning',
+      message: 'Possible spaghetti detected',
+      count: 4,
+      firstSeenAt: t1,
+      lastSeenAt: t2,
+    });
+    // warning B: first seen and last seen at t1 (seen once, older)
+    const warnBId = await seedWarning({
+      dispatchJobId: dispatchId,
+      errorCode: 'HMS_TEMP_0001',
+      protocol: 'bambu_mqtt',
+      severity: 'error',
+      message: null,
+      count: 1,
+      firstSeenAt: t1,
+      lastSeenAt: t1,
+    });
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { GET } = await import(
+      '../../src/app/api/v1/forge/dispatch/[id]/status/route'
+    );
+    const res = await GET(
+      makeGet(`http://local/api/v1/forge/dispatch/${dispatchId}/status`),
+      { params: Promise.resolve({ id: dispatchId }) },
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+
+    // Two distinct warnings present.
+    expect(json.warnings).toHaveLength(2);
+
+    // Newest-first: warning A has lastSeenAt=t2, warning B has lastSeenAt=t1.
+    expect(json.warnings[0].warning_id).toBe(warnAId);
+    expect(json.warnings[1].warning_id).toBe(warnBId);
+
+    // Shape of the first warning (most fields).
+    expect(json.warnings[0]).toMatchObject({
+      warning_id: warnAId,
+      error_code: '0C00-0300-0003-0008',
+      // protocol exposed so UI can surface "warning from Bambu vs SDCP"
+      protocol: 'bambu_mqtt',
+      severity: 'warning',
+      message: 'Possible spaghetti detected',
+      count: 4,
+      first_seen_at: t1.getTime(),
+      last_seen_at: t2.getTime(),
+    });
+
+    // Null message is preserved as null (not omitted or coerced to '').
+    expect(json.warnings[1].message).toBeNull();
+
+    // Timestamps are epoch millis (numbers), not ISO strings.
+    expect(typeof json.warnings[0].first_seen_at).toBe('number');
+    expect(typeof json.warnings[0].last_seen_at).toBe('number');
+  });
+
+  it('warnings array is empty when no warnings exist', async () => {
+    const userId = await seedUser();
+    const dispatchId = await seedDispatch({ ownerId: userId });
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { GET } = await import(
+      '../../src/app/api/v1/forge/dispatch/[id]/status/route'
+    );
+    const res = await GET(
+      makeGet(`http://local/api/v1/forge/dispatch/${dispatchId}/status`),
+      { params: Promise.resolve({ id: dispatchId }) },
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.warnings).toEqual([]);
+  });
+
+  it('warnings for different dispatches are not mixed up', async () => {
+    const userId = await seedUser();
+    const dispatchA = await seedDispatch({ ownerId: userId });
+    const dispatchB = await seedDispatch({ ownerId: userId });
+
+    await seedWarning({ dispatchJobId: dispatchA, errorCode: 'A-001' });
+    await seedWarning({ dispatchJobId: dispatchB, errorCode: 'B-001' });
+    await seedWarning({ dispatchJobId: dispatchB, errorCode: 'B-002' });
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { GET } = await import(
+      '../../src/app/api/v1/forge/dispatch/[id]/status/route'
+    );
+    const resA = await GET(
+      makeGet(`http://local/api/v1/forge/dispatch/${dispatchA}/status`),
+      { params: Promise.resolve({ id: dispatchA }) },
+    );
+    expect(resA.status).toBe(200);
+    const jsonA = await resA.json();
+    // Only dispatchA's warning visible.
+    expect(jsonA.warnings).toHaveLength(1);
+    expect(jsonA.warnings[0].error_code).toBe('A-001');
   });
 });
 

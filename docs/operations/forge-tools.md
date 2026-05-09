@@ -810,7 +810,7 @@ V2-005f-CF-5a expanded the StatusEventKind union from 8 → 11 values. The new k
 
 `DISPATCH_FAILURE_REASONS` extended with `'cancelled'` and `'firmware-error'` so terminal transitions reflect the new distinctions.
 
-**Warning dedup**: a new `dispatch_warnings` table holds one row per `(dispatch_job_id, error_code)` via partial unique index. The first occurrence of a unique error code persists to `dispatch_status_events` + emits via SSE bus; repeats just bump `count` + `last_seen_at`. Prevents Bambu HMS bus flooding under prolonged fault chatter.
+**Warning dedup**: a new `dispatch_warnings` table holds one row per `(dispatch_job_id, protocol, error_code)` via unique index. The first occurrence of a unique error code persists to `dispatch_status_events` + emits via SSE bus; repeats just bump `count` + `last_seen_at`. Prevents Bambu HMS bus flooding under prolonged fault chatter.
 
 **HTTP API**: `GET /api/v1/forge/dispatch/:id/status` response now includes a `warnings: [{warning_id, error_code, protocol, severity, message, first_seen_at, last_seen_at, count}]` array. Empty when no warnings. Timestamps are epoch milliseconds (integers), matching the existing `occurred_at` / `ingested_at` convention in the `events` array.
 
@@ -829,5 +829,5 @@ V2-005f-CF-5a expanded the StatusEventKind union from 8 → 11 values. The new k
 | **CF-5a-CF-A** | Deferred | ChituNetwork M27 byte-regression → firmware_error |
 | **CF-5a-CF-B** | Deferred | Severity classification refinement from operational data |
 | **CF-5a-CF-C** | Deferred | Per-protocol error-code dictionary for UI translation (e.g. HMS 0C00-0300-0003-0008 → "Possible spaghetti detected") |
-| **CF-5a-CF-D** | Deferred | Moonraker `interrupted` classification — currently maps to `cancelled` but is actually Moonraker service termination (host failure), not operator stop. Revisit once operational data accumulates. |
+| **CF-5a-CF-D** | Deferred | Moonraker `interrupted` classification — currently maps to `cancelled` but is actually Moonraker service termination (host failure), not operator stop (deferred in T_a2 `72898e6`). Revisit once operational data accumulates. |
 

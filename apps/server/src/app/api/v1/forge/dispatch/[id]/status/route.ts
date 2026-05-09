@@ -76,7 +76,7 @@ export async function GET(
   // All active warnings for this dispatch, newest-first (idx_dispatch_warnings_job).
   // `protocol` is included so the UI can surface "warning from Bambu vs SDCP"; numeric
   // error-code spaces overlap across protocols so the label matters for disambiguation.
-  // If this turns out to be unnecessary exposure, remove via a future CF-5a-CF-E cleanup.
+  // If this turns out to be unnecessary exposure, remove via a future cleanup pass.
   const warningRows = await db
     .select({
       warning_id: schema.dispatchWarnings.id,

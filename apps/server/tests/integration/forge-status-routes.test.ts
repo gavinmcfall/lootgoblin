@@ -477,19 +477,33 @@ describe('GET /status warnings array — V2-005f-CF-5a T_a7', () => {
     await seedWarning({ dispatchJobId: dispatchB, errorCode: 'B-001' });
     await seedWarning({ dispatchJobId: dispatchB, errorCode: 'B-002' });
 
-    mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { GET } = await import(
       '../../src/app/api/v1/forge/dispatch/[id]/status/route'
     );
+
+    // Fetch dispatchA — only A-001 should be visible (B-001/B-002 isolated).
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const resA = await GET(
       makeGet(`http://local/api/v1/forge/dispatch/${dispatchA}/status`),
       { params: Promise.resolve({ id: dispatchA }) },
     );
     expect(resA.status).toBe(200);
     const jsonA = await resA.json();
-    // Only dispatchA's warning visible.
     expect(jsonA.warnings).toHaveLength(1);
     expect(jsonA.warnings[0].error_code).toBe('A-001');
+
+    // Fetch dispatchB — both B-001 and B-002 visible, A-001 isolated.
+    // Bidirectional symmetry: proves the WHERE filter works in both directions.
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const resB = await GET(
+      makeGet(`http://local/api/v1/forge/dispatch/${dispatchB}/status`),
+      { params: Promise.resolve({ id: dispatchB }) },
+    );
+    expect(resB.status).toBe(200);
+    const jsonB = await resB.json();
+    expect(jsonB.warnings).toHaveLength(2);
+    const errorCodesB = jsonB.warnings.map((w: { error_code: string }) => w.error_code).sort();
+    expect(errorCodesB).toEqual(['B-001', 'B-002']);
   });
 });
 

@@ -85,6 +85,8 @@ interface MoonrakerStatusPayload {
     print_duration?: number;
     total_duration?: number;
     filament_used?: number;
+    /** Error/warning message populated by Klipper on state='error'. */
+    message?: string;
     info?: unknown;
   };
   display_status?: {
@@ -127,24 +129,45 @@ function mapPrintStatsState(state: string | undefined): StatusEventKind | null {
     case 'complete':
       return 'completed';
     case 'cancelled':
+      return 'cancelled';    // V2-005f-CF-5a T_a2: distinct from error
     case 'error':
-      return 'failed';
+      return 'firmware_error'; // V2-005f-CF-5a T_a2: Klipper MCU / heater errors
     default:
       return null;
   }
 }
 
-function mapHistoryStatus(status: string | undefined): StatusEventKind | null {
+interface HistoryStatusMapping {
+  kind: StatusEventKind;
+  errorCode?: string;
+}
+
+/**
+ * V2-005f-CF-5a T_a2: map Moonraker history job status → typed StatusEventKind.
+ *
+ * - cancelled / interrupted  → 'cancelled' (operator-intentional stops)
+ * - klippy_shutdown / klippy_disconnect / server_exit → 'firmware_error' + errorCode
+ * - error                    → 'firmware_error' (no code; Klipper-level fault)
+ * - completed                → 'completed'
+ * - anything else            → 'failed' (unknown terminal state)
+ */
+function mapHistoryStatus(status: string | undefined): HistoryStatusMapping | null {
   switch (status) {
     case 'completed':
-      return 'completed';
+      return { kind: 'completed' };
     case 'cancelled':
+    case 'interrupted':
+      return { kind: 'cancelled' };
     case 'klippy_shutdown':
-    case 'error':
+    case 'klippy_disconnect':
     case 'server_exit':
-      return 'failed';
-    default:
+      return { kind: 'firmware_error', errorCode: status };
+    case 'error':
+      return { kind: 'firmware_error' };
+    case undefined:
       return null;
+    default:
+      return { kind: 'failed' };
   }
 }
 
@@ -200,6 +223,11 @@ function buildEventFromStatus(
   const display = payload.display_status ?? {};
   const sd = payload.virtual_sdcard ?? {};
   const progressSrc = typeof display.progress === 'number' ? display.progress : sd.progress;
+  // V2-005f-CF-5a T_a2: populate errorMessage from print_stats.message on firmware_error.
+  const errorMessage =
+    kind === 'firmware_error' && typeof printStats.message === 'string' && printStats.message !== ''
+      ? printStats.message
+      : undefined;
   return {
     kind,
     remoteJobRef: typeof printStats.filename === 'string' ? printStats.filename : '',
@@ -208,22 +236,24 @@ function buildEventFromStatus(
         ? Math.round(progressSrc * 100)
         : undefined,
     remainingMin: undefined,
+    errorMessage,
     rawPayload: payload,
     occurredAt,
   };
 }
 
 function buildEventFromHistory(
-  kind: StatusEventKind,
+  mapping: HistoryStatusMapping,
   job: MoonrakerHistoryJob,
   rawPayload: unknown,
   occurredAt: Date,
 ): StatusEvent {
   return {
-    kind,
+    kind: mapping.kind,
     remoteJobRef: typeof job.filename === 'string' ? job.filename : '',
-    progressPct: kind === 'completed' ? 100 : undefined,
+    progressPct: mapping.kind === 'completed' ? 100 : undefined,
     remainingMin: undefined,
+    errorCode: mapping.errorCode,
     rawPayload,
     occurredAt,
   };
@@ -309,9 +339,9 @@ export function createMoonrakerSubscriber(
         if (!entry || typeof entry !== 'object') return;
         if (entry.action !== 'finished') return;
         const job = entry.job ?? {};
-        const kind = mapHistoryStatus(job.status);
-        if (kind === null) return;
-        helpers.emitProtocolEvent(buildEventFromHistory(kind, job, entry, new Date()));
+        const mapping = mapHistoryStatus(job.status);
+        if (mapping === null) return;
+        helpers.emitProtocolEvent(buildEventFromHistory(mapping, job, entry, new Date()));
       }
 
       function handleMessage(data: unknown): void {

@@ -56,7 +56,11 @@ import type {
   StatusSubscriber,
   StatusSourceProtocol,
 } from '../../src/forge/status/types';
-import { createForgeStatusWorker } from '../../src/workers/forge-status-worker';
+import {
+  createForgeStatusWorker,
+  computeBootStaggerOffset,
+  BOOT_STAGGER_WINDOW_MS,
+} from '../../src/workers/forge-status-worker';
 
 const DB_PATH = '/tmp/lootgoblin-forge-status-worker.db';
 const DB_URL = `file:${DB_PATH}`;
@@ -196,11 +200,21 @@ function makeTimerHarness(): TimerHarness {
         .sort((a, b) => a[1].deadline - b[1].deadline);
       for (const [id, t] of ready) {
         timers.delete(id);
-        t.cb();
+        // The cb's nominal return type is void, but T_h2 boot-stagger
+        // callbacks kick off async IIFEs whose work must complete before
+        // the next callback fires (two rows targeting the same printer
+        // share an offset and would race the subs.set in startSubscription
+        // otherwise). Capture any returned thenable and await it.
+        const result = (t.cb as () => unknown)();
+        if (result && typeof (result as Promise<void>).then === 'function') {
+          await result;
+        }
         // Yield to any microtasks the timer scheduled (subscriber.stop is
-        // async; teardown awaits it).
-        await Promise.resolve();
-        await Promise.resolve();
+        // async; teardown awaits it). Multiple setImmediate yields give
+        // the async IIFE's awaits (loadPrinter, getCredential, start)
+        // room to resolve in the recover() integration tests.
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
       }
     },
     pending() {
@@ -491,8 +505,31 @@ describe('forge-status-worker — V2-005f-T_dcf9', () => {
       status: 'completed',
     });
 
-    const worker = createForgeStatusWorker({ registry, dbUrl: DB_URL });
+    // V2-005f-CF-4 T_h2: recover() now schedules notifyDispatched calls
+    // via setTimer with a hash(printerId)%30s stagger offset. Inject the
+    // timer harness and flush past the full window so all scheduled
+    // callbacks fire before we assert subscription counts.
+    const timers = makeTimerHarness();
+    const worker = createForgeStatusWorker({
+      registry,
+      dbUrl: DB_URL,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
     await worker.recover();
+    // Flush the full stagger window (30 s) so every offset has fired,
+    // then yield to macrotasks so the async notifyDispatched bodies
+    // (loadPrinter + getCredential + subscriber.start) complete.
+    // Multiple yields needed because two p1 rows share the same stagger
+    // offset (same printerId → same hash) and fire in the same harness
+    // batch — the first must fully resolve startSubscription (which
+    // sets the subs map) before the second runs, so the second hits
+    // the "existing subscription" reuse branch instead of creating a
+    // duplicate FakeSubscriber.
+    await timers.advance(BOOT_STAGGER_WINDOW_MS);
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setImmediate(r));
+    }
 
     expect(factory.vended).toHaveLength(2);
     expect(worker.activeCount()).toBe(2);
@@ -594,5 +631,102 @@ describe('forge-status-worker — V2-005f-T_dcf9', () => {
     expect(worker.isWatching(printerId)).toBe(true);
     await timers.advance(1_000);
     expect(worker.isWatching(printerId)).toBe(false);
+  });
+});
+
+describe('computeBootStaggerOffset() — V2-005f-CF-4 T_h2', () => {
+  it('exports BOOT_STAGGER_WINDOW_MS = 30000', () => {
+    expect(BOOT_STAGGER_WINDOW_MS).toBe(30_000);
+  });
+
+  it('is deterministic for the same input', () => {
+    const a = computeBootStaggerOffset('printer-id-123');
+    const b = computeBootStaggerOffset('printer-id-123');
+    expect(a).toBe(b);
+  });
+
+  it('returns values in [0, BOOT_STAGGER_WINDOW_MS)', () => {
+    const sample = computeBootStaggerOffset('printer-id-xyz');
+    expect(sample).toBeGreaterThanOrEqual(0);
+    expect(sample).toBeLessThan(BOOT_STAGGER_WINDOW_MS);
+  });
+
+  it('distributes 1000 unique inputs across the window', () => {
+    const offsets = Array.from({ length: 1000 }, (_, i) =>
+      computeBootStaggerOffset(`printer-${i}`),
+    );
+    const unique = new Set(offsets);
+    expect(unique.size).toBeGreaterThan(900);
+    const min = Math.min(...offsets);
+    const max = Math.max(...offsets);
+    // First quartile populated.
+    expect(min).toBeLessThan(BOOT_STAGGER_WINDOW_MS / 4);
+    // Last quartile populated.
+    expect(max).toBeGreaterThan((BOOT_STAGGER_WINDOW_MS * 3) / 4);
+  });
+
+  it('returns 0 for empty string (defensive)', () => {
+    expect(computeBootStaggerOffset('')).toBe(0);
+  });
+});
+
+describe('recover() boot-stagger integration — V2-005f-CF-4 T_h2', () => {
+  it('schedules each notifyDispatched at hash(printerId) % 30000ms offset; flush triggers all calls', async () => {
+    const { registry, factory } = makeRegistry();
+    const ownerId = await seedUser();
+    const printerIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const pid = await seedPrinter(ownerId);
+      printerIds.push(pid);
+      await seedDispatchJobOnPrinter({ ownerId, printerId: pid });
+    }
+
+    const setTimerCalls: Array<{ delay: number; cb: () => void }> = [];
+    const setTimerMock = (cb: () => void, delay: number): unknown => {
+      const handle = setTimerCalls.length + 1;
+      setTimerCalls.push({ delay, cb });
+      return handle;
+    };
+    const clearTimerMock = (_h: unknown): void => {
+      // No-op: recover() schedules but never clears its boot-stagger
+      // timers. (clearTimer is only used by the teardown grace path.)
+    };
+
+    const worker = createForgeStatusWorker({
+      registry,
+      dbUrl: DB_URL,
+      setTimeout: setTimerMock,
+      clearTimeout: clearTimerMock,
+    });
+
+    await worker.recover();
+
+    // 5 setTimer calls — one per dispatched row.
+    expect(setTimerCalls.length).toBe(5);
+    for (const call of setTimerCalls) {
+      expect(call.delay).toBeGreaterThanOrEqual(0);
+      expect(call.delay).toBeLessThan(BOOT_STAGGER_WINDOW_MS);
+    }
+
+    // No subscription yet — timers haven't fired.
+    expect(worker.activeCount()).toBe(0);
+    expect(factory.vended).toHaveLength(0);
+
+    // Each scheduled delay must equal the deterministic stagger offset
+    // for some printer in the recovered set.
+    const expectedOffsets = printerIds
+      .map((pid) => computeBootStaggerOffset(pid))
+      .sort((a, b) => a - b);
+    const actualOffsets = setTimerCalls.map((c) => c.delay).sort((a, b) => a - b);
+    expect(actualOffsets).toEqual(expectedOffsets);
+
+    // Fire all scheduled callbacks.
+    for (const call of setTimerCalls) call.cb();
+    // Settle async notifyDispatched bodies.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(factory.vended).toHaveLength(5);
+    expect(worker.activeCount()).toBe(5);
   });
 });

@@ -52,6 +52,17 @@ import type {
 } from '../types';
 
 // ---------------------------------------------------------------------------
+// Named constants (T_a6's dedup logic will key on these)
+// ---------------------------------------------------------------------------
+
+/**
+ * Operator-cancel synthetic event kind is the standard 'cancelled' StatusEventKind.
+ * This constant is kept here so T_a6's dedup logic can reference it without
+ * depending on the internal detection logic.
+ */
+const OPERATOR_CANCEL_DETECTED = 'cancelled' as const;
+
+// ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
 
@@ -92,6 +103,19 @@ interface BambuAmsBlock {
   ams?: BambuAmsUnitPayload[];
 }
 
+interface BambuHmsEntry {
+  /** Bambu attribute identifier — 32-bit unsigned int. */
+  attr?: number;
+  /** Bambu HMS code — 32-bit unsigned int. */
+  code?: number;
+  /**
+   * Severity tier: 0 = info/blue, 1 = warning/orange, 2+ = error/red.
+   * Per Bambu firmware spec; may be a float in unusual builds — Math.floor
+   * before mapping.
+   */
+  level?: number;
+}
+
 interface BambuPushallPrint {
   command?: string;
   msg?: number;
@@ -103,6 +127,19 @@ interface BambuPushallPrint {
   total_layer_num?: number;
   subtask_name?: string;
   ams?: BambuAmsBlock;
+  /**
+   * V2-005f-CF-5a: Bambu firmware-reported error code on gcode_state=FAILED.
+   * 32-bit unsigned integer; decimal string in StatusEvent.errorCode so
+   * operators can look it up in Bambu firmware logs.
+   */
+  print_error?: number;
+  /**
+   * V2-005f-CF-5a: Bambu Health Monitoring System codes. One entry per active
+   * alert; firmware re-emits the full list on every pushall (~1 Hz) until the
+   * condition clears. T_a6's dedup logic downstream handles the repeat
+   * suppression — this subscriber emits one 'warning' per entry per pushall.
+   */
+  hms?: BambuHmsEntry[];
 }
 
 interface BambuPushallEnvelope {
@@ -116,7 +153,11 @@ interface BambuPushallEnvelope {
 /**
  * Map a Bambu `gcode_state` enum value to a unified `StatusEventKind`.
  * Returns null when the state should not surface a protocol event (e.g.
- * `IDLE`).
+ * `IDLE` — the operator-cancel detection for PAUSE→IDLE is handled separately
+ * in the subscriber closure, not here).
+ *
+ * V2-005f-CF-5a: FAILED → 'firmware_error' (was 'failed') to distinguish
+ * firmware-detected faults from operator cancellations.
  */
 export function mapBambuState(state: string | undefined): StatusEventKind | null {
   if (!state) return null;
@@ -132,10 +173,37 @@ export function mapBambuState(state: string | undefined): StatusEventKind | null
     case 'FINISH':
       return 'completed';
     case 'FAILED':
-      return 'failed';
+      return 'firmware_error'; // CF-5a: was 'failed' — firmware fault, not operator cancel
     default:
       return null;
   }
+}
+
+/**
+ * V2-005f-CF-5a: Map a Bambu HMS level integer to a severity tier.
+ * Level is defensively coerced via Math.floor to handle unexpected floats.
+ *
+ *   0  → 'info'    (blue in Bambu UI)
+ *   1  → 'warning' (orange in Bambu UI)
+ *   2+ → 'error'   (red in Bambu UI)
+ */
+export function hmsLevelToSeverity(level: number): 'info' | 'warning' | 'error' {
+  const tier = Math.floor(level);
+  if (tier <= 0) return 'info';
+  if (tier === 1) return 'warning';
+  return 'error';
+}
+
+/**
+ * V2-005f-CF-5a: Format a Bambu HMS attr+code pair as a zero-padded hex
+ * string `XXXX-XXXX-XXXX-XXXX` (attr split into two 4-hex groups, code split
+ * into two 4-hex groups). T_a6's dedup logic uses this string as the
+ * unique key for a warning within a dispatch job.
+ */
+export function formatHmsCode(attr: number, code: number): string {
+  const hi = attr.toString(16).padStart(8, '0').toUpperCase();
+  const lo = code.toString(16).padStart(8, '0').toUpperCase();
+  return `${hi.slice(0, 4)}-${hi.slice(4)}-${lo.slice(0, 4)}-${lo.slice(4)}`;
 }
 
 /**
@@ -173,13 +241,19 @@ export function extractAmsSlots(ams: BambuAmsBlock | undefined): MeasuredConsump
 /**
  * Build a unified `StatusEvent` from a parsed Bambu pushall payload + a
  * resolved kind. `measuredConsumption` is populated only on terminal kinds
- * (`completed` / `failed`) to match the contract documented on
+ * (`completed` / `firmware_error`) to match the contract documented on
  * `MeasuredConsumptionSlot`.
+ *
+ * V2-005f-CF-5a: `printError` is the raw `print_error` integer from the
+ * pushall payload on FAILED states; it is stringified as decimal and stored
+ * in `errorCode` so operators can look it up in Bambu firmware logs.
+ * Zero is treated as "no error code reported" and omitted.
  */
 export function buildBambuEvent(
   envelope: BambuPushallEnvelope,
   kind: StatusEventKind,
   occurredAt: Date,
+  printError?: number,
 ): StatusEvent {
   const print = envelope.print ?? {};
   const remoteJobRef = typeof print.subtask_name === 'string' ? print.subtask_name : '';
@@ -211,8 +285,15 @@ export function buildBambuEvent(
   if (layerNum !== undefined) event.layerNum = layerNum;
   if (totalLayers !== undefined) event.totalLayers = totalLayers;
 
+  // V2-005f-CF-5a: populate errorCode from print_error on firmware_error events.
+  // Zero means "no error code" — omit rather than stringifying '0'.
+  if (typeof printError === 'number' && printError !== 0) {
+    event.errorCode = String(printError);
+  }
+
   // Per-slot consumption only on terminal events.
-  if (kind === 'completed' || kind === 'failed') {
+  // CF-5a: include firmware_error (was failed) — AMS data is still valid at FAILED state.
+  if (kind === 'completed' || kind === 'firmware_error') {
     const slots = extractAmsSlots(print.ams);
     if (slots.length > 0) event.measuredConsumption = slots;
   }
@@ -310,6 +391,17 @@ export function createBambuSubscriber(opts: BambuSubscriberOpts): StatusSubscrib
       let socketOpened = false;
       let firstPushallSeen = false;
       let closedReported = false;
+      /**
+       * V2-005f-CF-5a: Per-instance state for operator-cancel detection.
+       * Bambu does not emit a dedicated 'CANCELLED' gcode_state — the operator
+       * pressing STOP while paused results in PAUSE → IDLE without a FINISH in
+       * between. We detect this state pair and synthesise a 'cancelled' event.
+       *
+       * This is closure-local (one variable per createBambuSubscriber() call),
+       * which is correct because createBambuSubscriber() builds one instance per
+       * printer subscription. No Map keyed by printerId is needed.
+       */
+      let lastGcodeState: string | null = null;
 
       const reportClose = (): void => {
         if (closedReported) return;
@@ -319,6 +411,10 @@ export function createBambuSubscriber(opts: BambuSubscriberOpts): StatusSubscrib
 
       function onMqttMessage(receivedTopic: string, payload: unknown): void {
         // Ignore traffic on other topics (e.g. printer-side request echoes).
+        // NOTE: Bambu's MQTT broker delivers full pushall objects regardless of
+        // the subscribed topic; there is no field-level broker-side filtering.
+        // The topic filter here is purely to ignore the printer-side echo on
+        // `device/<serial>/request` and similar non-report topics.
         if (receivedTopic !== topic) return;
         const envelope = decodeMqttPayload(payload);
         if (envelope === null) return;
@@ -331,9 +427,52 @@ export function createBambuSubscriber(opts: BambuSubscriberOpts): StatusSubscrib
           helpers.onTransportOpen();
         }
 
-        const kind = mapBambuState(print.gcode_state);
-        if (kind === null) return;
-        helpers.emitProtocolEvent(buildBambuEvent(envelope, kind, new Date()));
+        const currentGcodeState = print.gcode_state;
+
+        // V2-005f-CF-5a: Operator-cancel detection (state-pair).
+        // PAUSE → IDLE without an intervening FINISH means the operator
+        // pressed STOP from the paused state. Emit 'cancelled' before
+        // processing the IDLE state (which produces no event from mapBambuState).
+        if (lastGcodeState === 'PAUSE' && currentGcodeState === 'IDLE') {
+          const remoteJobRef =
+            typeof print.subtask_name === 'string' ? print.subtask_name : '';
+          helpers.emitProtocolEvent({
+            kind: OPERATOR_CANCEL_DETECTED,
+            remoteJobRef,
+            occurredAt: new Date(),
+            rawPayload: envelope,
+          });
+        }
+        lastGcodeState = currentGcodeState ?? null;
+
+        const kind = mapBambuState(currentGcodeState);
+        if (kind !== null) {
+          // V2-005f-CF-5a: pass print_error to buildBambuEvent for firmware_error events.
+          const printError =
+            kind === 'firmware_error' &&
+            typeof print.print_error === 'number' &&
+            Number.isFinite(print.print_error)
+              ? print.print_error
+              : undefined;
+          helpers.emitProtocolEvent(buildBambuEvent(envelope, kind, new Date(), printError));
+        }
+
+        // V2-005f-CF-5a: HMS array — one 'warning' event per entry per pushall.
+        // T_a6 downstream deduplicates repeating codes (Bambu re-emits the full
+        // hms list on every pushall ~1 Hz until the condition clears), so this
+        // subscriber stays simple and emits every occurrence.
+        const remoteJobRef = typeof print.subtask_name === 'string' ? print.subtask_name : '';
+        for (const hms of (print.hms ?? [])) {
+          if (typeof hms.attr !== 'number' || typeof hms.code !== 'number') continue;
+          helpers.emitProtocolEvent({
+            kind: 'warning',
+            remoteJobRef,
+            occurredAt: new Date(),
+            errorCode: formatHmsCode(hms.attr, hms.code),
+            severity: hmsLevelToSeverity(hms.level ?? 0),
+            rawPayload: hms,
+          });
+        }
       }
 
       client.on('connect', () => {

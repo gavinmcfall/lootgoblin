@@ -214,7 +214,8 @@ describe('V2-005f-T_dcf6 mapBambuState', () => {
     expect(mapBambuState('RUNNING')).toBe('progress');
     expect(mapBambuState('PAUSE')).toBe('paused');
     expect(mapBambuState('FINISH')).toBe('completed');
-    expect(mapBambuState('FAILED')).toBe('failed');
+    // CF-5a: FAILED → firmware_error (was 'failed')
+    expect(mapBambuState('FAILED')).toBe('firmware_error');
   });
 
   it('returns null for unknown / undefined values', () => {
@@ -500,7 +501,7 @@ describe('V2-005f-T_dcf6 createBambuSubscriber', () => {
     await sub.stop();
   });
 
-  it('emits failed on FAILED with measuredConsumption', async () => {
+  it('emits firmware_error on FAILED with measuredConsumption (CF-5a: was failed)', async () => {
     const { sub, promise } = startSubscriber();
     await promise;
     const client = factoryRig.clients[0]!;
@@ -516,7 +517,7 @@ describe('V2-005f-T_dcf6 createBambuSubscriber', () => {
       ),
     );
     expect(events).toHaveLength(1);
-    expect(events[0]!.kind).toBe('failed');
+    expect(events[0]!.kind).toBe('firmware_error');
     expect(events[0]!.measuredConsumption).toHaveLength(1);
     await sub.stop();
   });
@@ -740,6 +741,389 @@ describe('V2-005f-T_dcf6 createBambuSubscriber', () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.kind).toBe('progress');
     expect(events[0]!.measuredConsumption).toBeUndefined();
+    await sub.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF-5a Bambu — T_a4: gcode_state distinctions + HMS codes
+// ---------------------------------------------------------------------------
+
+describe('CF-5a Bambu — T_a4', () => {
+  let factoryRig: FactoryRig;
+  let timerRig: TimerRig;
+  let events: StatusEvent[];
+
+  beforeEach(() => {
+    factoryRig = makeFactoryRig();
+    timerRig = makeTimerRig();
+    events = [];
+  });
+
+  function startSubscriber() {
+    const sub = createBambuSubscriber({
+      printerKind: 'bambu_x1c',
+      mqttFactory: factoryRig.factory,
+      setTimeout: timerRig.setTimer,
+      clearTimeout: timerRig.clearTimer,
+      reconnectBackoffMs: [10, 20, 30],
+    });
+    return {
+      sub,
+      promise: sub.start(
+        makePrinter(),
+        makeCredential(),
+        (e) => events.push(e),
+      ),
+    };
+  }
+
+  function connectAndFireMessage(client: FakeMqtt, printOverrides: Record<string, unknown>): void {
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall(printOverrides)),
+    );
+  }
+
+  // ---- FAILED + print_error → firmware_error with errorCode ----
+
+  it('maps gcode_state=FAILED with print_error → kind=firmware_error with errorCode', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    connectAndFireMessage(client, {
+      gcode_state: 'FAILED',
+      subtask_name: 'job.gcode',
+      print_error: 117473284,
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBe('117473284');
+    await sub.stop();
+  });
+
+  it('maps gcode_state=FAILED with no print_error → firmware_error with no errorCode', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    connectAndFireMessage(client, {
+      gcode_state: 'FAILED',
+      subtask_name: 'job.gcode',
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('maps gcode_state=FAILED with print_error=0 → errorCode is undefined (zero means no error)', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    connectAndFireMessage(client, {
+      gcode_state: 'FAILED',
+      subtask_name: 'job.gcode',
+      print_error: 0,
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBeUndefined();
+    await sub.stop();
+  });
+
+  // ---- Operator cancel: PAUSE → IDLE sequence ----
+
+  it('detects operator pause+stop sequence (PAUSE → IDLE) → kind=cancelled', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+
+    // First pushall: PAUSE
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall({ gcode_state: 'PAUSE', subtask_name: 'job.gcode' })),
+    );
+    // Second pushall: IDLE (operator pressed STOP)
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall({ gcode_state: 'IDLE', subtask_name: 'job.gcode' })),
+    );
+
+    const cancelledEvents = events.filter((e) => e.kind === 'cancelled');
+    expect(cancelledEvents).toHaveLength(1);
+    await sub.stop();
+  });
+
+  it('PAUSE → FINISH (normal complete from pause) does NOT emit cancelled', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+
+    // PAUSE
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall({ gcode_state: 'PAUSE', subtask_name: 'job.gcode' })),
+    );
+    // FINISH (operator resumed and it completed)
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall({ gcode_state: 'FINISH', subtask_name: 'job.gcode' })),
+    );
+
+    expect(events.some((e) => e.kind === 'cancelled')).toBe(false);
+    expect(events.some((e) => e.kind === 'completed')).toBe(true);
+    await sub.stop();
+  });
+
+  it('RUNNING → IDLE (no prior PAUSE) does NOT emit cancelled', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+
+    // RUNNING
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall({ gcode_state: 'RUNNING', subtask_name: 'job.gcode', mc_percent: 50 })),
+    );
+    // IDLE without prior PAUSE
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall({ gcode_state: 'IDLE', subtask_name: 'job.gcode' })),
+    );
+
+    expect(events.some((e) => e.kind === 'cancelled')).toBe(false);
+    await sub.stop();
+  });
+
+  // ---- HMS array: warning events with severity ----
+
+  it('emits warning event for HMS code with severity from tier (level=1 → warning)', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'RUNNING',
+          subtask_name: 'job.gcode',
+          hms: [{ attr: 0x0C000300, code: 0x00030008, level: 1 }],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]!.errorCode).toBe('0C00-0300-0003-0008');
+    expect(warnEvents[0]!.severity).toBe('warning');
+    await sub.stop();
+  });
+
+  it('blue HMS tier (level=0) → severity=info', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'RUNNING',
+          subtask_name: 'job.gcode',
+          hms: [{ attr: 0x05000300, code: 0x00010001, level: 0 }],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]!.severity).toBe('info');
+    await sub.stop();
+  });
+
+  it('orange HMS tier (level=1) → severity=warning', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'RUNNING',
+          subtask_name: 'job.gcode',
+          hms: [{ attr: 0x05000300, code: 0x00010001, level: 1 }],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]!.severity).toBe('warning');
+    await sub.stop();
+  });
+
+  it('red HMS tier (level=2) → severity=error', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'RUNNING',
+          subtask_name: 'job.gcode',
+          hms: [{ attr: 0x05000300, code: 0x00010001, level: 2 }],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]!.severity).toBe('error');
+    await sub.stop();
+  });
+
+  it('red HMS tier (level=3) → severity=error (any level >= 2 is error)', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'RUNNING',
+          subtask_name: 'job.gcode',
+          hms: [{ attr: 0x05000300, code: 0x00010001, level: 3 }],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]!.severity).toBe('error');
+    await sub.stop();
+  });
+
+  it('float level is coerced via Math.floor (level=1.7 → 1 → warning)', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'RUNNING',
+          subtask_name: 'job.gcode',
+          hms: [{ attr: 0x05000300, code: 0x00010001, level: 1.7 }],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]!.severity).toBe('warning');
+    await sub.stop();
+  });
+
+  it('multiple HMS entries in one pushall → one warning event per entry', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'RUNNING',
+          subtask_name: 'job.gcode',
+          hms: [
+            { attr: 0x05000300, code: 0x00010001, level: 0 },
+            { attr: 0x0C000300, code: 0x00030008, level: 1 },
+            { attr: 0x07000200, code: 0x00020003, level: 2 },
+          ],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(3);
+    expect(warnEvents[0]!.severity).toBe('info');
+    expect(warnEvents[1]!.severity).toBe('warning');
+    expect(warnEvents[2]!.severity).toBe('error');
+    await sub.stop();
+  });
+
+  it('empty hms array → no warning events emitted', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall({ gcode_state: 'RUNNING', subtask_name: 'job.gcode', hms: [] })),
+    );
+    expect(events.filter((e) => e.kind === 'warning')).toHaveLength(0);
+    await sub.stop();
+  });
+
+  it('missing hms field → no warning events emitted', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(pushall({ gcode_state: 'RUNNING', subtask_name: 'job.gcode' })),
+    );
+    expect(events.filter((e) => e.kind === 'warning')).toHaveLength(0);
+    await sub.stop();
+  });
+
+  it('HMS entry with non-numeric attr/code is silently skipped', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'RUNNING',
+          subtask_name: 'job.gcode',
+          hms: [
+            { attr: 'not-a-number', code: 0x00010001, level: 1 },
+            { attr: 0x05000300, code: null, level: 1 },
+            { attr: 0x07000200, code: 0x00020003, level: 2 }, // valid — should emit
+          ],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]!.severity).toBe('error');
+    await sub.stop();
+  });
+
+  it('HMS warning during IDLE (no active job) → remoteJobRef is empty string', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const client = factoryRig.clients[0]!;
+    client.fireConnect();
+    // IDLE with HMS — printer-level health code, no active job
+    client.fireMessage(
+      'device/01ABCDEFGHIJKL/report',
+      JSON.stringify(
+        pushall({
+          gcode_state: 'IDLE',
+          hms: [{ attr: 0x05000300, code: 0x00010001, level: 1 }],
+        }),
+      ),
+    );
+    const warnEvents = events.filter((e) => e.kind === 'warning');
+    expect(warnEvents).toHaveLength(1);
+    expect(warnEvents[0]!.remoteJobRef).toBe('');
     await sub.stop();
   });
 });

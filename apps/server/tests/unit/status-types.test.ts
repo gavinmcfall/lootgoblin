@@ -26,6 +26,7 @@ import {
 
 describe('V2-005f-T_dcf3 status types', () => {
   it('re-exports STATUS_EVENT_KINDS from schema.forge', () => {
+    // V2-005f-CF-5a-T_a1 extended from 8 → 11 values.
     expect(STATUS_EVENT_KINDS).toEqual([
       'started',
       'progress',
@@ -33,6 +34,9 @@ describe('V2-005f-T_dcf3 status types', () => {
       'resumed',
       'completed',
       'failed',
+      'cancelled',
+      'firmware_error',
+      'warning',
       'reconnected',
       'unreachable',
     ]);

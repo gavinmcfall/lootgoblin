@@ -106,6 +106,12 @@ export interface StatusEvent {
   measuredConsumption?: MeasuredConsumptionSlot[];
   rawPayload: unknown;
   occurredAt: Date;
+  /** V2-005f-CF-5a: protocol-native error/warning code. */
+  errorCode?: string;
+  /** V2-005f-CF-5a: operator-readable text. */
+  errorMessage?: string;
+  /** V2-005f-CF-5a: severity tier; only meaningful when kind is 'warning' or 'firmware_error'. */
+  severity?: 'info' | 'warning' | 'error';
 }
 
 /**

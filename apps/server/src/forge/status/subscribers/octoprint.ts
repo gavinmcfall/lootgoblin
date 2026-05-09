@@ -239,6 +239,14 @@ interface OctoprintPluginPayload {
 }
 
 /**
+ * Error code emitted when OctoPrint reports a `PrintCancelling` with
+ * `firmwareError=true`. Module-internal: T_a6's dedup logic compares
+ * errorCodes, so a single named constant means a one-edit change if this
+ * value ever needs to shift. Not exported — tests reference the literal.
+ */
+const FIRMWARE_CANCEL_CODE = 'firmware-cancel' as const;
+
+/**
  * Conservative allowlist of plugin identifiers whose events we map to
  * StatusEvent 'warning'. Unknown plugins are silently dropped to the
  * audit-only path (rawPayload only, no emitted event).
@@ -526,7 +534,7 @@ export function createOctoprintSubscriber(
           if (evt.type === 'PrintCancelling' && evt.payload?.firmwareError === true) {
             helpers.emitProtocolEvent(
               buildEventFromEvent('cancelled', evt, inner, now, {
-                errorCode: 'firmware-cancel',
+                errorCode: FIRMWARE_CANCEL_CODE,
               }),
             );
             return;
@@ -554,8 +562,11 @@ export function createOctoprintSubscriber(
                 extras.errorMessage = errorStr;
               }
               // Any consequence means the error was severe enough to require
-              // firmware action — mark severity='error'.
-              if (evt.payload?.consequence !== undefined) {
+              // firmware action — mark severity='error'. Falsy guard catches
+              // undefined, null, and empty string consistently — OctoPrint's
+              // real consequence enum values are non-empty strings like
+              // 'disconnect' and 'cancel', so realistic events still trigger.
+              if (evt.payload?.consequence) {
                 extras.severity = 'error';
               }
             } else if (kind === 'firmware_error') {

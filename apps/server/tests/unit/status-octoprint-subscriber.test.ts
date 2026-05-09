@@ -734,6 +734,31 @@ describe('CF-5a OctoPrint event mapping — T_a3', () => {
     await sub.stop();
   });
 
+  it('maps event.type=Error without consequence → kind=firmware_error, severity=undefined', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        event: {
+          type: 'Error',
+          payload: {
+            error: 'Heater timeout',
+            reason: 'heater_timeout',
+            // no consequence — firmware kept running
+          },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'firmware_error');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('firmware_error');
+    expect(ev!.errorCode).toBe('heater_timeout');
+    expect(ev!.errorMessage).toBe('Heater timeout');
+    // No consequence → severity stays undefined.
+    expect(ev!.severity).toBeUndefined();
+    await sub.stop();
+  });
+
   it('maps PrintCancelling.firmwareError=true → kind=cancelled with errorCode=firmware-cancel', async () => {
     const { sub, ws } = await openSocket();
     ws.fireArrayFrame([
@@ -770,6 +795,27 @@ describe('CF-5a OctoPrint event mapping — T_a3', () => {
     expect(ev!.severity).toBe('warning');
     expect(ev!.errorCode).toBe('OctoPrint-Spool Manager/low_filament');
     expect(ev!.errorMessage).toBe('Less than 10g remaining');
+    await sub.stop();
+  });
+
+  it('plugin warning with no data.code → errorCode fallback to <plugin>/warning', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        plugin: {
+          plugin: 'OctoPrint-Spool Manager',
+          // no code — only message
+          data: { message: 'something happened' },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'warning');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('warning');
+    expect(ev!.errorCode).toBe('OctoPrint-Spool Manager/warning');
+    expect(ev!.errorMessage).toBe('something happened');
+    expect(ev!.severity).toBe('warning');
     await sub.stop();
   });
 

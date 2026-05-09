@@ -586,12 +586,25 @@ LG_TEST_MOONRAKER_HOST=voron.lan LG_TEST_MOONRAKER_API_KEY=$KEY \
 
 CI never sets these → tests are no-ops. Used by ops/dev to validate against actual hardware.
 
+### Reconnect storm hardening (CF-4)
+
+Two-tier mitigation prevents thundering-herd reconnect waves when N printers all hit a disconnect simultaneously (mass power cycle, network blip, lootgoblin restart):
+
+- **Per-subscriber jitter (±20%)** — every backoff interval gets randomized in `_reconnect-base.ts:jittered()`. The `[5s, 10s, 30s, 60s, 5min]` schedule becomes `[4–6s, 8–12s, 24–36s, 48–72s, 240–360s]` per attempt. For 100 printers at the 5s slot, attempts spread across a 4–6s window = ~50 reqs/s peak instead of 100 reqs/instant.
+- **Boot-recovery stagger (30s window)** — on lootgoblin restart, `forge-status-worker.recover()` queries all `dispatch_jobs WHERE status='dispatched'` and schedules each `notifyDispatched()` at `hash(printerId) % 30_000ms` offset (djb2). Spreads the boot burst over 30 seconds. For 100 printers: ~3.3 reqs/s aggregate boot rate. For 10 printers: ~0.3 reqs/s. Live dispatches (claim worker → onJobDispatched → notifyDispatched) stay immediate — claim-worker concurrency is already bounded ≤4 parallel.
+
+Both knobs are hardcoded constants (`RECONNECT_JITTER_PCT = 0.20`, `BOOT_STAGGER_WINDOW_MS = 30_000`). If real deployment evidence ever justifies tuning, V2-005f-CF-4-CF-A adds env-tunable overrides.
+
+**Carry-forwards:**
+- **CF-4-CF-A**: `FORGE_RECONNECT_JITTER_PCT` + `FORGE_BOOT_STAGGER_MS` env-tunable knobs (deferred until evidence)
+- **CF-4-CF-B**: `printers.active=false` should stop the status subscriber (today only the claim worker consults this flag)
+
 ### Carry-forwards
 
 - **V2-005f-CF-1**: Material loadout tracking — auto-populate `dispatch_jobs.materials_used[].material_id` from the printer's currently-loaded spool inventory (today operators set this manually). **Shipped — see V2-005f-CF-1 section below.**
 - **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival. **Shipped (V2-cleanup-batch-3-T2)** — see "Retention" sub-section above.
 - **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline. **Shipped (V2-cleanup-batch-3-T3)** — see "Adaptive polling — ChituNetwork" sub-section above for the OFFLINE state row + exponential-backoff details.
-- **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening.
+- **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening. **Shipped (V2-005f-CF-4)** — see "Reconnect storm hardening (CF-4)" sub-section above.
 - **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence.
 - **V2-005f-CF-6**: Playwright UI tests for status SSE streams (blocked on V2-009 UI scope).
 - **V2-005f-CF-7**: Encrypted CTB binary header parsing (today encrypted variants return null estimates).

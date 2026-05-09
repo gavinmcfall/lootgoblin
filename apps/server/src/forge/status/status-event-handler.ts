@@ -57,6 +57,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { logger } from '@/logger';
 import { getServerDb, schema } from '@/db/client';
 import { markCompleted, markFailed } from '@/forge/dispatch-state';
+import { dedupAndPersistWarning } from './warnings/dedup';
 import type { StatusEvent, StatusSourceProtocol } from './types';
 
 // ---------------------------------------------------------------------------
@@ -388,7 +389,47 @@ export function createStatusEventSink(
       return;
     }
 
-    // 3) Persist (INSERT status event + UPDATE cache columns).
+    // 3) Warning dedup (V2-005f-CF-5a T_a6).
+    //
+    // `warning` events with an errorCode are deduplicated via the
+    // `dispatch_warnings` table. The FIRST occurrence goes through the normal
+    // audit + SSE path (isFirst=true). Repeats bump `count + last_seen_at`
+    // and return early — no dispatch_status_events row, no bus emit.
+    //
+    // `warning` events WITHOUT an errorCode skip dedup entirely (they go
+    // through the normal path below). This covers rare OctoPrint
+    // `firmware_error` events that carry no specific code.
+    if (event.kind === 'warning' && event.errorCode) {
+      const protocol = derivePrinterProtocol(printerKind) ?? 'unknown';
+      try {
+        const { isFirst } = await dedupAndPersistWarning(
+          {
+            dispatchJobId,
+            errorCode: event.errorCode,
+            protocol,
+            severity: event.severity ?? 'warning',
+            message: event.errorMessage,
+            occurredAt: event.occurredAt,
+          },
+          { dbUrl: opts.dbUrl },
+        );
+        if (!isFirst) {
+          logger.debug(
+            { dispatchJobId, errorCode: event.errorCode },
+            'cf-5a: warning dedup hit, skipping audit/bus',
+          );
+          return;
+        }
+      } catch (err) {
+        logger.error(
+          { err, dispatchJobId, errorCode: event.errorCode },
+          'forge-status-sink: dedupAndPersistWarning threw — falling through to normal path',
+        );
+        // Fall through to normal persist + bus — better to duplicate than drop.
+      }
+    }
+
+    // 4) Persist (INSERT status event + UPDATE cache columns).
     try {
       await persistStatusEvent({
         printerId,
@@ -406,7 +447,7 @@ export function createStatusEventSink(
       // useful for live UI even if persistence raced.
     }
 
-    // 4) Live SSE bus broadcast (T_dcf12).
+    // 5) Live SSE bus broadcast (T_dcf12).
     if (deps.emitToBus) {
       try {
         deps.emitToBus(dispatchJobId, event);
@@ -418,7 +459,7 @@ export function createStatusEventSink(
       }
     }
 
-    // 5) Terminal handling.
+    // 6) Terminal handling.
     if (event.kind === 'completed' || event.kind === 'failed') {
       let transitioned = false;
       if (event.kind === 'completed') {
@@ -474,7 +515,7 @@ export function createStatusEventSink(
         }
       }
 
-      // 6) emitConsumption — only on a SUCCESSFUL completed transition.
+      // 7) emitConsumption — only on a SUCCESSFUL completed transition.
       if (transitioned && event.kind === 'completed' && deps.emitConsumption) {
         try {
           await deps.emitConsumption({ dispatchJobId, event });
@@ -486,7 +527,7 @@ export function createStatusEventSink(
         }
       }
 
-      // 7) notifyTerminal — fire whether or not we won the transition; the
+      // 8) notifyTerminal — fire whether or not we won the transition; the
       // worker's bookkeeping needs to drop the job from its activeJobs set
       // either way (a duplicate is a harmless delete).
       if (deps.notifyTerminal) {

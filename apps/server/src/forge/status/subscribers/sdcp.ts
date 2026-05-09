@@ -1,5 +1,5 @@
 /**
- * sdcp.ts — V2-005f-T_dcf7
+ * sdcp.ts — V2-005f-T_dcf7 + V2-005f-CF-5a-T_a5
  *
  * SDCP 3.0 (Elegoo Saturn / Mars families) status subscriber. Connects to the
  * printer's WebSocket at `ws://<ip>:3030/websocket`, sends a Cmd 0 topic
@@ -21,11 +21,25 @@
  *   - "Subscribed-and-ready" signal: the FIRST status message arriving on
  *     the printer's status topic. Only at that point do we call
  *     `helpers.onTransportOpen()`.
- *   - State mapping (`PrintInfo.Status`):
- *       0 — stop / idle  → no event
- *       1 — printing     → 'progress' (with progressPct from layer ratio)
- *       2 — complete     → 'completed'
- *       3 — fail         → 'failed'
+ *   - State mapping (`PrintInfo.Status`) — V2-005f-CF-5a-T_a5 (11-value):
+ *       0 — IDLE / stop     → no event
+ *       1 — PRINTING        → 'progress' (with progressPct from layer ratio)
+ *       2 — COMPLETE        → 'completed'
+ *       3 — FAIL            → 'firmware_error' (CF-5a: was 'failed')
+ *                             errorCode from ErrorStatusReason (SDCP_PRINT_CAUSE)
+ *       8 — STOPPED         → 'cancelled' (operator stop, NEW CF-5a)
+ *       9 — COMPLETE (alt)  → 'completed' (NEW CF-5a; SDCP has two complete codes)
+ *       other               → no event (null)
+ *   - Subscription / field-level filtering (FG-L4): SDCP WebSocket pushes FULL
+ *     Status + PrintInfo objects on every status frame — there is no field-level
+ *     subscription. All fields (including ErrorStatusReason) are present in
+ *     every push; client-side routing via mapSdcpStatus is sufficient.
+ *   - rawPayload convention: the full SdcpStatusPayload envelope (entire push
+ *     frame) is used as rawPayload. SDCP is a single-stream protocol — the
+ *     whole frame is the atomic unit. See buildSdcpEvent.
+ *   - severity: not set for SDCP firmware_error events — SDCP has no tiered
+ *     severity field analogous to Bambu's HMS level. Matches Moonraker T_a2
+ *     and OctoPrint T_a3 patterns.
  *
  * Reconnect / connectivity events are owned by `_reconnect-base.ts` — this
  * module only contributes the WebSocket transport, the keepalive ping timer,
@@ -88,6 +102,14 @@ interface SdcpPrintInfo {
   Filename?: string;
   TaskId?: string;
   RemainTime?: number;
+  /**
+   * SDCP_PRINT_CAUSE enum — root-cause code for FAIL (Status=3) events.
+   * 28+ values covering motor failures, bed adhesion, temp errors, resin-level
+   * warnings, and file errors. May be a string enum value or a numeric code
+   * depending on firmware version. Coerced to string in buildSdcpEvent.
+   * V2-005f-CF-5a: added to surface native error taxonomy.
+   */
+  ErrorStatusReason?: string | number;
 }
 
 interface SdcpStatusPayload {
@@ -104,17 +126,27 @@ interface SdcpStatusPayload {
 /**
  * Map SDCP `PrintInfo.Status` enum to a unified `StatusEventKind`. Returns
  * null when the state should not surface a protocol event (idle).
+ *
+ * V2-005f-CF-5a-T_a5: expanded from 4 → 6 cases to surface the 11-value
+ * SDCP status enum natively:
+ *   - Status=3 (FAIL)    → 'firmware_error' (was 'failed')
+ *   - Status=8 (STOPPED) → 'cancelled' (operator stop, NEW)
+ *   - Status=9 (COMPLETE alt) → 'completed' (NEW; SDCP has two complete codes)
  */
 export function mapSdcpStatus(status: number | undefined): StatusEventKind | null {
   switch (status) {
     case 0:
-      return null; // idle / stop
+      return null; // IDLE / stop
     case 1:
       return 'progress';
     case 2:
-      return 'completed';
+      return 'completed'; // COMPLETE
     case 3:
-      return 'failed';
+      return 'firmware_error'; // FAIL — CF-5a: was 'failed'
+    case 8:
+      return 'cancelled'; // STOPPED — CF-5a: operator stop
+    case 9:
+      return 'completed'; // COMPLETE (alt code) — CF-5a
     default:
       return null;
   }
@@ -124,6 +156,17 @@ export function mapSdcpStatus(status: number | undefined): StatusEventKind | nul
  * Build a unified `StatusEvent` from a parsed SDCP status payload + a
  * resolved kind. SDCP does not surface per-slot grams — `measuredConsumption`
  * is always omitted.
+ *
+ * rawPayload convention: the full SdcpStatusPayload envelope (entire push
+ * frame) is used as rawPayload. SDCP is a single-stream protocol; the whole
+ * frame is the atomic unit of status information.
+ *
+ * V2-005f-CF-5a-T_a5: populate errorCode from PrintInfo.ErrorStatusReason
+ * (SDCP_PRINT_CAUSE) on firmware_error events. String or numeric — coerced to
+ * decimal string via String(). No hex formatting (SDCP codes are small integers,
+ * not bitmask values like Bambu HMS). No errorMessage (SDCP has no separate
+ * human-readable description field in the spec). No severity (SDCP has no tiered
+ * severity field analogous to Bambu's HMS level).
  */
 export function buildSdcpEvent(
   payload: SdcpStatusPayload,
@@ -154,9 +197,21 @@ export function buildSdcpEvent(
         ? printInfo.TaskId
         : '';
 
+  // V2-005f-CF-5a: populate errorCode from SDCP_PRINT_CAUSE on firmware_error.
+  // String or numeric — coerce to decimal string. No hex formatting (SDCP codes
+  // are small integers, not bitmask values). Only set on firmware_error to keep
+  // the event shape clean for other kinds.
+  const errorCode =
+    kind === 'firmware_error' &&
+    (typeof printInfo.ErrorStatusReason === 'string' ||
+      typeof printInfo.ErrorStatusReason === 'number')
+      ? String(printInfo.ErrorStatusReason)
+      : undefined;
+
   const event: StatusEvent = {
     kind,
     remoteJobRef,
+    // rawPayload is the full Status envelope — the entire push frame.
     rawPayload: payload,
     occurredAt,
   };
@@ -164,6 +219,7 @@ export function buildSdcpEvent(
   if (layerNum !== undefined) event.layerNum = layerNum;
   if (totalLayers !== undefined) event.totalLayers = totalLayers;
   if (remainingMin !== undefined) event.remainingMin = remainingMin;
+  if (errorCode !== undefined) event.errorCode = errorCode;
   return event;
 }
 

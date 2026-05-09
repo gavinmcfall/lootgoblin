@@ -13,6 +13,7 @@ import {
   mapBambuState,
   extractAmsSlots,
   buildBambuEvent,
+  formatHmsCode,
 } from '@/forge/status/subscribers/bambu';
 import type {
   MqttClientLike,
@@ -327,6 +328,23 @@ describe('V2-005f-T_dcf6 buildBambuEvent', () => {
       new Date(0),
     );
     expect(ev.measuredConsumption).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF-5a formatHmsCode — unsigned 32-bit coercion
+// ---------------------------------------------------------------------------
+
+describe('CF-5a formatHmsCode', () => {
+  it('coerces negative integers to unsigned 32-bit before formatting (-1 → FFFFFFFF)', () => {
+    // Without `>>> 0` coercion, (-1).toString(16) = '-1' and the resulting key
+    // would be malformed ('0000-00-1' etc.), permanently splitting one HMS
+    // condition into two dedup buckets in T_a6.
+    expect(formatHmsCode(-1, 0x00030008)).toBe('FFFF-FFFF-0003-0008');
+  });
+
+  it('handles max unsigned 32-bit values (0xFFFFFFFF on both fields)', () => {
+    expect(formatHmsCode(0xffffffff, 0xffffffff)).toBe('FFFF-FFFF-FFFF-FFFF');
   });
 });
 
@@ -853,6 +871,11 @@ describe('CF-5a Bambu — T_a4', () => {
 
     const cancelledEvents = events.filter((e) => e.kind === 'cancelled');
     expect(cancelledEvents).toHaveLength(1);
+    // Pin the full event shape — the cancelled event takes its own ad-hoc
+    // emission path (NOT via buildBambuEvent), so verify field completeness.
+    expect(cancelledEvents[0]!.remoteJobRef).toBe('job.gcode');
+    expect(cancelledEvents[0]!.rawPayload).toBeDefined();
+    expect(cancelledEvents[0]!.occurredAt).toBeInstanceOf(Date);
     await sub.stop();
   });
 

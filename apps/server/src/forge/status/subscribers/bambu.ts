@@ -52,17 +52,6 @@ import type {
 } from '../types';
 
 // ---------------------------------------------------------------------------
-// Named constants (T_a6's dedup logic will key on these)
-// ---------------------------------------------------------------------------
-
-/**
- * Operator-cancel synthetic event kind is the standard 'cancelled' StatusEventKind.
- * This constant is kept here so T_a6's dedup logic can reference it without
- * depending on the internal detection logic.
- */
-const OPERATOR_CANCEL_DETECTED = 'cancelled' as const;
-
-// ---------------------------------------------------------------------------
 // Public surface
 // ---------------------------------------------------------------------------
 
@@ -199,10 +188,16 @@ export function hmsLevelToSeverity(level: number): 'info' | 'warning' | 'error' 
  * string `XXXX-XXXX-XXXX-XXXX` (attr split into two 4-hex groups, code split
  * into two 4-hex groups). T_a6's dedup logic uses this string as the
  * unique key for a warning within a dispatch job.
+ *
+ * Both inputs are coerced to unsigned 32-bit integers via `>>> 0` before
+ * stringifying. JavaScript bitwise ops can yield signed integers from
+ * upstream parsing; without coercion `(-1).toString(16)` produces `'-1'` and
+ * the resulting key would be malformed (`'0000-00-1'` etc.), permanently
+ * splitting one HMS condition into two dedup buckets in T_a6.
  */
 export function formatHmsCode(attr: number, code: number): string {
-  const hi = attr.toString(16).padStart(8, '0').toUpperCase();
-  const lo = code.toString(16).padStart(8, '0').toUpperCase();
+  const hi = (attr >>> 0).toString(16).padStart(8, '0').toUpperCase();
+  const lo = (code >>> 0).toString(16).padStart(8, '0').toUpperCase();
   return `${hi.slice(0, 4)}-${hi.slice(4)}-${lo.slice(0, 4)}-${lo.slice(4)}`;
 }
 
@@ -400,6 +395,11 @@ export function createBambuSubscriber(opts: BambuSubscriberOpts): StatusSubscrib
        * This is closure-local (one variable per createBambuSubscriber() call),
        * which is correct because createBambuSubscriber() builds one instance per
        * printer subscription. No Map keyed by printerId is needed.
+       *
+       * NOTE: openTransport runs per reconnect attempt, so lastGcodeState resets
+       * to null on each reconnect. A PAUSE→disconnect→reconnect→IDLE sequence
+       * will miss the cancelled detection. Acceptable at QoS-0; T_a6 dedup is
+       * unaffected since no cancelled event is emitted in that case.
        */
       let lastGcodeState: string | null = null;
 
@@ -437,7 +437,7 @@ export function createBambuSubscriber(opts: BambuSubscriberOpts): StatusSubscrib
           const remoteJobRef =
             typeof print.subtask_name === 'string' ? print.subtask_name : '';
           helpers.emitProtocolEvent({
-            kind: OPERATOR_CANCEL_DETECTED,
+            kind: 'cancelled',
             remoteJobRef,
             occurredAt: new Date(),
             rawPayload: envelope,

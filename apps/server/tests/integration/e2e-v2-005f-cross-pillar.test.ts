@@ -101,6 +101,14 @@ import {
 } from '../../src/forge/status/status-event-handler';
 import { emitConsumptionForCompletion } from '../../src/forge/status/consumption-emitter';
 import { logger } from '../../src/logger';
+// CF-5b T_b4 followup: real Moonraker subscriber + WS rig for test 1, so the
+// `print_stats.filament_used` (mm) → grams conversion DB chain (printer_loadouts
+// → materials → filament_products) is exercised end-to-end.
+import { createMoonrakerSubscriber } from '../../src/forge/status/subscribers/moonraker';
+import type {
+  WsClientLike,
+  WsFactory,
+} from '../../src/forge/status/subscribers/_ws-client';
 import {
   createForgeStatusWorker,
   type ForgeStatusWorker,
@@ -269,6 +277,85 @@ function makeStubMoonrakerHandler(): DispatchHandler {
       return { kind: 'success', remoteFilename: 'cube.gcode' };
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// CF-5b T_b4 followup: Fake WebSocket rig for the real Moonraker subscriber.
+// Mirrors the pattern in tests/integration/status-moonraker-integration.test.ts
+// so test 1 can drive `notify_status_update` (filament_used: 6700 mm) +
+// `notify_history_changed` (action=finished, status=completed) through the
+// REAL subscriber. The subscriber's terminal-event handler then runs
+// `convertFilamentMmToGrams` against the seeded printer_loadouts → materials
+// → filament_products chain — exercising the full T_b1 conversion path.
+// ---------------------------------------------------------------------------
+
+type WsListener = (...args: unknown[]) => void;
+
+interface FakeWs extends WsClientLike {
+  __listeners: Record<string, WsListener[]>;
+  __sent: string[];
+  __closed: boolean;
+  fireOpen(): void;
+  fireMessage(json: unknown): void;
+  fireClose(): void;
+}
+
+function makeFakeWs(): FakeWs {
+  const listeners: Record<string, WsListener[]> = {};
+  const ws: FakeWs = {
+    __listeners: listeners,
+    __sent: [],
+    __closed: false,
+    readyState: 0,
+    on(event, listener) {
+      (listeners[event] ??= []).push(listener);
+      return ws;
+    },
+    off(event, listener) {
+      const arr = listeners[event];
+      if (arr) {
+        const idx = arr.indexOf(listener);
+        if (idx >= 0) arr.splice(idx, 1);
+      }
+      return ws;
+    },
+    send(data, cb) {
+      ws.__sent.push(data);
+      cb?.(undefined);
+    },
+    close() {
+      ws.__closed = true;
+    },
+    fireOpen() {
+      const arr = listeners.open ?? [];
+      for (const fn of arr.slice()) fn();
+    },
+    fireMessage(json) {
+      const data = JSON.stringify(json);
+      const arr = listeners.message ?? [];
+      for (const fn of arr.slice()) fn(data);
+    },
+    fireClose() {
+      const arr = listeners.close ?? [];
+      for (const fn of arr.slice()) fn();
+    },
+  };
+  return ws;
+}
+
+interface WsFactoryRig {
+  factory: WsFactory;
+  sockets: FakeWs[];
+}
+
+function makeWsFactoryRig(): WsFactoryRig {
+  const sockets: FakeWs[] = [];
+  const factory: WsFactory = () => {
+    const ws = makeFakeWs();
+    sockets.push(ws);
+    return ws;
+  };
+  return { factory, sockets };
 }
 
 // ---------------------------------------------------------------------------
@@ -1165,6 +1252,15 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
   //   closure that calls `persistStatusEvent` + bus emit. No test stubs for
   //   Phase C. The whole point is exercising the production path end-to-end.
   //
+  // Test 1 conversion-DB-chain coverage:
+  //   Test 1 drives `print_stats.filament_used: 6700` (mm) through the REAL
+  //   Moonraker subscriber + WS rig (NOT a stub), so convertFilamentMmToGrams
+  //   walks the real DB chain (printer_loadouts → materials → filament_products)
+  //   to produce the measured grams. A regression in the conversion (wrong
+  //   density lookup, formula error) would surface here. Tests 2/3/4 use the
+  //   simpler stub rig — protocol-conversion regressions for those protocols
+  //   live in the per-protocol integration tests.
+  //
   // Logger spy teardown (FG-L11):
   //   Each test that spies on logger.info restores mocks in afterEach. The
   //   outer afterEach already calls vi.restoreAllMocks(), so we are covered.
@@ -1233,26 +1329,62 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
     const printerId = uid();
     await db.insert(schema.printers).values({
       id: printerId, ownerId, kind: 'fdm_klipper', name: 'CF-5b Klipper',
+      // requiresAuth=false so the real Moonraker subscriber connects without
+      // needing a credential row (status-moonraker-real.test pattern).
       connectionConfig: { host: '192.168.1.50', port: 7125, scheme: 'http', requiresAuth: false, startPrint: true },
       active: true, createdAt: new Date(),
     });
 
-    // Material: PLA, estimated_grams=50. measured=~20g (ratio=0.40 < 0.50 threshold).
+    // -----------------------------------------------------------------------
+    // CF-5b T_b4 followup — seed the conversion DB chain end-to-end:
+    //   filament_products (PLA, density=1.24, diameterMm=1.75)
+    //   → materials.product_id → printer_loadouts (slot 0, current)
+    //
+    // The real Moonraker subscriber's terminal-event handler calls
+    // convertFilamentMmToGrams which walks this chain. With density=1.24 and
+    // diameter=1.75 (PLA defaults), filament_used=6700mm yields
+    //   grams = 6700 × π × (1.75/2)² / 1000 × 1.24 ≈ 19.98 g
+    // ratio = 19.98 / 50 = 0.3996 < 0.50 single-color threshold → warning.
+    // -----------------------------------------------------------------------
+    const productId = uid();
+    await db.insert(schema.filamentProducts).values({
+      id: productId,
+      brand: 'TestBrand',
+      subtype: 'PLA',
+      colors: ['#aabbcc'],
+      colorPattern: 'solid',
+      diameterMm: 1.75,
+      density: 1.24,
+      ownerId: null,
+      source: 'system:spoolmandb',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Material linked to the catalog product so convertFilamentMmToGrams
+    // resolves density+diameter via the catalog (densitySource='catalog').
     const matResult = await createMaterial(
       { ownerId, kind: 'filament_spool', brand: 'TestBrand', subtype: 'PLA',
-        colors: ['#aabbcc'], colorPattern: 'solid', initialAmount: 1000, unit: 'g' },
+        colors: ['#aabbcc'], colorPattern: 'solid', initialAmount: 1000, unit: 'g',
+        productId },
       { dbUrl: DB_URL },
     );
     if (!matResult.ok) throw new Error(`createMaterial failed: ${matResult.reason}`);
     const materialId = matResult.material.id;
 
-    // CF-5b T_b4 Klipper math:
-    //   6700mm × π × (1.75/2)² × 1.24 / 1000 ≈ 19.98g
-    // We pass `grams` directly because the stub bypasses the real Moonraker
-    // subscriber's convertFilamentMmToGrams DB lookup; the stub rig emits the
-    // already-converted value as the production subscriber would after conversion.
-    const KLIPPER_MEASURED_GRAMS = 19.98; // ~6700mm filament_used for PLA 1.75mm
+    // Load the material into the printer's slot 0 — populates printer_loadouts
+    // so convertFilamentMmToGrams's first JOIN resolves.
+    const loadResult = await loadInPrinter(
+      { materialId, printerId, slotIndex: 0, userId: ownerId },
+      { dbUrl: DB_URL },
+    );
+    if (!loadResult.ok) throw new Error(`loadInPrinter failed: ${loadResult.reason}`);
+
     const CF5B_ESTIMATED_GRAMS = 50;
+    // 6700mm × π × (1.75/2)² × 1.24 / 1000 ≈ 19.9831g — the value the real
+    // T_b1 conversion will compute and surface via measured_grams.
+    const EXPECTED_KLIPPER_MEASURED_GRAMS =
+      6700 * Math.PI * (1.75 / 2) ** 2 * 1.24 / 1000;
 
     const dispatchJobId = uid();
     await db.insert(schema.dispatchJobs).values({
@@ -1265,17 +1397,26 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
     });
 
     // -----------------------------------------------------------------------
-    // Wire sink + worker — production path (matches instrumentation.ts)
+    // Wire the REAL Moonraker subscriber + WS rig.
+    // The stub rig is bypassed for this test — we want filament_used to flow
+    // through the actual subscriber so convertFilamentMmToGrams runs.
     // -----------------------------------------------------------------------
-    const stubRig = makeStubSubscriberRig('fdm_klipper');
+    const wsFactoryRig = makeWsFactoryRig();
     const subscriberRegistry = createSubscriberRegistry();
-    subscriberRegistry.register('fdm_klipper', stubRig.factory);
+    subscriberRegistry.register('fdm_klipper', {
+      create: () =>
+        createMoonrakerSubscriber({
+          wsFactory: wsFactoryRig.factory,
+          reconnectBackoffMs: [10],
+        }),
+    });
 
     const bus = createStatusEventBus();
     const busEventKinds: string[] = [];
     // Subscribe to bus events for this dispatch job to capture warning emits from
     // persistWarningStatusEvent (which calls bus.emit directly, not via emitToBus).
-    // Subscription is set up before the sink is wired so we don't miss the emit.
+    // All bus emits (including emitToBus) are captured via this single subscription;
+    // no need to also push from emitToBus.
     let busUnsub: (() => void) | null = null;
 
     let workerNotifyTerminalCalls = 0;
@@ -1308,6 +1449,7 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
           dispatchJobId: args.dispatchJobId,
           printerKind: args.printerKind,
           event: syntheticEvent,
+          dbUrl: DB_URL,
         });
       }
       bus.emit(args.dispatchJobId, syntheticEvent);
@@ -1326,8 +1468,9 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
             { dbUrl: DB_URL, persistWarningStatusEvent },
           );
         },
+        // All bus emits (including emitToBus) are captured via the single
+        // bus.subscribe below; don't push here too (would double-count).
         emitToBus: (jid, event) => {
-          busEventKinds.push(event.kind);
           bus.emit(jid, event);
         },
       },
@@ -1350,18 +1493,72 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
     await workerForCircular.notifyDispatched({ dispatchJobId, printerId });
     await flushAsyncQueue();
 
+    // The subscriber's start() awaits the WS factory; settle then grab the socket.
+    expect(wsFactoryRig.sockets).toHaveLength(1);
+    const ws = wsFactoryRig.sockets[0]!;
+
     // -----------------------------------------------------------------------
-    // Drive terminal event — grams=19.98 from stub (as-if 6700mm converted)
+    // Drive Moonraker JSON-RPC frames through the real subscriber:
+    //   1) open + initial subscribe-reply (id=1) → marks subscriber connected
+    //   2) notify_status_update with print_stats.filament_used: 6700  (mm)
+    //      — subscriber stashes latestFilamentUsedMm=6700 (T_b1 capture)
+    //   3) notify_history_changed action=finished, status=completed
+    //      — subscriber's terminal handler runs convertFilamentMmToGrams
+    //        which walks printer_loadouts → materials → filament_products,
+    //        gets density=1.24 + diameter=1.75 from the catalog row, and
+    //        emits the completed event with measuredConsumption populated.
     // -----------------------------------------------------------------------
-    const baseTime = Date.now();
-    stubRig.emit({
-      kind: 'completed',
-      remoteJobRef: 'cube.gcode',
-      progressPct: 100,
-      measuredConsumption: [{ slot_index: 0, grams: KLIPPER_MEASURED_GRAMS }],
-      rawPayload: { phase: 'completed' },
-      occurredAt: new Date(baseTime + 1000),
+    ws.fireOpen();
+    ws.fireMessage({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        status: { print_stats: { state: 'standby', filename: '' } },
+        eventtime: 0,
+      },
     });
+    await flushAsyncQueue();
+
+    // Drive a status update with the filament_used value so the subscriber's
+    // notify_status_update handler captures it into latestFilamentUsedMm.
+    ws.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_status_update',
+      params: [
+        {
+          print_stats: {
+            state: 'printing',
+            filename: 'cube.gcode',
+            filament_used: 6700, // mm — converted to ~19.98g via DB chain
+          },
+          display_status: { progress: 0.99 },
+        },
+        100,
+      ],
+    });
+    await flushAsyncQueue();
+
+    // Finalize via notify_history_changed — terminal handler reads the stashed
+    // latestFilamentUsedMm and runs the conversion before emitting completed.
+    ws.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_history_changed',
+      params: [
+        {
+          action: 'finished',
+          job: {
+            filename: 'cube.gcode',
+            status: 'completed',
+            total_duration: 3600,
+            print_duration: 3550,
+          },
+        },
+      ],
+    });
+    // Settle: convertFilamentMmToGrams is async (T_b1 void promise pattern),
+    // sink correlate is async, persist+emitConsumption chain awaits DB writes,
+    // and divergence Phase C runs after Phase B. Drain generously.
+    await flushAsyncQueue();
     await flushAsyncQueue();
     await flushAsyncQueue();
     await flushAsyncQueue();
@@ -1375,7 +1572,50 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
       .where(eq(schema.dispatchJobs.id, dispatchJobId));
     expect(jobRows[0]!.status).toBe('completed');
 
-    // (b) dispatch_warnings has a row for divergence-detected
+    // (b) The back-calculated measured grams (~19.98g for 6700mm PLA 1.75mm)
+    // is pinned as a DB-level invariant via the `material.consumed` ledger row's
+    // `weightConsumed` payload field. Phase B persists this; Phase C uses the
+    // same value (in-memory backfill, see consumption-emitter.ts:370) so they
+    // share the source of truth. The dispatch_jobs.materialsUsed JSON column
+    // is intentionally NOT mutated in-place — the ledger is the canonical
+    // record of consumption, materialsUsed remains the slicer-time snapshot.
+    const measuredLedgerRows = await db
+      .select()
+      .from(schema.ledgerEvents)
+      .where(
+        and(
+          eq(schema.ledgerEvents.kind, 'material.consumed'),
+          eq(schema.ledgerEvents.provenanceClass, 'measured'),
+          eq(schema.ledgerEvents.subjectId, materialId),
+        ),
+      );
+    expect(measuredLedgerRows.length).toBeGreaterThanOrEqual(1);
+    const measuredLedgerRow = measuredLedgerRows.find(
+      (r: { payload: unknown }) => {
+        const p = (typeof r.payload === 'string'
+          ? JSON.parse(r.payload as string)
+          : r.payload) as {
+            attributedTo?: { jobId?: string; note?: string };
+          };
+        return (
+          p.attributedTo?.jobId === dispatchJobId &&
+          p.attributedTo?.note === 'slot:0'
+        );
+      },
+    );
+    expect(measuredLedgerRow).toBeDefined();
+    const measuredPayload = (typeof measuredLedgerRow!.payload === 'string'
+      ? JSON.parse(measuredLedgerRow!.payload as string)
+      : measuredLedgerRow!.payload) as { weightConsumed: number };
+    // ~19.98g back-calculated by T_b1 conversion — proves the conversion DB
+    // chain (printer_loadouts → materials → filament_products) walked
+    // correctly with density=1.24, diameter=1.75 from the catalog row.
+    expect(measuredPayload.weightConsumed).toBeCloseTo(
+      EXPECTED_KLIPPER_MEASURED_GRAMS,
+      1,
+    );
+
+    // (c) dispatch_warnings has a row for divergence-detected
     const warnRows = await db.select().from(schema.dispatchWarnings)
       .where(eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId));
     expect(warnRows.length).toBeGreaterThanOrEqual(1);
@@ -1386,7 +1626,7 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
     expect(warnRow).toBeDefined();
     expect(warnRow!.severity).toBe('warning');
 
-    // (c) dispatch_status_events has a 'warning' row for the divergence event
+    // (d) dispatch_status_events has a 'warning' row for the divergence event
     const statusEvRows = await db.select().from(schema.dispatchStatusEvents)
       .where(eq(schema.dispatchStatusEvents.dispatchJobId, dispatchJobId));
     const warningStatusRow = statusEvRows.find(
@@ -1394,7 +1634,7 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
     );
     expect(warningStatusRow).toBeDefined();
 
-    // (d) logger.info captured the ratio for this dispatch job
+    // (e) logger.info captured the ratio for this dispatch job
     // ratio ≈ 19.98 / 50 = 0.3996 < 0.50 threshold
     const ratioLogCall = infoSpy.mock.calls.find(
       (args: unknown[]) => {
@@ -1411,14 +1651,35 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
     expect(ratioLogCall).toBeDefined();
     const loggedMeta = ratioLogCall![0] as { divergenceRatio: number };
     expect(loggedMeta.divergenceRatio).toBeCloseTo(
-      KLIPPER_MEASURED_GRAMS / CF5B_ESTIMATED_GRAMS,
+      EXPECTED_KLIPPER_MEASURED_GRAMS / CF5B_ESTIMATED_GRAMS,
       2,
     );
 
-    // (e) SSE bus received the warning event (captured via bus.subscribe)
+    // (f) The conversion was reported as catalog-sourced (proves the DB chain
+    // was actually walked rather than falling back to PLA defaults).
+    const catalogConvertCall = infoSpy.mock.calls.find(
+      (args: unknown[]) => {
+        const meta = args[0];
+        const msg = args[1];
+        return (
+          typeof meta === 'object' &&
+          meta !== null &&
+          'filamentUsedMm' in meta &&
+          (meta as { filamentUsedMm: number }).filamentUsedMm === 6700 &&
+          'densitySource' in meta &&
+          typeof msg === 'string' &&
+          msg.includes('Klipper filament_used → grams converted')
+        );
+      },
+    );
+    expect(catalogConvertCall).toBeDefined();
+    expect((catalogConvertCall![0] as { densitySource: string }).densitySource)
+      .toBe('catalog');
+
+    // (g) SSE bus received the warning event (captured via bus.subscribe)
     expect(busEventKinds).toContain('warning');
 
-    // (f) terminal notification reached the worker
+    // (h) terminal notification reached the worker
     expect(workerNotifyTerminalCalls).toBeGreaterThanOrEqual(1);
   });
 
@@ -1538,6 +1799,7 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
           dispatchJobId: args.dispatchJobId,
           printerKind: args.printerKind,
           event: syntheticEvent,
+          dbUrl: DB_URL,
         });
       }
       bus.emit(args.dispatchJobId, syntheticEvent);
@@ -1749,6 +2011,7 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
           dispatchJobId: args.dispatchJobId,
           printerKind: args.printerKind,
           event: syntheticEvent,
+          dbUrl: DB_URL,
         });
       }
       bus.emit(args.dispatchJobId, syntheticEvent);
@@ -1767,14 +2030,15 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
             { dbUrl: DB_URL, persistWarningStatusEvent },
           );
         },
+        // All bus emits (including emitToBus) are captured via the single
+        // bus.subscribe below; don't push here too (would double-count).
         emitToBus: (jid, event) => {
-          busEventKindsMM.push(event.kind);
           bus.emit(jid, event);
         },
       },
     });
 
-    // Subscribe to capture warning emits from persistWarningStatusEvent.
+    // Subscribe to capture ALL bus emits — emitToBus AND persistWarningStatusEvent.
     busUnsubMM = bus.subscribe(dispatchJobId, (event) => {
       busEventKindsMM.push(event.kind);
     });
@@ -1956,6 +2220,7 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
           dispatchJobId: args.dispatchJobId,
           printerKind: args.printerKind,
           event: syntheticEvent,
+          dbUrl: DB_URL,
         });
       }
       bus.emit(args.dispatchJobId, syntheticEvent);

@@ -62,8 +62,8 @@ async function seedPrinter(ownerId: string): Promise<string> {
 }
 
 async function seedFilamentProduct(opts: {
-  density: number;
-  diameterMm: number;
+  density: number | null;
+  diameterMm: number | null;
   brand?: string;
   subtype?: string;
 }): Promise<string> {
@@ -246,5 +246,33 @@ describe('convertFilamentMmToGrams', () => {
     });
 
     expect(result.grams).toBe(0);
+  });
+
+  it('7. falls back to PLA defaults when filament_products has null density/diameter (path d)', async () => {
+    // SpoolmanDB seed gap case: a catalog row exists but density/diameter are NULL.
+    // The schema permits both fields nullable (real() without notNull()), so this
+    // is a real production case the conversion module must handle.
+    const ownerId = await seedUser();
+    const printerId = await seedPrinter(ownerId);
+    const productId = await seedFilamentProduct({
+      density: null,
+      diameterMm: null,
+      brand: 'Sparse Brand',
+      subtype: 'PLA',
+    });
+    const materialId = await seedMaterial(ownerId, productId);
+    await seedLoadout(printerId, materialId, 0);
+
+    const result = await convertFilamentMmToGrams({
+      printerId,
+      filamentUsedMm: 1000,
+      slotIndex: 0,
+      dbUrl: DB_URL,
+    });
+
+    // Both null → must fall back to PLA defaults (1.24 g/cm³, 1.75mm) → ~2.98g
+    const expected = calcGrams(1000, 1.24, 1.75);
+    expect(result.grams).toBeCloseTo(expected, 2);
+    expect(result.densitySource).toBe('fallback');
   });
 });

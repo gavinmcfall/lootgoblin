@@ -288,6 +288,11 @@ export function createMoonrakerSubscriber(
     clearTimeout: opts.clearTimeout,
     openTransport: (printer, credential, helpers): TransportHandle => {
       // ----- Per-subscription state: filament_used tracking (V2-005f-CF-5b T_b1) -----
+      // NOTE: openTransport runs per reconnect attempt, so latestFilamentUsedMm
+      // resets to null on each reconnect. Unlike Bambu's lastGcodeState (which
+      // is event-edge-sensitive), Klipper's filament_used is cumulative — the
+      // next pushall after reconnect re-populates this value. Recovery is
+      // automatic; no missed conversions.
       let latestFilamentUsedMm: number | null = null;
 
       // ----- Validate connection config / build URL + headers -----
@@ -374,9 +379,17 @@ export function createMoonrakerSubscriber(
 
         if (isTerminal && latestFilamentUsedMm !== null) {
           const capturedMm = latestFilamentUsedMm;
+          // Capture occurredAt synchronously at message-receipt time. The void
+          // conversion promise resolves after a DB round-trip, so creating
+          // `new Date()` inside .then()/.catch() would skew occurredAt by the
+          // conversion latency. Matches buildEventFromStatus + the non-conversion
+          // emit path which both use receipt-time timestamps.
+          const occurredAt = new Date();
           void convertFilamentMmToGrams({
             printerId: printer.id,
             filamentUsedMm: capturedMm,
+            // TODO: multi-extruder Klipper — slotIndex is always 0 for now (no
+            // AMS-like protocol-layer slot concept in standard Moonraker).
             slotIndex: 0,
           }).then(({ grams, densitySource }) => {
             logger.info(
@@ -384,14 +397,14 @@ export function createMoonrakerSubscriber(
               'cf-5b: Klipper filament_used → grams converted',
             );
             const measuredConsumption: MeasuredConsumptionSlot[] = [{ slot_index: 0, grams }];
-            const event = buildEventFromHistory(mapping, job, entry, new Date());
+            const event = buildEventFromHistory(mapping, job, entry, occurredAt);
             helpers.emitProtocolEvent({ ...event, measuredConsumption });
           }).catch((err: unknown) => {
             logger.warn(
               { printerId: printer.id, err: (err as Error)?.message },
               'cf-5b: filament_used conversion failed — emitting without measuredConsumption',
             );
-            helpers.emitProtocolEvent(buildEventFromHistory(mapping, job, entry, new Date()));
+            helpers.emitProtocolEvent(buildEventFromHistory(mapping, job, entry, occurredAt));
           });
         } else {
           helpers.emitProtocolEvent(buildEventFromHistory(mapping, job, entry, new Date()));

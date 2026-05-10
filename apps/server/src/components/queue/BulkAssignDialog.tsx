@@ -71,7 +71,7 @@ export function BulkAssignDialog({
           ) : destinations.length === 0 ? (
             <p className="text-sm text-slate-400">
               No libraries configured.{' '}
-              <a href="/libraries/new" className="text-sky-300 underline">
+              <a href="/hoard/new" className="text-sky-300 underline">
                 Create one
               </a>
               .

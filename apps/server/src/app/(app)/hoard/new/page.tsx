@@ -22,7 +22,7 @@ export default function NewLibraryPage() {
       return;
     }
     toast.success('Library created');
-    router.push('/libraries');
+    router.push('/hoard');
     router.refresh();
   }
   return (

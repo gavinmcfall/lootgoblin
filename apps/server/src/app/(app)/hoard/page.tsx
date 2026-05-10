@@ -20,7 +20,7 @@ export default function LibrariesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-slate-100">Libraries</h2>
-        <Link href="/libraries/new" className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-emerald-50 hover:bg-emerald-500">
+        <Link href="/hoard/new" className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-emerald-50 hover:bg-emerald-500">
           + New library
         </Link>
       </div>
@@ -33,7 +33,7 @@ export default function LibrariesPage() {
           {data!.destinations.map((d) => (
             <Link
               key={d.id}
-              href={`/libraries/${d.id}`}
+              href={`/hoard/${d.id}`}
               className="block rounded-lg border border-slate-700 bg-slate-900 p-3 hover:border-slate-600"
             >
               <div className="text-sm font-medium text-slate-100">{d.name}</div>

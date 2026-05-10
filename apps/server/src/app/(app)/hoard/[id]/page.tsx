@@ -38,7 +38,7 @@ export default function EditLibraryPage({ params }: { params: Promise<{ id: stri
       return;
     }
     toast.success('Saved');
-    router.push('/libraries');
+    router.push('/hoard');
     router.refresh();
   }
 
@@ -50,7 +50,7 @@ export default function EditLibraryPage({ params }: { params: Promise<{ id: stri
       return;
     }
     toast.success('Deleted');
-    router.push('/libraries');
+    router.push('/hoard');
     router.refresh();
   }
 

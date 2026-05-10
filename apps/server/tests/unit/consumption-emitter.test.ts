@@ -1,5 +1,5 @@
 /**
- * Unit tests — consumption-emitter — V2-005f-T_dcf11.
+ * Unit tests — consumption-emitter — V2-005f-T_dcf11 + V2-005f-CF-5b T_b3.
  *
  * Coverage:
  *   1. emitConsumptionForCompletion — no measuredConsumption → zero result
@@ -14,12 +14,19 @@
  *  10. emitConsumptionForDispatch — idempotent (second call → all skipped)
  *  11. emitConsumptionForDispatch — empty material_ids → all skipped
  *  12. emitConsumptionForDispatch — non-positive estimated_grams skipped
+ * CF-5b T_b3:
+ *  13. FDM (Bambu) terminal completion → runDivergenceCheck called
+ *  14. FDM (Klipper) terminal completion → runDivergenceCheck called
+ *  15. SDCP (resin) terminal completion → runDivergenceCheck NOT called
+ *  16. ChituNetwork (resin) terminal completion → runDivergenceCheck NOT called
+ *  17. OctoPrint terminal completion → runDivergenceCheck NOT called
  */
 
 import {
   describe,
   it,
   expect,
+  vi,
   beforeAll,
   beforeEach,
   afterEach,
@@ -508,5 +515,149 @@ describe('emitConsumptionForDispatch — V2-005f-T_dcf11 Phase A', () => {
       { dbUrl: DB_URL },
     );
     expect(r).toEqual({ emitted: 0, skipped: 0, failed: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF-5b T_b3 — divergence-check integration
+// ---------------------------------------------------------------------------
+
+describe('CF-5b divergence integration — T_b3', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Build a materialsUsed array with measured_grams populated so the
+   * divergence check has data to work with (ratio=0.5 → no warning).
+   */
+  function measuredMaterialsUsed(matId: string): MaterialsUsed {
+    return [
+      {
+        slot_index: 0,
+        material_id: matId,
+        estimated_grams: 100,
+        measured_grams: 50,
+      },
+    ];
+  }
+
+  it('13. FDM (Bambu) terminal completion → runDivergenceCheck called', async () => {
+    const ownerId = await seedUser();
+    const matId = await seedMaterial(ownerId, 500);
+    const { jobId } = await seedDispatchJob({
+      ownerId,
+      materialsUsed: measuredMaterialsUsed(matId),
+    });
+
+    const divergenceSpy = vi.fn().mockResolvedValue(undefined);
+
+    await emitConsumptionForCompletion(
+      {
+        dispatchJobId: jobId,
+        printerKind: 'bambu_p1s',
+        event: makeCompletedEvent([{ slot_index: 0, grams: 50 }]),
+      },
+      { dbUrl: DB_URL, runDivergenceCheck: divergenceSpy },
+    );
+
+    expect(divergenceSpy).toHaveBeenCalledOnce();
+    expect(divergenceSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchJobId: jobId,
+        materialsUsed: expect.arrayContaining([
+          expect.objectContaining({ slot_index: 0 }),
+        ]),
+        emitWarning: expect.any(Function),
+      }),
+    );
+  });
+
+  it('14. FDM (Klipper) terminal completion → runDivergenceCheck called', async () => {
+    const ownerId = await seedUser();
+    const matId = await seedMaterial(ownerId, 500);
+    const { jobId } = await seedDispatchJob({
+      ownerId,
+      materialsUsed: measuredMaterialsUsed(matId),
+    });
+
+    const divergenceSpy = vi.fn().mockResolvedValue(undefined);
+
+    await emitConsumptionForCompletion(
+      {
+        dispatchJobId: jobId,
+        printerKind: 'fdm_klipper',
+        event: makeCompletedEvent([{ slot_index: 0, grams: 50 }]),
+      },
+      { dbUrl: DB_URL, runDivergenceCheck: divergenceSpy },
+    );
+
+    expect(divergenceSpy).toHaveBeenCalledOnce();
+  });
+
+  it('15. SDCP (resin) terminal completion → runDivergenceCheck NOT called', async () => {
+    const ownerId = await seedUser();
+    const matId = await seedMaterial(ownerId, 500);
+    const { jobId } = await seedDispatchJob({
+      ownerId,
+      materialsUsed: measuredMaterialsUsed(matId),
+    });
+
+    const divergenceSpy = vi.fn().mockResolvedValue(undefined);
+
+    await emitConsumptionForCompletion(
+      {
+        dispatchJobId: jobId,
+        printerKind: 'sdcp_elegoo_saturn_4',
+        event: makeCompletedEvent([{ slot_index: 0, grams: 50 }]),
+      },
+      { dbUrl: DB_URL, runDivergenceCheck: divergenceSpy },
+    );
+
+    expect(divergenceSpy).not.toHaveBeenCalled();
+  });
+
+  it('16. ChituNetwork (resin) terminal completion → runDivergenceCheck NOT called', async () => {
+    const ownerId = await seedUser();
+    const matId = await seedMaterial(ownerId, 500);
+    const { jobId } = await seedDispatchJob({
+      ownerId,
+      materialsUsed: measuredMaterialsUsed(matId),
+    });
+
+    const divergenceSpy = vi.fn().mockResolvedValue(undefined);
+
+    await emitConsumptionForCompletion(
+      {
+        dispatchJobId: jobId,
+        printerKind: 'chitu_network_phrozen_sonic_mini_8k',
+        event: makeCompletedEvent([{ slot_index: 0, grams: 50 }]),
+      },
+      { dbUrl: DB_URL, runDivergenceCheck: divergenceSpy },
+    );
+
+    expect(divergenceSpy).not.toHaveBeenCalled();
+  });
+
+  it('17. OctoPrint terminal completion → runDivergenceCheck NOT called', async () => {
+    const ownerId = await seedUser();
+    const matId = await seedMaterial(ownerId, 500);
+    const { jobId } = await seedDispatchJob({
+      ownerId,
+      materialsUsed: measuredMaterialsUsed(matId),
+    });
+
+    const divergenceSpy = vi.fn().mockResolvedValue(undefined);
+
+    await emitConsumptionForCompletion(
+      {
+        dispatchJobId: jobId,
+        printerKind: 'fdm_octoprint',
+        event: makeCompletedEvent([{ slot_index: 0, grams: 50 }]),
+      },
+      { dbUrl: DB_URL, runDivergenceCheck: divergenceSpy },
+    );
+
+    expect(divergenceSpy).not.toHaveBeenCalled();
   });
 });

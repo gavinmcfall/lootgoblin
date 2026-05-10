@@ -177,8 +177,10 @@ export const DISPATCH_FAILURE_REASONS = [
   'slicing-failed',
   'unreachable',
   'auth-failed',
-  'target-rejected', // target accepted us but reported failure mid-print
-  'claim-timeout', // agent stalled
+  'target-rejected',  // target accepted us but reported failure mid-print
+  'claim-timeout',    // agent stalled
+  'cancelled',        // NEW V2-005f-CF-5a: user or slicer cancelled the job
+  'firmware-error',   // NEW V2-005f-CF-5a: printer firmware fault (Bambu HMS, SDCP ErrorStatusReason)
   'unknown',
 ] as const;
 export type DispatchFailureReason = (typeof DISPATCH_FAILURE_REASONS)[number];
@@ -723,14 +725,17 @@ export const forgeTargetCredentials = sqliteTable(
 /**
  * Lifecycle event kinds emitted by status subscribers (T_dcf3+).
  *
- *   started      — printer accepted job + began executing
- *   progress     — periodic update (pct / layer_num / mc_remaining_min)
- *   paused       — print paused (user / filament out / lid open)
- *   resumed      — print resumed after a pause
- *   completed    — print finished successfully
- *   failed       — print failed (error_code + protocol-specific detail)
- *   reconnected  — subscriber regained connectivity after `unreachable`
- *   unreachable  — subscriber can't reach printer (transient or terminal)
+ *   started        — printer accepted job + began executing
+ *   progress       — periodic update (pct / layer_num / mc_remaining_min)
+ *   paused         — print paused (user / filament out / lid open)
+ *   resumed        — print resumed after a pause
+ *   completed      — print finished successfully
+ *   failed         — print failed (error_code + protocol-specific detail)
+ *   cancelled      — operator-initiated termination (distinct from firmware fault)
+ *   firmware_error — firmware-detected fault; carries errorCode + optional errorMessage
+ *   warning        — non-terminal advisory (Bambu HMS, plugin warnings); carries severity
+ *   reconnected    — subscriber regained connectivity after `unreachable`
+ *   unreachable    — subscriber can't reach printer (transient or terminal)
  *
  * App-layer validates against this list (no DB CHECK constraint, project
  * pattern). The full event payload lives in `dispatch_status_events.event_data`
@@ -743,6 +748,9 @@ export const STATUS_EVENT_KINDS = [
   'resumed',
   'completed',
   'failed',
+  'cancelled',      // NEW V2-005f-CF-5a: user or slicer cancelled mid-print
+  'firmware_error', // NEW V2-005f-CF-5a: protocol-native firmware fault (Bambu HMS etc.)
+  'warning',        // NEW V2-005f-CF-5a: non-fatal advisory (HMS info/warn, filament runout warning)
   'reconnected',
   'unreachable',
 ] as const;
@@ -994,5 +1002,65 @@ export const forgePendingPairings = sqliteTable(
     uniqueIndex('idx_pending_pairings_slice')
       .on(t.sliceLootId)
       .where(sql`resolved_at IS NULL`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// V2-005f-CF-5a-T_a1: dispatch_warnings — per-job warning dedup table
+// ---------------------------------------------------------------------------
+
+/**
+ * Dedup table for repeating protocol warnings on a single dispatch job.
+ *
+ * Designed for Bambu HMS spam (and analogous SDCP / Moonraker advisory codes)
+ * that fire on every poll while a condition persists. Instead of appending a
+ * row per occurrence to `dispatch_status_events`, the status worker UPSERTs
+ * here: insert on first occurrence, then bump `last_seen_at` + `count` on
+ * repeats. This keeps the status-events audit table clean while surfacing
+ * persistent warnings to the UI without fan-out.
+ *
+ * FK behaviour:
+ *   - `dispatch_job_id` ON DELETE CASCADE — deleting a dispatch job drops
+ *     its warning rows.
+ *
+ * Indexes:
+ *   - `idx_dispatch_warnings_unique` UNIQUE on (dispatch_job_id, protocol,
+ *     error_code) — the O(1) dedup key. T_a6's upsert logic uses ON CONFLICT
+ *     on this index. `protocol` is part of the key because numeric error-code
+ *     spaces overlap across protocols (Bambu HMS vs SDCP ErrorStatusReason);
+ *     today each dispatch_job → one printer → one protocol so it can't
+ *     collide, but the schema enforces its own invariant.
+ *   - `idx_dispatch_warnings_job` on (dispatch_job_id, last_seen_at) — hot path
+ *     for "all active warnings for this job" UI / SSE reads, ordered newest-first.
+ */
+export const dispatchWarnings = sqliteTable(
+  'dispatch_warnings',
+  {
+    id: text('id').primaryKey(),
+    dispatchJobId: text('dispatch_job_id')
+      .notNull()
+      .references(() => dispatchJobs.id, { onDelete: 'cascade' }),
+    /** Protocol-native error/warning code (e.g. Bambu HMS code, SDCP ErrorStatusReason). */
+    errorCode: text('error_code').notNull(),
+    /** App-layer validates against STATUS_SOURCE_PROTOCOLS. */
+    protocol: text('protocol').notNull(),
+    /** Severity tier — 'info' | 'warning' | 'error'. App-layer validated. */
+    severity: text('severity').notNull(),
+    /** Operator-readable description of the warning. May be NULL for machine-only codes. */
+    message: text('message'),
+    firstSeenAt: integer('first_seen_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+    lastSeenAt: integer('last_seen_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+    /** Number of times this (job, error_code) pair has been observed. */
+    count: integer('count').notNull().default(1),
+  },
+  (t) => [
+    /** Dedup key — T_a6 ON CONFLICT target. */
+    uniqueIndex('idx_dispatch_warnings_unique').on(t.dispatchJobId, t.protocol, t.errorCode),
+    /** "All active warnings for job X, newest first" UI / SSE hot path. */
+    index('idx_dispatch_warnings_job').on(t.dispatchJobId, t.lastSeenAt),
   ],
 );

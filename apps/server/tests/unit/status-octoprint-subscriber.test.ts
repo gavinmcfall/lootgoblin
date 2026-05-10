@@ -416,7 +416,7 @@ describe('V2-005f-T_dcf5 createOctoprintSubscriber', () => {
     await sub.stop();
   });
 
-  it('emits failed on event.type=PrintCancelled', async () => {
+  it('emits cancelled on event.type=PrintCancelled (T_a3: distinct from failed)', async () => {
     const { sub, promise } = startSubscriber();
     await promise;
     const ws = factoryRig.sockets[0]!;
@@ -424,7 +424,7 @@ describe('V2-005f-T_dcf5 createOctoprintSubscriber', () => {
     ws.fireArrayFrame([{ event: { type: 'PrintCancelled', payload: { name: 'y.gcode' } } }]);
 
     expect(events).toHaveLength(1);
-    expect(events[0]!.kind).toBe('failed');
+    expect(events[0]!.kind).toBe('cancelled');
     await sub.stop();
   });
 
@@ -585,6 +585,254 @@ describe('V2-005f-T_dcf5 createOctoprintSubscriber', () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]!.kind).toBe('unreachable');
+    await sub.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF-5a OctoPrint event mapping — T_a3
+// ---------------------------------------------------------------------------
+//
+// OctoPrint's SockJS API does NOT have field-level subscriptions: once the
+// socket is open and authenticated, OctoPrint broadcasts ALL event types to
+// ALL connected clients. There is no subscribe/select payload to filter event
+// types server-side. The subscriber reads every incoming event and applies
+// client-side routing via `mapEventType`. This is documented at
+// https://docs.octoprint.org/en/master/api/push.html — the `event` message
+// type carries arbitrary event.type strings; there is no subscription message.
+// Therefore no subscription-filter regression test is required; the comment
+// above serves as the future-reviewer documentation per the T_a3 lesson from
+// T_a2 (FG-L4).
+//
+// Supported plugin warning sources (conservative allowlist):
+//   - 'OctoPrint-Spool Manager' — filament runout / low-filament advisories
+// Unknown plugin events are routed through the existing audit-only path and
+// do NOT emit a 'warning' StatusEvent.
+
+describe('CF-5a OctoPrint event mapping — T_a3', () => {
+  let factoryRig: FactoryRig;
+  let httpRig: HttpRig;
+  let timerRig: TimerRig;
+  let events: StatusEvent[];
+
+  beforeEach(() => {
+    factoryRig = makeFactoryRig();
+    httpRig = makeHttpRig();
+    timerRig = makeTimerRig();
+    events = [];
+  });
+
+  function startAndConnect(opts: {
+    printer?: PrinterRecord;
+    credential?: DecryptedCredential | null;
+  } = {}) {
+    const sub = createOctoprintSubscriber({
+      wsFactory: factoryRig.factory,
+      httpClient: httpRig.client,
+      setTimeout: timerRig.setTimer,
+      clearTimeout: timerRig.clearTimer,
+      reconnectBackoffMs: [10, 20, 30],
+    });
+    const promise = sub.start(
+      opts.printer ?? makePrinter(),
+      opts.credential === undefined ? makeCredential() : opts.credential,
+      (e) => events.push(e),
+    );
+    return { sub, promise };
+  }
+
+  async function openSocket() {
+    const { sub, promise } = startAndConnect();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpenFrame();
+    // First array frame marks auth complete.
+    ws.fireArrayFrame([{ connected: { version: '1.10.0' } }]);
+    return { sub, ws };
+  }
+
+  it('maps event.type=PrintCancelled → kind=cancelled', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      { event: { type: 'PrintCancelled', payload: { name: 'cancel-me.gcode' } } },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'cancelled');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('cancelled');
+    expect(ev!.remoteJobRef).toBe('cancel-me.gcode');
+    // PrintCancelled has no errorCode — OctoPrint doesn't report why the cancel was requested.
+    expect(ev!.errorCode).toBeUndefined();
+    expect(ev!.errorMessage).toBeUndefined();
+    expect(ev!.severity).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('maps event.type=PrintFailed reason=cancelled → kind=cancelled', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        event: {
+          type: 'PrintFailed',
+          payload: { name: 'failed-cancel.gcode', reason: 'cancelled' },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'cancelled');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('cancelled');
+    expect(ev!.remoteJobRef).toBe('failed-cancel.gcode');
+    expect(ev!.errorCode).toBeUndefined();
+    expect(ev!.severity).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('maps event.type=PrintFailed reason=error → kind=firmware_error', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        event: {
+          type: 'PrintFailed',
+          payload: { name: 'failed-error.gcode', reason: 'error', message: 'Thermal runaway' },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'firmware_error');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('firmware_error');
+    expect(ev!.remoteJobRef).toBe('failed-error.gcode');
+    // OctoPrint's PrintFailed does not carry a machine error code — errorCode is undefined.
+    expect(ev!.errorCode).toBeUndefined();
+    expect(ev!.errorMessage).toBe('Thermal runaway');
+    await sub.stop();
+  });
+
+  it('maps event.type=Error consequence=disconnect → kind=firmware_error with errorCode', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        event: {
+          type: 'Error',
+          payload: {
+            error: 'Thermal runaway',
+            reason: 'gcode_other_error',
+            consequence: 'disconnect',
+          },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'firmware_error');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('firmware_error');
+    // Error.reason is the protocol-native code (7-value enum).
+    expect(ev!.errorCode).toBe('gcode_other_error');
+    expect(ev!.errorMessage).toBe('Thermal runaway');
+    expect(ev!.severity).toBe('error');
+    await sub.stop();
+  });
+
+  it('maps event.type=Error without consequence → kind=firmware_error, severity=undefined', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        event: {
+          type: 'Error',
+          payload: {
+            error: 'Heater timeout',
+            reason: 'heater_timeout',
+            // no consequence — firmware kept running
+          },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'firmware_error');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('firmware_error');
+    expect(ev!.errorCode).toBe('heater_timeout');
+    expect(ev!.errorMessage).toBe('Heater timeout');
+    // No consequence → severity stays undefined.
+    expect(ev!.severity).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('maps PrintCancelling.firmwareError=true → kind=cancelled with errorCode=firmware-cancel', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        event: {
+          type: 'PrintCancelling',
+          payload: { firmwareError: true, name: 'fw-cancel.gcode' },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'cancelled');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('cancelled');
+    expect(ev!.errorCode).toBe('firmware-cancel');
+    expect(ev!.remoteJobRef).toBe('fw-cancel.gcode');
+    await sub.stop();
+  });
+
+  it('maps OctoPrint-Spool Manager plugin warning → kind=warning with severity=warning', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        plugin: {
+          plugin: 'OctoPrint-Spool Manager',
+          data: { action: 'warning', code: 'low_filament', message: 'Less than 10g remaining' },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'warning');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('warning');
+    expect(ev!.severity).toBe('warning');
+    expect(ev!.errorCode).toBe('OctoPrint-Spool Manager/low_filament');
+    expect(ev!.errorMessage).toBe('Less than 10g remaining');
+    await sub.stop();
+  });
+
+  it('plugin warning with no data.code → errorCode fallback to <plugin>/warning', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        plugin: {
+          plugin: 'OctoPrint-Spool Manager',
+          // no code — only message
+          data: { message: 'something happened' },
+        },
+      },
+    ]);
+
+    const ev = events.find((e) => e.kind === 'warning');
+    expect(ev).toBeDefined();
+    expect(ev!.kind).toBe('warning');
+    expect(ev!.errorCode).toBe('OctoPrint-Spool Manager/warning');
+    expect(ev!.errorMessage).toBe('something happened');
+    expect(ev!.severity).toBe('warning');
+    await sub.stop();
+  });
+
+  it('does NOT emit warning for unknown plugin events (audit-only path)', async () => {
+    const { sub, ws } = await openSocket();
+    ws.fireArrayFrame([
+      {
+        plugin: {
+          plugin: 'SomeUnknownPlugin',
+          data: { code: 'some_code', message: 'something happened' },
+        },
+      },
+    ]);
+
+    // No warning event should be emitted — unknown plugins stay on audit-only path.
+    const warningEvt = events.find((e) => e.kind === 'warning');
+    expect(warningEvt).toBeUndefined();
     await sub.stop();
   });
 });

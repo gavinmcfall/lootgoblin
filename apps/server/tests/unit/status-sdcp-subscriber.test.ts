@@ -1,8 +1,18 @@
 /**
- * Unit tests for V2-005f-T_dcf7 — SDCP status subscriber.
+ * Unit tests for V2-005f-T_dcf7 + V2-005f-CF-5a-T_a5 — SDCP status subscriber.
  *
  * Mocks the WebSocket via `WsFactory` and uses an injected timer rig so the
  * 30s keepalive ping cadence can be driven deterministically.
+ *
+ * Subscription / transport-filter discipline (FG-L4):
+ *   SDCP uses WebSocket at ws://<ip>:3030/websocket. The SDCP 3.0 protocol
+ *   pushes FULL Status + PrintInfo objects on EVERY status frame — there is
+ *   no field-level subscription. The subscriber reads every incoming message
+ *   on the printer's `sdcp/status/<MainboardID>` topic and applies client-side
+ *   routing via `mapSdcpStatus`. All fields (Status, PrintInfo, ErrorStatusReason,
+ *   etc.) are present in every push frame, so no subscription-filter regression
+ *   test is required. This comment serves as the future-reviewer documentation
+ *   per the T_a5 lesson from T_a3 (FG-L4).
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -195,7 +205,12 @@ describe('V2-005f-T_dcf7 mapSdcpStatus', () => {
     expect(mapSdcpStatus(0)).toBeNull();
     expect(mapSdcpStatus(1)).toBe('progress');
     expect(mapSdcpStatus(2)).toBe('completed');
-    expect(mapSdcpStatus(3)).toBe('failed');
+    // CF-5a: Status=3 (FAIL) → 'firmware_error' (was 'failed')
+    expect(mapSdcpStatus(3)).toBe('firmware_error');
+    // CF-5a: Status=8 (STOPPED) → 'cancelled'
+    expect(mapSdcpStatus(8)).toBe('cancelled');
+    // CF-5a: Status=9 (COMPLETE alt) → 'completed'
+    expect(mapSdcpStatus(9)).toBe('completed');
   });
 
   it('returns null for unknown / undefined values', () => {
@@ -370,14 +385,15 @@ describe('V2-005f-T_dcf7 createSdcpSubscriber', () => {
     await sub.stop();
   });
 
-  it('emits failed on Status=3', async () => {
+  // CF-5a: renamed — Status=3 now emits firmware_error, not failed
+  it('emits firmware_error on Status=3 (CF-5a: was failed)', async () => {
     const { sub, promise } = startSubscriber();
     await promise;
     const ws = factoryRig.sockets[0]!;
     ws.fireOpen();
     ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'oops.ctb' }));
     expect(events).toHaveLength(1);
-    expect(events[0]!.kind).toBe('failed');
+    expect(events[0]!.kind).toBe('firmware_error');
     expect(events[0]!.measuredConsumption).toBeUndefined();
     await sub.stop();
   });
@@ -544,6 +560,7 @@ describe('V2-005f-T_dcf7 createSdcpSubscriber', () => {
     expect(sub.isConnected()).toBe(false);
   });
 
+  // CF-5a: Status=3 now emits firmware_error; also cover cancelled (8) + completed-alt (9)
   it('measuredConsumption is always undefined across all kinds', async () => {
     const { sub, promise } = startSubscriber();
     await promise;
@@ -552,8 +569,205 @@ describe('V2-005f-T_dcf7 createSdcpSubscriber', () => {
     ws.fireMessageJson(statusMsg({ Status: 1, CurrentLayer: 1, TotalLayer: 10, Filename: 'a' }));
     ws.fireMessageJson(statusMsg({ Status: 2, Filename: 'b' }));
     ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'c' }));
-    expect(events.map((e) => e.kind)).toEqual(['progress', 'completed', 'failed']);
+    ws.fireMessageJson(statusMsg({ Status: 8, Filename: 'd' }));
+    ws.fireMessageJson(statusMsg({ Status: 9, Filename: 'e' }));
+    expect(events.map((e) => e.kind)).toEqual([
+      'progress',
+      'completed',
+      'firmware_error',
+      'cancelled',
+      'completed',
+    ]);
     expect(events.every((e) => e.measuredConsumption === undefined)).toBe(true);
+    await sub.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF-5a SDCP — T_a5: PrintInfo.Status 11-value mapping + ErrorStatusReason
+// ---------------------------------------------------------------------------
+//
+// rawPayload convention: the full Status envelope (the entire push frame) is
+// used as rawPayload. SDCP is a single-stream protocol — the whole frame is
+// the atomic unit. This matches the existing buildSdcpEvent pattern where
+// `payload` is the full SdcpStatusPayload (envelope), NOT a sub-object.
+//
+// severity: not set for SDCP firmware_error events — SDCP has no tiered
+// severity field analogous to Bambu's HMS level. Matches the Moonraker T_a2
+// and OctoPrint T_a3 patterns.
+//
+// errorMessage: SDCP's PrintInfo has no separate human-readable description
+// field in the spec. errorMessage is omitted for all SDCP events.
+
+describe('CF-5a SDCP — T_a5', () => {
+  let factoryRig: FactoryRig;
+  let timerRig: TimerRig;
+  let events: StatusEvent[];
+
+  beforeEach(() => {
+    factoryRig = makeFactoryRig();
+    timerRig = makeTimerRig();
+    events = [];
+  });
+
+  function startSubscriber() {
+    const sub = createSdcpSubscriber({
+      printerKind: 'sdcp_elegoo_saturn_4_ultra',
+      wsFactory: factoryRig.factory,
+      setTimeout: timerRig.setTimer,
+      clearTimeout: timerRig.clearTimer,
+      reconnectBackoffMs: [10, 20, 30],
+      keepaliveIntervalMs: 30_000,
+    });
+    return {
+      sub,
+      promise: sub.start(makePrinter(), null, (e) => events.push(e)),
+    };
+  }
+
+  it('maps Status=8 (STOPPED) → kind=cancelled', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(statusMsg({ Status: 8, Filename: 'stopped.ctb' }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('cancelled');
+    expect(events[0]!.errorCode).toBeUndefined();
+    expect(events[0]!.severity).toBeUndefined();
+    expect(events[0]!.measuredConsumption).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('maps Status=3 (FAIL) with string ErrorStatusReason → kind=firmware_error + errorCode', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'fail.ctb', ErrorStatusReason: 'TempError' }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBe('TempError');
+    expect(events[0]!.errorMessage).toBeUndefined();
+    expect(events[0]!.severity).toBeUndefined();
+    expect(events[0]!.measuredConsumption).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('maps Status=3 (FAIL) with numeric ErrorStatusReason → kind=firmware_error + errorCode as decimal string', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    // SDCP_PRINT_CAUSE numeric code (e.g. motor failure = some integer)
+    ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'fail.ctb', ErrorStatusReason: 5 }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBe('5');
+    expect(events[0]!.severity).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('maps Status=3 (FAIL) without ErrorStatusReason → kind=firmware_error with no errorCode', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'fail.ctb' }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBeUndefined();
+    await sub.stop();
+  });
+
+  // Review followup: empty-string ErrorStatusReason is rejected (would be a
+  // useless dedup key). Mirrors the Number.isFinite/length>0 guards used for
+  // other numeric/string PrintInfo fields.
+  it('Status=3 with ErrorStatusReason="" → kind=firmware_error, errorCode undefined', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'fail.ctb', ErrorStatusReason: '' }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBeUndefined();
+    await sub.stop();
+  });
+
+  // Review followup: NaN ErrorStatusReason (firmware bug case) is rejected.
+  // String(NaN) would produce 'NaN' as errorCode, polluting the dedup key.
+  // NOTE: tested via buildSdcpEvent directly — JSON.stringify(NaN) coerces to
+  // null over the wire, so we can't drive this end-to-end through the WS rig.
+  // The guard (Number.isFinite) is still load-bearing in case a non-JSON
+  // transport ever feeds NaN through (or a typed mock bypasses serialization).
+  it('Status=3 with ErrorStatusReason=NaN → kind=firmware_error, errorCode undefined', () => {
+    const ev = buildSdcpEvent(
+      statusMsg({ Status: 3, Filename: 'fail.ctb', ErrorStatusReason: NaN }) as Parameters<
+        typeof buildSdcpEvent
+      >[0],
+      'firmware_error',
+      new Date(0),
+    );
+    expect(ev.kind).toBe('firmware_error');
+    expect(ev.errorCode).toBeUndefined();
+  });
+
+  // Review followup: SDCP_PRINT_CAUSE code 0 is NOT documented as a no-error
+  // sentinel (unlike Bambu's print_error). Pass through as errorCode='0'.
+  it('Status=3 with ErrorStatusReason=0 → kind=firmware_error, errorCode "0"', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(statusMsg({ Status: 3, Filename: 'fail.ctb', ErrorStatusReason: 0 }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('firmware_error');
+    expect(events[0]!.errorCode).toBe('0');
+    await sub.stop();
+  });
+
+  it('maps Status=2 (COMPLETE) → kind=completed (regression)', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(
+      statusMsg({ Status: 2, Filename: 'done.ctb', CurrentLayer: 500, TotalLayer: 500 }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('completed');
+    expect(events[0]!.errorCode).toBeUndefined();
+    expect(events[0]!.severity).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('maps Status=9 (COMPLETE alt) → kind=completed', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    ws.fireMessageJson(
+      statusMsg({ Status: 9, Filename: 'done-alt.ctb', CurrentLayer: 800, TotalLayer: 800 }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('completed');
+    expect(events[0]!.errorCode).toBeUndefined();
+    expect(events[0]!.severity).toBeUndefined();
+    await sub.stop();
+  });
+
+  it('rawPayload is the full Status envelope (entire push frame)', async () => {
+    const { sub, promise } = startSubscriber();
+    await promise;
+    const ws = factoryRig.sockets[0]!;
+    ws.fireOpen();
+    const frame = statusMsg({ Status: 3, Filename: 'raw.ctb', ErrorStatusReason: 'BedAdhesion' });
+    ws.fireMessageJson(frame);
+    expect(events).toHaveLength(1);
+    // rawPayload is the full SdcpStatusPayload envelope, not a sub-object
+    expect((events[0]!.rawPayload as Record<string, unknown>).Topic).toBe(STATUS_TOPIC);
+    expect((events[0]!.rawPayload as Record<string, unknown>).Status).toBeDefined();
     await sub.stop();
   });
 });

@@ -562,7 +562,7 @@ Primary durability is preserved regardless of retention: `dispatch_jobs.complete
 
 ### HTTP API
 
-- `GET /api/v1/forge/dispatch/:id/status` — owner-or-admin. Returns `{ dispatch_job_id, status, progress_pct, last_status_at, events: [...latest 50 ordered DESC] }`.
+- `GET /api/v1/forge/dispatch/:id/status` — owner-or-admin. Returns `{ dispatch_job_id, status, progress_pct, last_status_at, events: [...latest 50 ordered DESC], warnings: [...all active warnings ordered newest-first] }`. The `warnings` array is sourced from `dispatch_warnings` (V2-005f-CF-5a) — see "Native failure taxonomy + warnings (CF-5a)" sub-section below.
 - `GET /api/v1/forge/dispatch/:id/status/stream` — owner-or-admin Server-Sent Events. Streams `event: status\ndata: <json>\n\n` per printer event. Auto-disconnects on terminal state. Already-terminal dispatches return one terminal frame and close. Heartbeat every 30s.
 
 UI clients should prefer SSE for live progress and fall back to polling `/status` for historical state.
@@ -605,7 +605,7 @@ Both knobs are hardcoded constants (`RECONNECT_JITTER_PCT = 0.20`, `BOOT_STAGGER
 - **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival. **Shipped (V2-cleanup-batch-3-T2)** — see "Retention" sub-section above.
 - **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline. **Shipped (V2-cleanup-batch-3-T3)** — see "Adaptive polling — ChituNetwork" sub-section above for the OFFLINE state row + exponential-backoff details.
 - **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening. **Shipped (V2-005f-CF-4)** — see "Reconnect storm hardening (CF-4)" sub-section above.
-- **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence.
+- **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence. CF-5a (native failure taxonomy + warnings) **Shipped (V2-005f-CF-5a)** — see "Native failure taxonomy + warnings (CF-5a)" sub-section below. CF-5b (slicer-estimate divergence) still deferred.
 - **V2-005f-CF-6**: Playwright UI tests for status SSE streams (blocked on V2-009 UI scope).
 - **V2-005f-CF-7**: Encrypted CTB binary header parsing (today encrypted variants return null estimates).
 
@@ -797,4 +797,37 @@ This sidesteps the UX gap the original V2-005e plan stub flagged. True one-click
 - **V2-005e-CF-3**: Pending-pairings queue browse UI.
 - **V2-005e-CF-4**: Sidecar metadata extraction for additional formats — `.ctb` header source-file reference, NanoDLP zip metadata, `.sl1` sidecar.
 - **V2-005e-CF-Z**: Proper FS adapter handoff for slice files (today they're stored AS-IS at the inbox-arrived path; should move to per-inbox stash root with path-template-driven placement, matching the rest of V2-002's portable-paths convention).
+
+## V2-005f-CF-5a Native failure taxonomy + warnings
+
+### Native failure taxonomy + warnings (CF-5a)
+
+V2-005f-CF-5a expanded the StatusEventKind union from 8 → 11 values. The new kinds:
+
+- **`'cancelled'`** — operator-initiated termination, distinct from firmware-detected failure
+- **`'firmware_error'`** — firmware-detected fault, possibly recoverable; carries `errorCode` (Klipper history-status / OctoPrint reason / Bambu print_error / SDCP ErrorStatusReason) + optional `errorMessage`
+- **`'warning'`** — non-terminal advisory (Bambu HMS codes, OctoPrint plugin warnings); carries `severity: 'info' | 'warning' | 'error'` derived from protocol-native tiers (Bambu blue/orange/red HMS levels)
+
+`DISPATCH_FAILURE_REASONS` extended with `'cancelled'` and `'firmware-error'` so terminal transitions reflect the new distinctions.
+
+**Warning dedup**: a new `dispatch_warnings` table holds one row per `(dispatch_job_id, protocol, error_code)` via unique index. The first occurrence of a unique error code persists to `dispatch_status_events` + emits via SSE bus; repeats just bump `count` + `last_seen_at`. Prevents Bambu HMS bus flooding under prolonged fault chatter.
+
+**HTTP API**: `GET /api/v1/forge/dispatch/:id/status` response now includes a `warnings: [{warning_id, error_code, protocol, severity, message, first_seen_at, last_seen_at, count}]` array. Empty when no warnings. Timestamps are epoch milliseconds (integers), matching the existing `occurred_at` / `ingested_at` convention in the `events` array.
+
+**Per-protocol mappings:**
+- **Moonraker**: `state=cancelled`/history `interrupted` → `cancelled`; `state=error`/history `klippy_shutdown`/`klippy_disconnect`/`server_exit` → `firmware_error` with errorCode
+- **OctoPrint**: `event.type=PrintCancelled`/`PrintFailed reason=cancelled` → `cancelled`; `PrintFailed reason=error`/`Error event` → `firmware_error` with errorCode from `Error.reason` enum
+- **Bambu MQTT**: PAUSE→IDLE without FINISH → `cancelled`; `gcode_state=FAILED` → `firmware_error` with `print_error` numeric code; HMS codes → `warning` events with severity from level (0=info, 1=warning, 2+=error)
+- **SDCP**: `Status=8 (STOPPED)` → `cancelled`; `Status=3 (FAIL)` with ErrorStatusReason → `firmware_error` with errorCode
+- **ChituNetwork**: stays coarse (research-confirmed no signal beyond M27); CF-5a-CF-A defers M27 byte-regression detection
+
+### Carry-forwards
+
+| Carry-forward | Status | Notes |
+|---|---|---|
+| **CF-5a** | **Shipped** | Native failure taxonomy + warnings — this section |
+| **CF-5a-CF-A** | Deferred | ChituNetwork M27 byte-regression → firmware_error |
+| **CF-5a-CF-B** | Deferred | Severity classification refinement from operational data |
+| **CF-5a-CF-C** | Deferred | Per-protocol error-code dictionary for UI translation (e.g. HMS 0C00-0300-0003-0008 → "Possible spaghetti detected") |
+| **CF-5a-CF-D** | Deferred | Moonraker `interrupted` classification — currently maps to `cancelled` but is actually Moonraker service termination (host failure), not operator stop (deferred in T_a2 `72898e6`). Revisit once operational data accumulates. |
 

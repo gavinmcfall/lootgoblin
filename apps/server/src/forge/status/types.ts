@@ -90,6 +90,16 @@ export interface MeasuredConsumptionSlot {
  *   measuredConsumption — per-slot consumption populated on `completed`
  *                         (and sometimes `failed`) events when the
  *                         protocol exposes it. Empty / undefined otherwise.
+ *   errorCode           — V2-005f-CF-5a: protocol-native error/warning code
+ *                         (e.g. Bambu HMS code, SDCP ErrorStatusReason).
+ *                         Populated on `failed`, `firmware_error`, and
+ *                         `warning` events.
+ *   errorMessage        — V2-005f-CF-5a: operator-readable text describing
+ *                         the error/warning. May be undefined for machine-
+ *                         only codes.
+ *   severity            — V2-005f-CF-5a: severity tier (`info` | `warning` |
+ *                         `error`). Only meaningful on `warning` and
+ *                         `firmware_error` events.
  *   rawPayload          — the protocol-native payload, persisted as-is to
  *                         `dispatch_status_events.event_data` for the audit
  *                         log. Shape varies per `StatusSourceProtocol`.
@@ -104,6 +114,12 @@ export interface StatusEvent {
   totalLayers?: number;
   remainingMin?: number;
   measuredConsumption?: MeasuredConsumptionSlot[];
+  /** V2-005f-CF-5a: protocol-native error/warning code. */
+  errorCode?: string;
+  /** V2-005f-CF-5a: operator-readable text. */
+  errorMessage?: string;
+  /** V2-005f-CF-5a: severity tier; only meaningful when kind is 'warning' or 'firmware_error'. */
+  severity?: 'info' | 'warning' | 'error';
   rawPayload: unknown;
   occurredAt: Date;
 }

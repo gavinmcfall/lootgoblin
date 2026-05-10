@@ -33,8 +33,8 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 
-import { createThingiverseAdapter } from '../../src/scavengers/adapters/thingiverse';
-import type { FetchContext, FetchTarget, ScavengerEvent } from '../../src/scavengers/types';
+import { createThingiverseAdapter } from '../../src/scouts/adapters/thingiverse';
+import type { FetchContext, FetchTarget, ScoutEvent } from '../../src/scouts/types';
 
 // ---------------------------------------------------------------------------
 // Test fixtures + helpers
@@ -159,8 +159,8 @@ async function collectEvents(
   adapter: ReturnType<typeof createThingiverseAdapter>,
   ctx: FetchContext,
   target: FetchTarget,
-): Promise<ScavengerEvent[]> {
-  const events: ScavengerEvent[] = [];
+): Promise<ScoutEvent[]> {
+  const events: ScoutEvent[] = [];
   for await (const evt of adapter.fetch(ctx, target)) events.push(evt);
   return events;
 }

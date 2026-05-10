@@ -36,7 +36,7 @@ import { sql } from 'drizzle-orm';
 import { logger } from '../logger';
 import { getDb, schema } from '../db/client';
 import { env } from '../env';
-import { sleep } from '../scavengers/rate-limit';
+import { sleep } from '../scouts/rate-limit';
 
 // ---------------------------------------------------------------------------
 // Tuning

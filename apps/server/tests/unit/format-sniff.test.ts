@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 
-import { sniffFormat } from '../../src/scavengers/format-sniff';
+import { sniffFormat } from '../../src/scouts/format-sniff';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -39,7 +39,7 @@ import {
 } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { getServerDb, schema } from '@/db/client';
-import { defaultRegistry, hasCapability, type SourceId } from '@/scavengers';
+import { defaultRegistry, hasCapability, type SourceId } from '@/scouts';
 import type {
   WatchlistSubscriptionKind,
   WatchlistSubscriptionParameters,
@@ -219,7 +219,7 @@ export function validateCapability(
   const adapter = defaultRegistry.getSubscribable(sourceAdapterId as SourceId);
   if (!adapter) {
     // 422 (unsupported-source) — same status as /api/v1/ingest's "unknown
-    // sourceId" branch. The id may exist as a ScavengerAdapter but lack a
+    // sourceId" branch. The id may exist as a ScoutAdapter but lack a
     // SubscribableAdapter; the user-visible result is the same.
     return {
       ok: false,

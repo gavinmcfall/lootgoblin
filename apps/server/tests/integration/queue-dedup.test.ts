@@ -25,7 +25,7 @@ vi.mock('next/server', () => ({
   },
 }));
 
-import { POST } from '../../src/app/api/v1/queue/route';
+import { POST } from '../../src/app/api/v1/stash/route';
 
 beforeAll(async () => {
   process.env.DATABASE_URL = 'file:/tmp/lootgoblin-dedup.db';
@@ -39,14 +39,14 @@ beforeEach(async () => {
 });
 
 function makeReq(body: unknown): Request {
-  return new Request('http://local/api/v1/queue', {
+  return new Request('http://local/api/v1/stash', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': 'test' },
     body: JSON.stringify(body),
   });
 }
 
-describe('POST /api/v1/queue dedup', () => {
+describe('POST /api/v1/stash dedup', () => {
   it('returns duplicate=true when prior done row exists and force is not set', async () => {
     const db = getDb() as any;
     const priorId = randomUUID();

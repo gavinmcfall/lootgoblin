@@ -12,7 +12,7 @@ export default function HistoryPage() {
 
   async function retry(id: string, sourceId: string, sourceItemId: string, sourceUrl: string) {
     // Re-enqueue with force=true to bypass dedup
-    const res = await fetch('/api/v1/queue', {
+    const res = await fetch('/api/v1/stash', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { nextRetry, sleep } from '../../src/scavengers/rate-limit';
+import { nextRetry, sleep } from '../../src/scouts/rate-limit';
 
 // ---------------------------------------------------------------------------
 // nextRetry — backoff decision

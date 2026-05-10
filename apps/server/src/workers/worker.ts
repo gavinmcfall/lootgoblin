@@ -6,9 +6,9 @@ import { getDb, schema } from '../db/client';
 import { leaseNextItem, completeItem, failItem, resetRunningToQueued } from './queue';
 import { getAdapter } from '../adapters';
 import { getPackager } from '../packagers';
-import { getWriter } from '../destinations';
+import { getWriter } from '../hoard';
 import { decrypt } from '../crypto';
-import { ensureEmptyStagingDir } from '../destinations/filesystem/atomic';
+import { ensureEmptyStagingDir } from '../hoard/filesystem/atomic';
 import { classifyError, nextRetryDelayMs, defaultRetryPolicy } from './retry';
 import { RateLimiter } from './rate-limit';
 import { logger } from '../logger';
@@ -37,7 +37,7 @@ export async function runOneItem(): Promise<'done' | 'failed' | 'idle' | 'awaiti
     await ensureEmptyStagingDir(staging);
 
     if (!item.credentialId) throw new Error('No credential assigned');
-    const [cred] = await db.select().from(schema.sourceCredentials).where(eq(schema.sourceCredentials.id, item.credentialId));
+    const [cred] = await db.select().from(schema.scoutCredentials).where(eq(schema.scoutCredentials.id, item.credentialId));
     if (!cred) throw new Error('Credential not found');
     const blob = decrypt(Buffer.from(cred.encryptedBlob as Buffer).toString(), process.env.LOOTGOBLIN_SECRET!);
 
@@ -65,8 +65,8 @@ export async function runOneItem(): Promise<'done' | 'failed' | 'idle' | 'awaiti
     const packager = getPackager('manyfold-v0');
     await packager.package(staging, fetched);
 
-    if (!item.destinationId) throw new Error('No destination assigned');
-    const [dest] = await db.select().from(schema.destinations).where(eq(schema.destinations.id, item.destinationId));
+    if (!item.hoardId) throw new Error('No destination assigned');
+    const [dest] = await db.select().from(schema.hoardLibraries).where(eq(schema.hoardLibraries.id, item.hoardId));
     if (!dest) throw new Error('Destination not found');
 
     const writer = getWriter(dest.type);

@@ -31,11 +31,11 @@ import { resolveAcl } from '@/acl/resolver';
 import { getDb, schema } from '@/db/client';
 import { eq } from 'drizzle-orm';
 import {
-  createDefaultRegistry,
+  createDefaultScoutRegistry,
   createIngestPipeline,
   sanitizeFilename,
   type IngestOutcome,
-} from '@/scavengers';
+} from '@/scouts';
 import { logger } from '@/logger';
 
 // ---------------------------------------------------------------------------
@@ -54,15 +54,15 @@ const UploadMetadataBody = z.object({
 // ---------------------------------------------------------------------------
 // Process-level singleton registry
 //
-// createDefaultRegistry() is cheap (in-memory Map), but we share the instance
+// createDefaultScoutRegistry() is cheap (in-memory Map), but we share the instance
 // so adapter state (if any future adapter caches credentials) is stable across
 // requests.
 // ---------------------------------------------------------------------------
 
-// HMR-safe: stateless factory — createDefaultRegistry() returns a fresh Map-backed
+// HMR-safe: stateless factory — createDefaultScoutRegistry() returns a fresh Map-backed
 // registry with no external state. Multiple module reloads during dev HMR produce
 // independent registries that are functionally equivalent.
-const _registry = createDefaultRegistry();
+const _registry = createDefaultScoutRegistry();
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -218,7 +218,7 @@ export async function POST(req: NextRequest) {
   // ── 7. Resolve upload adapter ─────────────────────────────────────────────
   const adapter = _registry.getById('upload');
   if (!adapter) {
-    // Should never happen — upload adapter is always registered in createDefaultRegistry.
+    // Should never happen — upload adapter is always registered in createDefaultScoutRegistry.
     await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     return NextResponse.json(
       { error: 'internal', reason: 'upload adapter not registered' },
@@ -244,7 +244,7 @@ export async function POST(req: NextRequest) {
       adapter,
       target: {
         kind: 'raw',
-        payload: { tempDir, metadata } satisfies import('@/scavengers').UploadRawPayload,
+        payload: { tempDir, metadata } satisfies import('@/scouts').UploadRawPayload,
       },
     });
   } catch (err) {

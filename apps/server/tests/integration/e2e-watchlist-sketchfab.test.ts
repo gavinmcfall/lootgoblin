@@ -271,9 +271,9 @@ describe('e2e — watchlist (sketchfab)', () => {
     // Verify the credential blob has been rewritten with the new tokens.
     const dbc = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
     const after = await dbc
-      .select({ encryptedBlob: schema.sourceCredentials.encryptedBlob })
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.id, seeded.id));
+      .select({ encryptedBlob: schema.scoutCredentials.encryptedBlob })
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.id, seeded.id));
     const newBlob = Buffer.from(after[0]!.encryptedBlob as Uint8Array);
     const decrypted = JSON.parse(decrypt(newBlob.toString('utf8'), process.env.LOOTGOBLIN_SECRET!));
     expect(decrypted.accessToken).toBe('access-refreshed');

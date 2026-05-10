@@ -1,12 +1,12 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { DestinationForm, type DestinationFormValues } from '@/components/libraries/DestinationForm';
+import { DestinationForm, type DestinationFormValues } from '@/components/hoard/DestinationForm';
 
 export default function NewLibraryPage() {
   const router = useRouter();
   async function onSubmit(values: DestinationFormValues) {
-    const res = await fetch('/api/v1/destinations', {
+    const res = await fetch('/api/v1/hoard', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

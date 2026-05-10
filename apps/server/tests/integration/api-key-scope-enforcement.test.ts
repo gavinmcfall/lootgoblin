@@ -67,8 +67,8 @@ beforeAll(async () => {
 });
 
 // ── Route-level scope enforcement tests ───────────────────────────────────
-describe('POST /api/v1/queue — scope enforcement', () => {
-  const getRoute = () => import('../../src/app/api/v1/queue/route').then((m) => m.POST);
+describe('POST /api/v1/stash — scope enforcement', () => {
+  const getRoute = () => import('../../src/app/api/v1/stash/route').then((m) => m.POST);
 
   it('returns 200 when extension_pairing key hits queue POST', async () => {
     mockGetSession.mockResolvedValue(null);

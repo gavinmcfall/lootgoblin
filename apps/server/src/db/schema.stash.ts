@@ -91,11 +91,14 @@ export const collections = sqliteTable(
     pathTemplate: text('path_template').notNull(),
     /**
      * FK → stashRoots.id.
-     * RESTRICT on delete: you cannot remove a root while Collections still reference it.
+     * CASCADE on delete: removing a root removes all its Collections (and via
+     * subsequent cascades, all Loot inside them). The RESTRICT guard is
+     * enforced at the application layer (check for collections before allowing
+     * root deletion in the UI/API).
      */
     stashRootId: text('stash_root_id')
       .notNull()
-      .references(() => stashRoots.id, { onDelete: 'restrict' }),
+      .references(() => stashRoots.id, { onDelete: 'cascade' }),
     createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
     updatedAt: ts('updated_at').notNull().default(sql`(unixepoch() * 1000)`),
   },

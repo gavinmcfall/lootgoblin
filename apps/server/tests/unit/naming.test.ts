@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expandTemplate, sanitizePathSegment } from '../../src/destinations/filesystem/naming';
+import { expandTemplate, sanitizePathSegment } from '../../src/hoard/filesystem/naming';
 
 describe('naming', () => {
   const ctx = {

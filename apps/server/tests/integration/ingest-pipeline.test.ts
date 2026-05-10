@@ -28,8 +28,8 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 
 import { runMigrations, resetDbCache, getDb, schema } from '../../src/db/client';
-import { createIngestPipeline } from '../../src/scavengers/pipeline';
-import type { ScavengerAdapter, ScavengerEvent, FetchContext, FetchTarget } from '../../src/scavengers/types';
+import { createIngestPipeline } from '../../src/scouts/pipeline';
+import type { ScoutAdapter, ScoutEvent, FetchContext, FetchTarget } from '../../src/scouts/types';
 
 // ---------------------------------------------------------------------------
 // DB setup
@@ -116,7 +116,7 @@ async function writeAndComplete(
   stagingDir: string,
   filename: string,
   content: Buffer | string,
-): Promise<ScavengerEvent> {
+): Promise<ScoutEvent> {
   const stagedPath = path.join(stagingDir, filename);
   await fsp.writeFile(stagedPath, content);
   return {
@@ -133,8 +133,8 @@ async function writeAndComplete(
 
 function makeFakeAdapter(
   id: string,
-  eventsFactory: (ctx: FetchContext, target: FetchTarget) => AsyncIterable<ScavengerEvent>,
-): ScavengerAdapter {
+  eventsFactory: (ctx: FetchContext, target: FetchTarget) => AsyncIterable<ScoutEvent>,
+): ScoutAdapter {
   return {
     id: id as import('../../src/scavengers/types').SourceId,
     supports: () => false,
@@ -142,7 +142,7 @@ function makeFakeAdapter(
   };
 }
 
-async function* yieldEvents(...events: ScavengerEvent[]): AsyncGenerator<ScavengerEvent> {
+async function* yieldEvents(...events: ScoutEvent[]): AsyncGenerator<ScoutEvent> {
   for (const e of events) yield e;
 }
 
@@ -160,7 +160,7 @@ describe('IngestPipeline', () => {
 
     const adapter = makeFakeAdapter('cults3d', (ctx) => ({
       [Symbol.asyncIterator]: async function* () {
-        yield { kind: 'progress', message: 'Downloading...', completedBytes: 50, totalBytes: 100 } as ScavengerEvent;
+        yield { kind: 'progress', message: 'Downloading...', completedBytes: 50, totalBytes: 100 } as ScoutEvent;
         // Write a real PNG-magic file to stagingDir
         const magic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
         const stagedPath = path.join(ctx.stagingDir, 'model.png');
@@ -174,7 +174,7 @@ describe('IngestPipeline', () => {
             creator: 'Designer X',
             files: [{ stagedPath, suggestedName: 'model.png', size: magic.length }],
           },
-        } as ScavengerEvent;
+        } as ScoutEvent;
       },
     }));
 
@@ -251,7 +251,7 @@ describe('IngestPipeline', () => {
             title: 'Duplicate Model',
             files: [{ stagedPath, suggestedName: 'dupe.png', size: fileContent.length }],
           },
-        } as ScavengerEvent;
+        } as ScoutEvent;
       },
     }));
 
@@ -310,7 +310,7 @@ describe('IngestPipeline', () => {
             title: 'Same Source Item',
             files: [{ stagedPath, suggestedName: 'file.stl', size: 22 }],
           },
-        } as ScavengerEvent;
+        } as ScoutEvent;
       },
     }));
 
@@ -342,7 +342,7 @@ describe('IngestPipeline', () => {
             title: 'Bad File',
             files: [{ stagedPath, suggestedName: 'malware.exe', size: 4 }],
           },
-        } as ScavengerEvent;
+        } as ScoutEvent;
       },
     }));
 
@@ -382,7 +382,7 @@ describe('IngestPipeline', () => {
             title: 'Big File',
             files: [{ stagedPath, suggestedName: 'big.png', size: bigContent.length }],
           },
-        } as ScavengerEvent;
+        } as ScoutEvent;
       },
     }));
 
@@ -411,7 +411,7 @@ describe('IngestPipeline', () => {
             kind: 'failed',
             reason: 'content-removed',
             details: 'HTTP 404 — item gone',
-          } as ScavengerEvent;
+          } as ScoutEvent;
         },
       };
     });
@@ -448,7 +448,7 @@ describe('IngestPipeline', () => {
             kind: 'auth-required',
             reason: 'expired',
             surfaceToUser: 'Please log in again',
-          } as ScavengerEvent;
+          } as ScoutEvent;
         },
       };
     });
@@ -491,7 +491,7 @@ describe('IngestPipeline', () => {
             title: 'Failing Placement',
             files: [{ stagedPath, suggestedName: 'model.png', size: magic.length }],
           },
-        } as ScavengerEvent;
+        } as ScoutEvent;
       },
     }));
 
@@ -520,7 +520,7 @@ describe('IngestPipeline', () => {
     const adapterFailed = makeFakeAdapter('upload', (ctx) => ({
       [Symbol.asyncIterator]: async function* () {
         capturedDirs.push(ctx.stagingDir);
-        yield { kind: 'failed', reason: 'unknown', details: 'test' } as ScavengerEvent;
+        yield { kind: 'failed', reason: 'unknown', details: 'test' } as ScoutEvent;
       },
     }));
     await createIngestPipeline({ ownerId, collectionId, stagingRoot, dbUrl: DB_URL })
@@ -530,7 +530,7 @@ describe('IngestPipeline', () => {
     const adapterAuth = makeFakeAdapter('upload', (ctx) => ({
       [Symbol.asyncIterator]: async function* () {
         capturedDirs.push(ctx.stagingDir);
-        yield { kind: 'auth-required', reason: 'missing' } as ScavengerEvent;
+        yield { kind: 'auth-required', reason: 'missing' } as ScoutEvent;
       },
     }));
     await createIngestPipeline({ ownerId, collectionId, stagingRoot, dbUrl: DB_URL })
@@ -556,11 +556,11 @@ describe('IngestPipeline', () => {
       [Symbol.asyncIterator]: async function* (this: void) {
         // Adapter checks the signal and yields failed immediately
         if (ac.signal.aborted) {
-          yield { kind: 'failed', reason: 'unknown', details: 'aborted by signal' } as ScavengerEvent;
+          yield { kind: 'failed', reason: 'unknown', details: 'aborted by signal' } as ScoutEvent;
           return;
         }
         // Should not reach here
-        yield { kind: 'failed', reason: 'unknown', details: 'not aborted' } as ScavengerEvent;
+        yield { kind: 'failed', reason: 'unknown', details: 'not aborted' } as ScoutEvent;
       },
     }));
 
@@ -589,7 +589,7 @@ describe('IngestPipeline', () => {
     // first time the consumer awaits a yielded value). Using an async
     // generator that throws before yielding is the closest approximation of
     // an adapter that blows up before emitting anything.
-    const adapter: ScavengerAdapter = {
+    const adapter: ScoutAdapter = {
       id: 'upload',
       supports: () => false,
       fetch: (ctx) => {
@@ -599,7 +599,7 @@ describe('IngestPipeline', () => {
             throw new Error('boom — adapter exploded before yielding');
             // unreachable, but satisfies generator shape
             // eslint-disable-next-line no-unreachable
-            yield { kind: 'failed', reason: 'unknown', details: '' } as ScavengerEvent;
+            yield { kind: 'failed', reason: 'unknown', details: '' } as ScoutEvent;
           },
         };
       },
@@ -646,7 +646,7 @@ describe('IngestPipeline', () => {
             title: 'Empty',
             files: [],
           },
-        } as ScavengerEvent;
+        } as ScoutEvent;
       },
     }));
 
@@ -678,10 +678,10 @@ describe('IngestPipeline', () => {
         // Emit 12 rate-limited events; with maxAttempts=10 in test config,
         // the 11th should trip the ceiling.
         for (let i = 1; i <= 12; i++) {
-          yield { kind: 'rate-limited', retryAfterMs: 0, attempt: i } as ScavengerEvent;
+          yield { kind: 'rate-limited', retryAfterMs: 0, attempt: i } as ScoutEvent;
         }
         // Never reach here, but safe-terminate with failed.
-        yield { kind: 'failed', reason: 'unknown', details: 'should not reach' } as ScavengerEvent;
+        yield { kind: 'failed', reason: 'unknown', details: 'should not reach' } as ScoutEvent;
       },
     }));
 

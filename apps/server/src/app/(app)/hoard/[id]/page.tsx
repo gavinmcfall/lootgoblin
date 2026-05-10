@@ -3,7 +3,7 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { use } from 'react';
-import { DestinationForm, type DestinationFormValues } from '@/components/libraries/DestinationForm';
+import { DestinationForm, type DestinationFormValues } from '@/components/hoard/DestinationForm';
 
 interface Destination {
   id: string;
@@ -19,11 +19,11 @@ export default function EditLibraryPage({ params }: { params: Promise<{ id: stri
   const { data, isLoading } = useQuery({
     queryKey: ['destination', id],
     queryFn: async (): Promise<{ destination: Destination }> =>
-      (await fetch(`/api/v1/destinations/${id}`)).json(),
+      (await fetch(`/api/v1/hoard/${id}`)).json(),
   });
 
   async function onSubmit(values: DestinationFormValues) {
-    const res = await fetch(`/api/v1/destinations/${id}`, {
+    const res = await fetch(`/api/v1/hoard/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -44,7 +44,7 @@ export default function EditLibraryPage({ params }: { params: Promise<{ id: stri
 
   async function onDelete() {
     if (!confirm('Delete this library?')) return;
-    const res = await fetch(`/api/v1/destinations/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/v1/hoard/${id}`, { method: 'DELETE' });
     if (!res.ok) {
       toast.error('Delete failed');
       return;

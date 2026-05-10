@@ -1,5 +1,5 @@
 /**
- * Integration tests — /api/v1/source-auth/:sourceId/* — V2-003-T9
+ * Integration tests — /api/v1/scout-auth/:sourceId/* — V2-003-T9
  *
  * Real SQLite. Auth is mocked via the same `request-auth` shim used by other
  * v2 route tests. Upstream OAuth token endpoints are mocked via msw at the
@@ -93,13 +93,13 @@ function reqJson(method: string, path: string, body?: unknown): Request {
 // GET status / DELETE revoke
 // ---------------------------------------------------------------------------
 
-describe('GET /api/v1/source-auth/:sourceId', () => {
+describe('GET /api/v1/scout-auth/:sourceId', () => {
   it('returns 401 without auth', async () => {
     mockAuthenticate.mockResolvedValueOnce(null);
-    const { GET } = await import('../../src/app/api/v1/source-auth/[sourceId]/route');
+    const { GET } = await import('../../src/app/api/v1/scout-auth/[scoutId]/route');
     const res = await GET(
-      reqJson('GET', '/api/v1/source-auth/sketchfab') as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      reqJson('GET', '/api/v1/scout-auth/sketchfab') as never,
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     expect(res.status).toBe(401);
   });
@@ -107,10 +107,10 @@ describe('GET /api/v1/source-auth/:sourceId', () => {
   it('returns 404 for unknown sourceId', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { GET } = await import('../../src/app/api/v1/source-auth/[sourceId]/route');
+    const { GET } = await import('../../src/app/api/v1/scout-auth/[scoutId]/route');
     const res = await GET(
-      reqJson('GET', '/api/v1/source-auth/unknown') as never,
-      { params: Promise.resolve({ sourceId: 'unknown' }) },
+      reqJson('GET', '/api/v1/scout-auth/unknown') as never,
+      { params: Promise.resolve({ scoutId: 'unknown' }) },
     );
     expect(res.status).toBe(404);
   });
@@ -118,15 +118,15 @@ describe('GET /api/v1/source-auth/:sourceId', () => {
   it('returns configured:false when no credential row exists', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { GET } = await import('../../src/app/api/v1/source-auth/[sourceId]/route');
+    const { GET } = await import('../../src/app/api/v1/scout-auth/[scoutId]/route');
     // Use cults3d so the source has no prior credential from earlier tests.
     const res = await GET(
-      reqJson('GET', '/api/v1/source-auth/cults3d') as never,
-      { params: Promise.resolve({ sourceId: 'cults3d' }) },
+      reqJson('GET', '/api/v1/scout-auth/cults3d') as never,
+      { params: Promise.resolve({ scoutId: 'cults3d' }) },
     );
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json).toMatchObject({ sourceId: 'cults3d', configured: false });
+    expect(json).toMatchObject({ scoutId: 'cults3d', configured: false });
   });
 });
 
@@ -134,13 +134,13 @@ describe('GET /api/v1/source-auth/:sourceId', () => {
 // POST api-key
 // ---------------------------------------------------------------------------
 
-describe('POST /api/v1/source-auth/:sourceId/api-key', () => {
+describe('POST /api/v1/scout-auth/:sourceId/api-key', () => {
   it('returns 401 without auth', async () => {
     mockAuthenticate.mockResolvedValueOnce(null);
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/api-key/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/api-key/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/cults3d/api-key', { apiKey: 'x' }) as never,
-      { params: Promise.resolve({ sourceId: 'cults3d' }) },
+      reqJson('POST', '/api/v1/scout-auth/cults3d/api-key', { apiKey: 'x' }) as never,
+      { params: Promise.resolve({ scoutId: 'cults3d' }) },
     );
     expect(res.status).toBe(401);
   });
@@ -148,10 +148,10 @@ describe('POST /api/v1/source-auth/:sourceId/api-key', () => {
   it('returns 400 when apiKey is empty', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/api-key/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/api-key/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/cults3d/api-key', { apiKey: '' }) as never,
-      { params: Promise.resolve({ sourceId: 'cults3d' }) },
+      reqJson('POST', '/api/v1/scout-auth/cults3d/api-key', { apiKey: '' }) as never,
+      { params: Promise.resolve({ scoutId: 'cults3d' }) },
     );
     expect(res.status).toBe(400);
   });
@@ -159,21 +159,21 @@ describe('POST /api/v1/source-auth/:sourceId/api-key', () => {
   it('persists an encrypted credential bag for a valid apiKey', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/api-key/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/api-key/route');
 
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/cults3d/api-key', { apiKey: 'real-key-value' }) as never,
-      { params: Promise.resolve({ sourceId: 'cults3d' }) },
+      reqJson('POST', '/api/v1/scout-auth/cults3d/api-key', { apiKey: 'real-key-value' }) as never,
+      { params: Promise.resolve({ scoutId: 'cults3d' }) },
     );
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json).toMatchObject({ ok: true, sourceId: 'cults3d' });
+    expect(json).toMatchObject({ ok: true, scoutId: 'cults3d' });
     expect(typeof json.credentialId).toBe('string');
 
     const rows = await db()
-      .select({ id: schema.sourceCredentials.id, kind: schema.sourceCredentials.kind })
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.sourceId, 'cults3d'));
+      .select({ id: schema.scoutCredentials.id, kind: schema.scoutCredentials.kind })
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.scoutId, 'cults3d'));
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows.find((r) => r.id === json.credentialId)?.kind).toBe('api-key');
   });
@@ -183,17 +183,17 @@ describe('POST /api/v1/source-auth/:sourceId/api-key', () => {
 // OAuth start
 // ---------------------------------------------------------------------------
 
-describe('POST /api/v1/source-auth/:sourceId/oauth/start', () => {
+describe('POST /api/v1/scout-auth/:sourceId/oauth/start', () => {
   it('returns 422 for sources with no OAuth provider config', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/start/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/cults3d/oauth/start', {
+      reqJson('POST', '/api/v1/scout-auth/cults3d/oauth/start', {
         redirectUri: 'http://local/cb',
         clientId: 'cid',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'cults3d' }) },
+      { params: Promise.resolve({ scoutId: 'cults3d' }) },
     );
     expect(res.status).toBe(422);
   });
@@ -201,13 +201,13 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/start', () => {
   it('returns authorizationUrl + state and persists oauth_state row (sketchfab)', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/start/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/start', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/start', {
         redirectUri: 'http://local/cb',
         clientId: 'sketch-client',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -229,13 +229,13 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/start', () => {
   it('emits PKCE params for google-drive', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/start/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/google-drive/oauth/start', {
+      reqJson('POST', '/api/v1/scout-auth/google-drive/oauth/start', {
         redirectUri: 'http://local/cb',
         clientId: 'gdrive-client',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'google-drive' }) },
+      { params: Promise.resolve({ scoutId: 'google-drive' }) },
     );
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -249,7 +249,7 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/start', () => {
 // OAuth callback
 // ---------------------------------------------------------------------------
 
-describe('POST /api/v1/source-auth/:sourceId/oauth/callback', () => {
+describe('POST /api/v1/scout-auth/:sourceId/oauth/callback', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -257,16 +257,16 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback', () => {
   it('returns 400 for unknown state', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/callback/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/callback/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/callback', {
         code: 'auth-code',
         state: 'unknown-state-value',
         clientId: 'cid',
         clientSecret: 'csec',
         redirectUri: 'http://local/cb',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     expect(res.status).toBe(400);
     const json = await res.json();
@@ -278,13 +278,13 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback', () => {
 
     // 1. POST oauth/start to get a real state row.
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST: startPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    const { POST: startPOST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/start/route');
     const startRes = await startPOST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/start', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/start', {
         redirectUri: 'http://local/cb',
         clientId: 'sketch-client',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     const startJson = await startRes.json();
     const state = startJson.state as string;
@@ -305,20 +305,20 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback', () => {
 
     // 3. POST oauth/callback with the real state.
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/callback/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/callback/route');
     const cbRes = await POST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/callback', {
         code: 'auth-code',
         state,
         clientId: 'sketch-client',
         clientSecret: 'sketch-secret',
         redirectUri: 'http://local/cb',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     expect(cbRes.status).toBe(200);
     const cbJson = await cbRes.json();
-    expect(cbJson).toMatchObject({ ok: true, sourceId: 'sketchfab' });
+    expect(cbJson).toMatchObject({ ok: true, scoutId: 'sketchfab' });
     expect(typeof cbJson.credentialId).toBe('string');
     expect(typeof cbJson.expiresAt).toBe('number');
 
@@ -331,11 +331,11 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback', () => {
     // Credential row exists with kind='oauth-token' for sketchfab.
     const rows = await db()
       .select({
-        id: schema.sourceCredentials.id,
-        kind: schema.sourceCredentials.kind,
+        id: schema.scoutCredentials.id,
+        kind: schema.scoutCredentials.kind,
       })
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.sourceId, 'sketchfab'));
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.scoutId, 'sketchfab'));
     expect(rows.find((r) => r.id === cbJson.credentialId)?.kind).toBe('oauth-token');
 
     // State row was deleted after exchange.
@@ -347,7 +347,7 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback', () => {
   });
 });
 
-describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', () => {
+describe('POST /api/v1/scout-auth/:sourceId/oauth/callback — replay race', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -357,13 +357,13 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', ()
 
     // 1. Issue a state row.
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST: startPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    const { POST: startPOST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/start/route');
     const startRes = await startPOST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/start', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/start', {
         redirectUri: 'http://local/cb-replay',
         clientId: 'cid',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     const { state } = await startRes.json();
 
@@ -375,23 +375,23 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', ()
       ),
     );
 
-    const { POST: callbackPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/callback/route');
+    const { POST: callbackPOST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/callback/route');
 
     // 3. Fire two callbacks back-to-back. The first wins, second 400s.
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const [a, b] = await Promise.all([
       callbackPOST(
-        reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+        reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/callback', {
           code: 'code1', state, clientId: 'cid', clientSecret: 'csec',
         }) as never,
-        { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+        { params: Promise.resolve({ scoutId: 'sketchfab' }) },
       ),
       callbackPOST(
-        reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+        reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/callback', {
           code: 'code2', state, clientId: 'cid', clientSecret: 'csec',
         }) as never,
-        { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+        { params: Promise.resolve({ scoutId: 'sketchfab' }) },
       ),
     ]);
 
@@ -410,13 +410,13 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', ()
     const userId = await seedUser();
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST: startPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    const { POST: startPOST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/start/route');
     await startPOST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/start', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/start', {
         redirectUri: 'http://local/legit-cb',
         clientId: 'cid',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
 
     // Read the state value out of the table (we didn't capture from response).
@@ -434,9 +434,9 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', ()
     );
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/callback/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/callback/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/callback', {
         code: 'auth-code',
         state: stateVal,
         clientId: 'cid',
@@ -444,7 +444,7 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', ()
         // Body redirectUri is intentionally different — should be IGNORED.
         redirectUri: 'http://malicious.example/steal',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     expect(res.status).toBe(200);
 
@@ -458,13 +458,13 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', ()
     const userId = await seedUser();
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST: startPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/start/route');
+    const { POST: startPOST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/start/route');
     await startPOST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/start', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/start', {
         redirectUri: 'http://local/cb',
         clientId: 'cid',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     const stateRows = await db()
       .select({ state: schema.oauthState.state })
@@ -482,12 +482,12 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', ()
     );
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/oauth/callback/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/oauth/callback/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/oauth/callback', {
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/oauth/callback', {
         code: 'c', state: stateVal, clientId: 'cid', clientSecret: 'csec',
       }) as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     expect(res.status).toBe(400);
     const json = await res.json();
@@ -503,16 +503,16 @@ describe('POST /api/v1/source-auth/:sourceId/oauth/callback — replay race', ()
 // Refresh
 // ---------------------------------------------------------------------------
 
-describe('POST /api/v1/source-auth/:sourceId/refresh', () => {
+describe('POST /api/v1/scout-auth/:sourceId/refresh', () => {
   it('returns 404 when no credential row exists', async () => {
     // Clear any prior credential rows from earlier tests in the file.
-    await db().delete(schema.sourceCredentials).where(eq(schema.sourceCredentials.sourceId, 'google-drive'));
+    await db().delete(schema.scoutCredentials).where(eq(schema.scoutCredentials.scoutId, 'google-drive'));
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/refresh/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/refresh/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/google-drive/refresh') as never,
-      { params: Promise.resolve({ sourceId: 'google-drive' }) },
+      reqJson('POST', '/api/v1/scout-auth/google-drive/refresh') as never,
+      { params: Promise.resolve({ scoutId: 'google-drive' }) },
     );
     expect(res.status).toBe(404);
   });
@@ -521,17 +521,17 @@ describe('POST /api/v1/source-auth/:sourceId/refresh', () => {
     // Seed an api-key credential for google-drive.
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST: setKeyPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/api-key/route');
+    const { POST: setKeyPOST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/api-key/route');
     await setKeyPOST(
-      reqJson('POST', '/api/v1/source-auth/google-drive/api-key', { apiKey: 'gd-key' }) as never,
-      { params: Promise.resolve({ sourceId: 'google-drive' }) },
+      reqJson('POST', '/api/v1/scout-auth/google-drive/api-key', { apiKey: 'gd-key' }) as never,
+      { params: Promise.resolve({ scoutId: 'google-drive' }) },
     );
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/refresh/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/refresh/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/google-drive/refresh') as never,
-      { params: Promise.resolve({ sourceId: 'google-drive' }) },
+      reqJson('POST', '/api/v1/scout-auth/google-drive/refresh') as never,
+      { params: Promise.resolve({ scoutId: 'google-drive' }) },
     );
     expect(res.status).toBe(422);
   });
@@ -541,7 +541,7 @@ describe('POST /api/v1/source-auth/:sourceId/refresh', () => {
     const userId = await seedUser();
 
     // Use shared helper to insert an oauth credential bag directly.
-    const { upsertSourceCredential } = await import('../../src/app/api/v1/source-auth/[sourceId]/_shared');
+    const { upsertSourceCredential } = await import('../../src/app/api/v1/scout-auth/[scoutId]/_shared');
     await upsertSourceCredential({
       sourceId: 'sketchfab',
       kind: 'oauth-token',
@@ -568,14 +568,14 @@ describe('POST /api/v1/source-auth/:sourceId/refresh', () => {
     );
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/refresh/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/refresh/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/refresh') as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/refresh') as never,
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json).toMatchObject({ ok: true, sourceId: 'sketchfab' });
+    expect(json).toMatchObject({ ok: true, scoutId: 'sketchfab' });
     expect(typeof json.expiresAt).toBe('number');
     expect(fetchSpy).toHaveBeenCalledWith(
       'https://sketchfab.com/oauth2/token/',
@@ -586,7 +586,7 @@ describe('POST /api/v1/source-auth/:sourceId/refresh', () => {
   it('returns 401 auth-revoked when upstream rejects refresh_token', async () => {
     const userId = await seedUser();
 
-    const { upsertSourceCredential } = await import('../../src/app/api/v1/source-auth/[sourceId]/_shared');
+    const { upsertSourceCredential } = await import('../../src/app/api/v1/scout-auth/[scoutId]/_shared');
     await upsertSourceCredential({
       sourceId: 'sketchfab',
       kind: 'oauth-token',
@@ -608,10 +608,10 @@ describe('POST /api/v1/source-auth/:sourceId/refresh', () => {
     );
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST } = await import('../../src/app/api/v1/source-auth/[sourceId]/refresh/route');
+    const { POST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/refresh/route');
     const res = await POST(
-      reqJson('POST', '/api/v1/source-auth/sketchfab/refresh') as never,
-      { params: Promise.resolve({ sourceId: 'sketchfab' }) },
+      reqJson('POST', '/api/v1/scout-auth/sketchfab/refresh') as never,
+      { params: Promise.resolve({ scoutId: 'sketchfab' }) },
     );
     expect(res.status).toBe(401);
     const json = await res.json();
@@ -623,23 +623,23 @@ describe('POST /api/v1/source-auth/:sourceId/refresh', () => {
 // DELETE
 // ---------------------------------------------------------------------------
 
-describe('DELETE /api/v1/source-auth/:sourceId', () => {
+describe('DELETE /api/v1/scout-auth/:sourceId', () => {
   it('removes credential rows for the sourceId', async () => {
     const userId = await seedUser();
 
     // Seed an api-key credential for printables.
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { POST: setKeyPOST } = await import('../../src/app/api/v1/source-auth/[sourceId]/api-key/route');
+    const { POST: setKeyPOST } = await import('../../src/app/api/v1/scout-auth/[scoutId]/api-key/route');
     await setKeyPOST(
-      reqJson('POST', '/api/v1/source-auth/printables/api-key', { apiKey: 'pkey' }) as never,
-      { params: Promise.resolve({ sourceId: 'printables' }) },
+      reqJson('POST', '/api/v1/scout-auth/printables/api-key', { apiKey: 'pkey' }) as never,
+      { params: Promise.resolve({ scoutId: 'printables' }) },
     );
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
-    const { DELETE } = await import('../../src/app/api/v1/source-auth/[sourceId]/route');
+    const { DELETE } = await import('../../src/app/api/v1/scout-auth/[scoutId]/route');
     const res = await DELETE(
-      reqJson('DELETE', '/api/v1/source-auth/printables') as never,
-      { params: Promise.resolve({ sourceId: 'printables' }) },
+      reqJson('DELETE', '/api/v1/scout-auth/printables') as never,
+      { params: Promise.resolve({ scoutId: 'printables' }) },
     );
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -647,9 +647,9 @@ describe('DELETE /api/v1/source-auth/:sourceId', () => {
     expect(typeof json.removed).toBe('number');
 
     const rows = await db()
-      .select({ id: schema.sourceCredentials.id })
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.sourceId, 'printables'));
+      .select({ id: schema.scoutCredentials.id })
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.scoutId, 'printables'));
     expect(rows.length).toBe(0);
   });
 });

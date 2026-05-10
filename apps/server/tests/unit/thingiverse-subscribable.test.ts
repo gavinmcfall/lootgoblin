@@ -4,11 +4,11 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-import { createThingiverseAdapter } from '../../src/scavengers/adapters/thingiverse';
+import { createThingiverseAdapter } from '../../src/scouts/adapters/thingiverse';
 import type {
   DiscoveryContext,
   DiscoveryEvent,
-} from '../../src/scavengers/subscribable';
+} from '../../src/scouts/subscribable';
 
 function makeCtx(
   cursor?: string,

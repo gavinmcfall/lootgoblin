@@ -20,7 +20,7 @@ export function ItemCard({ item }: { item: Item }) {
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-medium text-slate-100">{title}</div>
         <div className="mt-0.5 text-xs text-slate-400">
-          {item.sourceId} · {item.destinationId ? 'assigned' : 'unassigned'} · {item.status}
+          {item.sourceId} · {item.hoardId ? 'assigned' : 'unassigned'} · {item.status}
           {item.lastError ? ` — ${item.lastError.slice(0, 80)}` : ''}
         </div>
         {item.status === 'running' && (

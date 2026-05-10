@@ -3,8 +3,8 @@
  *
  * Covers three auth policy classes with at least one route each:
  *
- *   session-only     — /api/v1/destinations       (GET/POST)
- *   session-or-apikey— /api/v1/queue              (POST)  [T5: scope-enforced]
+ *   session-only     — /api/v1/hoard       (GET/POST)
+ *   session-or-apikey— /api/v1/stash              (POST)  [T5: scope-enforced]
  *   admin-only       — /api/v1/system/tasks        (GET)
  *
  * Pattern: mock @/auth/helpers so that getSessionOrNull and
@@ -65,9 +65,9 @@ beforeAll(async () => {
 });
 
 // ── session-only routes ────────────────────────────────────────────────────
-describe('session-only: GET /api/v1/destinations', () => {
+describe('session-only: GET /api/v1/hoard', () => {
   // Import after mocks are set up
-  const getRoute = () => import('../../src/app/api/v1/destinations/route').then((m) => m.GET);
+  const getRoute = () => import('../../src/app/api/v1/hoard/route').then((m) => m.GET);
 
   it('returns 401 when unauthenticated', async () => {
     mockGetSession.mockResolvedValue(null);
@@ -82,7 +82,7 @@ describe('session-only: GET /api/v1/destinations', () => {
     const res = await GET(makeReq('GET'));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json).toHaveProperty('destinations');
+    expect(json).toHaveProperty('hoardLibraries');
   });
 
   it('returns 401 with only a valid API key (session-only route)', async () => {
@@ -95,8 +95,8 @@ describe('session-only: GET /api/v1/destinations', () => {
 });
 
 // ── session-or-apikey routes (T5: scope-enforced) ─────────────────────────
-describe('session-or-apikey: POST /api/v1/queue', () => {
-  const getRoute = () => import('../../src/app/api/v1/queue/route').then((m) => m.POST);
+describe('session-or-apikey: POST /api/v1/stash', () => {
+  const getRoute = () => import('../../src/app/api/v1/stash/route').then((m) => m.POST);
 
   const queueBody = {
     sourceId: 'makerworld',

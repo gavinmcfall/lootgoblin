@@ -105,7 +105,7 @@ describe('e2e — sketchfab ingest', () => {
     // user), so a refresh test that rotates tokens would otherwise leak the
     // rotated bag into the next test's lookup.
     const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-    await db.delete(schema.sourceCredentials);
+    await db.delete(schema.scoutCredentials);
 
     userId = await seedUser();
     const root = await seedStashRoot(userId);
@@ -171,7 +171,7 @@ describe('e2e — sketchfab ingest', () => {
 
     // Capture the original blob so we can verify it was rewritten.
     const dbRead = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-    const before = await dbRead.select().from(schema.sourceCredentials).where(eq(schema.sourceCredentials.id, seeded.id));
+    const before = await dbRead.select().from(schema.scoutCredentials).where(eq(schema.scoutCredentials.id, seeded.id));
     const originalBlob = (before[0]!.encryptedBlob as Uint8Array);
 
     let refreshHits = 0;
@@ -214,7 +214,7 @@ describe('e2e — sketchfab ingest', () => {
     expect(refreshHits).toBe(1);
 
     // Source credential blob has been rewritten with the new tokens.
-    const after = await dbRead.select().from(schema.sourceCredentials).where(eq(schema.sourceCredentials.id, seeded.id));
+    const after = await dbRead.select().from(schema.scoutCredentials).where(eq(schema.scoutCredentials.id, seeded.id));
     const newBlob = (after[0]!.encryptedBlob as Uint8Array);
     expect(Buffer.from(newBlob).equals(Buffer.from(originalBlob))).toBe(false);
 

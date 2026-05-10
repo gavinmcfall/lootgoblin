@@ -208,21 +208,34 @@ describe('FK cascade — delete collection removes loot', () => {
 });
 
 // ---------------------------------------------------------------------------
-// FK restrict — delete stashRoot blocked when Collection references it
+// FK cascade — delete stashRoot cascades to Collections
 // ---------------------------------------------------------------------------
 
-describe('FK restrict — cannot delete stashRoot with Collections', () => {
-  it('throws when deleting a stashRoot that still has a Collection', async () => {
+describe('FK cascade — deleting stashRoot removes its Collections', () => {
+  it('cascades: deleting a stashRoot also removes its Collections', async () => {
     const userId = await seedUser();
     const rootId = await seedStashRoot(userId);
-    await seedCollection(userId, rootId, 'Blocker Collection');
+    const collectionId = uid();
+    await db().insert(collections).values({
+      id: collectionId,
+      ownerId: userId,
+      name: 'Cascade Collection',
+      pathTemplate: '{title|slug}',
+      stashRootId: rootId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
 
-    // Deleting the root should fail due to the RESTRICT FK on collections.stash_root_id.
-    await expect(
-      db().delete(stashRoots).where(
-        (await import('drizzle-orm')).eq(stashRoots.id, rootId),
-      ),
-    ).rejects.toThrow();
+    const { eq } = await import('drizzle-orm');
+
+    // Deleting the root now cascades to delete the collection.
+    await db().delete(stashRoots).where(eq(stashRoots.id, rootId));
+
+    const remainingCollections = await db()
+      .select()
+      .from(collections)
+      .where(eq(collections.id, collectionId));
+    expect(remainingCollections.length).toBe(0);
   });
 });
 

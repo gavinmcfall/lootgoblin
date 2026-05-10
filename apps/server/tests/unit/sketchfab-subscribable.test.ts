@@ -4,11 +4,11 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-import { createSketchfabAdapter } from '../../src/scavengers/adapters/sketchfab';
+import { createSketchfabAdapter } from '../../src/scouts/adapters/sketchfab';
 import type {
   DiscoveryContext,
   DiscoveryEvent,
-} from '../../src/scavengers/subscribable';
+} from '../../src/scouts/subscribable';
 
 function makeCtx(
   cursor?: string,

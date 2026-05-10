@@ -1,6 +1,6 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
-import { CredentialList } from '@/components/sources/CredentialList';
+import { CredentialList } from '@/components/scouts/CredentialList';
 
 interface SourceCapabilities {
   id: string;
@@ -15,7 +15,7 @@ export default function SourcesPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['sources'],
     queryFn: async (): Promise<{ sources: SourceCapabilities[] }> =>
-      (await fetch('/api/v1/sources')).json(),
+      (await fetch('/api/v1/scouts')).json(),
   });
 
   if (isLoading) return <p className="text-sm text-slate-400">Loading…</p>;

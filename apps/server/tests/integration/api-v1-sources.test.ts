@@ -1,5 +1,5 @@
 /**
- * Integration tests — GET /api/v1/sources — V2-003-T9
+ * Integration tests — GET /api/v1/scouts — V2-003-T9
  *
  * Asserts the public catalog of registered Scavenger adapters:
  *   - 401 without auth
@@ -62,17 +62,17 @@ async function seedUser(): Promise<string> {
 }
 
 function makeReq(): import('next/server').NextRequest {
-  return new Request('http://local/api/v1/sources', { method: 'GET' }) as unknown as import('next/server').NextRequest;
+  return new Request('http://local/api/v1/scouts', { method: 'GET' }) as unknown as import('next/server').NextRequest;
 }
 
 function makeSessionActor(userId: string) {
   return { id: userId, role: 'user' as const, source: 'session' as const };
 }
 
-describe('GET /api/v1/sources', () => {
+describe('GET /api/v1/scouts', () => {
   it('returns 401 unauthenticated when no session and no API key', async () => {
     mockAuthenticate.mockResolvedValueOnce(null);
-    const { GET } = await import('../../src/app/api/v1/sources/route');
+    const { GET } = await import('../../src/app/api/v1/scouts/route');
     const res = await GET(makeReq());
     expect(res.status).toBe(401);
     const json = await res.json();
@@ -82,7 +82,7 @@ describe('GET /api/v1/sources', () => {
   it('returns 401 with reason:invalid-api-key when API key is rejected', async () => {
     const { INVALID_API_KEY } = await import('../../src/auth/request-auth');
     mockAuthenticate.mockResolvedValueOnce(INVALID_API_KEY);
-    const { GET } = await import('../../src/app/api/v1/sources/route');
+    const { GET } = await import('../../src/app/api/v1/scouts/route');
     const res = await GET(makeReq());
     expect(res.status).toBe(401);
     const json = await res.json();
@@ -92,7 +92,7 @@ describe('GET /api/v1/sources', () => {
   it('returns 200 with the full registered catalog for an authenticated user', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(makeSessionActor(userId));
-    const { GET } = await import('../../src/app/api/v1/sources/route');
+    const { GET } = await import('../../src/app/api/v1/scouts/route');
     const res = await GET(makeReq());
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -123,7 +123,7 @@ describe('GET /api/v1/sources', () => {
   it('per-adapter authMethods match V2-003 design (T9 contract)', async () => {
     const userId = await seedUser();
     mockAuthenticate.mockResolvedValueOnce(makeSessionActor(userId));
-    const { GET } = await import('../../src/app/api/v1/sources/route');
+    const { GET } = await import('../../src/app/api/v1/scouts/route');
     const res = await GET(makeReq());
     const json = await res.json();
     const sources = json.sources as Array<{ id: string; authMethods: string[]; supports: { url: boolean; sourceItemId: boolean; raw: boolean } }>;
@@ -151,7 +151,7 @@ describe('GET /api/v1/sources', () => {
       role: 'user' as const,
       source: 'api-key' as const,
     });
-    const { GET } = await import('../../src/app/api/v1/sources/route');
+    const { GET } = await import('../../src/app/api/v1/scouts/route');
     const res = await GET(makeReq());
     expect(res.status).toBe(200);
     const json = await res.json();

@@ -25,9 +25,9 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 
-import { createMakerWorldAdapter } from '../../src/scavengers/adapters/makerworld';
-import type { ExtensionPayload } from '../../src/scavengers/adapters/extension-mediated';
-import type { FetchContext, FetchTarget, ScavengerEvent } from '../../src/scavengers/types';
+import { createMakerWorldAdapter } from '../../src/scouts/adapters/makerworld';
+import type { ExtensionPayload } from '../../src/scouts/adapters/extension-mediated';
+import type { FetchContext, FetchTarget, ScoutEvent } from '../../src/scouts/types';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -69,8 +69,8 @@ async function collectEvents(
   adapter: ReturnType<typeof createMakerWorldAdapter>,
   ctx: FetchContext,
   target: FetchTarget,
-): Promise<ScavengerEvent[]> {
-  const events: ScavengerEvent[] = [];
+): Promise<ScoutEvent[]> {
+  const events: ScoutEvent[] = [];
   for await (const evt of adapter.fetch(ctx, target)) {
     events.push(evt);
   }

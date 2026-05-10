@@ -13,11 +13,11 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-import { createCults3dAdapter } from '../../src/scavengers/adapters/cults3d';
+import { createCults3dAdapter } from '../../src/scouts/adapters/cults3d';
 import type {
   DiscoveryContext,
   DiscoveryEvent,
-} from '../../src/scavengers/subscribable';
+} from '../../src/scouts/subscribable';
 
 // ---------------------------------------------------------------------------
 // Helpers

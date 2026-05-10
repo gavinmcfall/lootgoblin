@@ -11,8 +11,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 
-import { createUploadAdapter } from '../../src/scavengers/adapters/upload';
-import type { FetchContext, FetchTarget } from '../../src/scavengers/types';
+import { createUploadAdapter } from '../../src/scouts/adapters/upload';
+import type { FetchContext, FetchTarget } from '../../src/scouts/types';
 
 // ---------------------------------------------------------------------------
 // Helpers

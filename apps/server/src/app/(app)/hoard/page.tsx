@@ -13,7 +13,7 @@ interface Destination {
 export default function LibrariesPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['destinations'],
-    queryFn: async (): Promise<{ destinations: Destination[] }> => (await fetch('/api/v1/destinations')).json(),
+    queryFn: async (): Promise<{ destinations: Destination[] }> => (await fetch('/api/v1/hoard')).json(),
   });
 
   return (

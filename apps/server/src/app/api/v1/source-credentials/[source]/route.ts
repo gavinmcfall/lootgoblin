@@ -1,13 +1,13 @@
 /**
  * LEGACY route — V1 cookie-jar credential uploads from the extension.
  *
- * v2-003-T9 successor lives at `/api/v1/source-auth/:sourceId/*`:
- *   - GET    /api/v1/source-auth/:sourceId            (status)
- *   - POST   /api/v1/source-auth/:sourceId/oauth/start
- *   - POST   /api/v1/source-auth/:sourceId/oauth/callback
- *   - POST   /api/v1/source-auth/:sourceId/api-key
- *   - POST   /api/v1/source-auth/:sourceId/refresh
- *   - DELETE /api/v1/source-auth/:sourceId            (revoke)
+ * v2-003-T9 successor lives at `/api/v1/scout-auth/:sourceId/*`:
+ *   - GET    /api/v1/scout-auth/:sourceId            (status)
+ *   - POST   /api/v1/scout-auth/:sourceId/oauth/start
+ *   - POST   /api/v1/scout-auth/:sourceId/oauth/callback
+ *   - POST   /api/v1/scout-auth/:sourceId/api-key
+ *   - POST   /api/v1/scout-auth/:sourceId/refresh
+ *   - DELETE /api/v1/scout-auth/:sourceId            (revoke)
  *
  * This file is retained for transitional compatibility — the extension still
  * uploads cookie-jar credentials here. Do not extend it; new flows should use
@@ -49,9 +49,9 @@ export async function POST(req: Request, context: { params: Promise<{ source: st
 
   const id = randomUUID();
   const label = body.label ?? verify.accountLabel ?? `cred-${id.slice(0, 6)}`;
-  await (getDb() as any).insert(schema.sourceCredentials).values({
+  await (getDb() as any).insert(schema.scoutCredentials).values({
     id,
-    sourceId: source,
+    scoutId: source,
     label,
     kind: 'cookie-jar',
     encryptedBlob: Buffer.from(encrypt(blob, process.env.LOOTGOBLIN_SECRET!)),
@@ -80,13 +80,13 @@ export async function GET(req: Request, context: { params: Promise<{ source: str
 
   const rows = await (getDb() as any)
     .select({
-      id: schema.sourceCredentials.id,
-      label: schema.sourceCredentials.label,
-      status: schema.sourceCredentials.status,
-      lastUsedAt: schema.sourceCredentials.lastUsedAt,
+      id: schema.scoutCredentials.id,
+      label: schema.scoutCredentials.label,
+      status: schema.scoutCredentials.status,
+      lastUsedAt: schema.scoutCredentials.lastUsedAt,
     })
-    .from(schema.sourceCredentials)
-    .where(eq(schema.sourceCredentials.sourceId, source));
+    .from(schema.scoutCredentials)
+    .where(eq(schema.scoutCredentials.scoutId, source));
   return NextResponse.json({ credentials: rows });
 }
 
@@ -102,7 +102,7 @@ export async function DELETE(req: Request, context: { params: Promise<{ source: 
   const id = url.searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
   await (getDb() as any)
-    .delete(schema.sourceCredentials)
-    .where(and(eq(schema.sourceCredentials.sourceId, source), eq(schema.sourceCredentials.id, id)));
+    .delete(schema.scoutCredentials)
+    .where(and(eq(schema.scoutCredentials.scoutId, source), eq(schema.scoutCredentials.id, id)));
   return NextResponse.json({ ok: true });
 }

@@ -95,7 +95,7 @@ describe('e2e — full-chain spec invariants', () => {
 
   beforeEach(async () => {
     const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-    await db.delete(schema.sourceCredentials);
+    await db.delete(schema.scoutCredentials);
 
     userId = await seedUser();
     const root = await seedStashRoot(userId);

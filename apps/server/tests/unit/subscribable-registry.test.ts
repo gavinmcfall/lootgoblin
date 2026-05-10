@@ -1,19 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createRegistry } from '../../src/scavengers/registry';
+import { createRegistry } from '../../src/scouts/registry';
 import { logger } from '../../src/logger';
-import { hasCapability, dispatchDiscovery } from '../../src/scavengers/subscribable';
+import { hasCapability, dispatchDiscovery } from '../../src/scouts/subscribable';
 import type {
   SubscribableAdapter,
   DiscoveryContext,
   DiscoveryEvent,
-} from '../../src/scavengers/subscribable';
+} from '../../src/scouts/subscribable';
 import type {
-  ScavengerAdapter,
+  ScoutAdapter,
   FetchContext,
   FetchTarget,
-  ScavengerEvent,
+  ScoutEvent,
   SourceId,
-} from '../../src/scavengers/types';
+} from '../../src/scouts/types';
 import type {
   WatchlistSubscriptionKind,
   WatchlistSubscriptionParameters,
@@ -75,11 +75,11 @@ function makeSubscribable(
   return adapter;
 }
 
-function makeRegularAdapter(id: SourceId): ScavengerAdapter {
+function makeRegularAdapter(id: SourceId): ScoutAdapter {
   return {
     id,
     supports: () => false,
-    fetch(_ctx: FetchContext, _target: FetchTarget): AsyncIterable<ScavengerEvent> {
+    fetch(_ctx: FetchContext, _target: FetchTarget): AsyncIterable<ScoutEvent> {
       return (async function* () {})();
     },
   };
@@ -99,7 +99,7 @@ const baseContext: DiscoveryContext = {
 // SubscribableAdapter registry tests
 // ---------------------------------------------------------------------------
 
-describe('ScavengerRegistry — SubscribableAdapter surface', () => {
+describe('ScoutRegistry — SubscribableAdapter surface', () => {
   describe('registerSubscribable + getSubscribable', () => {
     it('getSubscribable returns the adapter for a registered id', () => {
       const registry = createRegistry();
@@ -316,7 +316,7 @@ describe('ScavengerRegistry — SubscribableAdapter surface', () => {
     });
   });
 
-  describe('dual-registration with regular ScavengerAdapter', () => {
+  describe('dual-registration with regular ScoutAdapter', () => {
     it('the same id may live in both registries with independent entries', () => {
       const registry = createRegistry();
       const regular = makeRegularAdapter('makerworld');
@@ -341,7 +341,7 @@ describe('ScavengerRegistry — SubscribableAdapter surface', () => {
       expect(registry.list()).toEqual([]);
     });
 
-    it('registering a regular ScavengerAdapter does not populate the subscribable registry', () => {
+    it('registering a regular ScoutAdapter does not populate the subscribable registry', () => {
       const registry = createRegistry();
       registry.register(makeRegularAdapter('cults3d'));
 

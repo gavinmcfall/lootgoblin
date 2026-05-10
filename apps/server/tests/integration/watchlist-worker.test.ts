@@ -35,12 +35,12 @@ import {
   runOneWatchlistJob,
   resetStaleRunningWatchlistJobs,
 } from '../../src/workers/watchlist-worker';
-import { defaultRegistry } from '../../src/scavengers';
+import { defaultRegistry } from '../../src/scouts';
 import type {
   SubscribableAdapter,
   DiscoveryEvent,
   DiscoveryContext,
-} from '../../src/scavengers/subscribable';
+} from '../../src/scouts/subscribable';
 import type { WatchlistSubscriptionKind } from '../../src/watchlist/types';
 
 const DB_PATH = '/tmp/lootgoblin-t4-watchlist-worker.db';
@@ -229,9 +229,9 @@ async function seedCredentials(sourceId: string, bag: Record<string, unknown>): 
   const id = uid();
   const blob = JSON.stringify(bag);
   const encrypted = encrypt(blob, SECRET);
-  await db().insert(schema.sourceCredentials).values({
+  await db().insert(schema.scoutCredentials).values({
     id,
-    sourceId,
+    scoutId: sourceId,
     label: `cred-${id.slice(0, 8)}`,
     kind: 'oauth-token',
     encryptedBlob: Buffer.from(encrypted),
@@ -241,9 +241,9 @@ async function seedCredentials(sourceId: string, bag: Record<string, unknown>): 
 
 async function readCredentials(sourceId: string): Promise<Record<string, unknown> | null> {
   const rows = await db()
-    .select({ encryptedBlob: schema.sourceCredentials.encryptedBlob })
-    .from(schema.sourceCredentials)
-    .where(eq(schema.sourceCredentials.sourceId, sourceId));
+    .select({ encryptedBlob: schema.scoutCredentials.encryptedBlob })
+    .from(schema.scoutCredentials)
+    .where(eq(schema.scoutCredentials.scoutId, sourceId));
   const row = rows[0];
   if (!row) return null;
   const buf = Buffer.from(row.encryptedBlob as Uint8Array);
@@ -256,7 +256,7 @@ async function clearAll(): Promise<void> {
   await db().delete(schema.ingestJobs);
   await db().delete(schema.watchlistJobs);
   await db().delete(schema.watchlistSubscriptions);
-  await db().delete(schema.sourceCredentials);
+  await db().delete(schema.scoutCredentials);
   // Subscribable adapters are namespaced by sourceId — overwrite is harmless.
 }
 

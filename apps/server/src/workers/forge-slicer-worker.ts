@@ -49,7 +49,7 @@ import { asc, eq } from 'drizzle-orm';
 
 import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
-import { sleep } from '../scavengers/rate-limit';
+import { sleep } from '../scouts/rate-limit';
 import { markClaimable, markFailed } from '../forge/dispatch-state';
 import {
   type DispatchFailureReason,

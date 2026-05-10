@@ -130,9 +130,9 @@ async function seedOAuthCredentials(): Promise<void> {
     clientSecret: 'client-secret',
   };
   const blob = encrypt(JSON.stringify(bag), secret);
-  await db().insert(schema.sourceCredentials).values({
+  await db().insert(schema.scoutCredentials).values({
     id: uid(),
-    sourceId: 'google-drive',
+    scoutId: 'google-drive',
     label: `cred-${uid().slice(0, 8)}`,
     kind: 'oauth-token',
     encryptedBlob: Buffer.from(blob),
@@ -142,7 +142,7 @@ async function seedOAuthCredentials(): Promise<void> {
 
 async function clearChannelsAndCreds(): Promise<void> {
   await db().delete(schema.gdriveWatchChannels);
-  await db().delete(schema.sourceCredentials);
+  await db().delete(schema.scoutCredentials);
 }
 
 // ─── Mock fetch helpers ─────────────────────────────────────────────────────

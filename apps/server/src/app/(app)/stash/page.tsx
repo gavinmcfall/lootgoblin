@@ -1,8 +1,8 @@
 'use client';
 import { useState } from 'react';
 import { useItems } from '@/hooks/useItems';
-import { QueueTable } from '@/components/queue/QueueTable';
-import { BulkAssignDialog } from '@/components/queue/BulkAssignDialog';
+import { QueueTable } from '@/components/stash/QueueTable';
+import { BulkAssignDialog } from '@/components/stash/BulkAssignDialog';
 
 export default function QueuePage() {
   const { data, isLoading } = useItems();

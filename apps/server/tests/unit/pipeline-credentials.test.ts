@@ -17,14 +17,14 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 
 import { runMigrations, resetDbCache, getDb, schema } from '../../src/db/client';
-import { createIngestPipeline } from '../../src/scavengers/pipeline';
+import { createIngestPipeline } from '../../src/scouts/pipeline';
 import { decrypt } from '../../src/crypto';
 import type {
-  ScavengerAdapter,
-  ScavengerEvent,
+  ScoutAdapter,
+  ScoutEvent,
   FetchContext,
   FetchTarget,
-} from '../../src/scavengers/types';
+} from '../../src/scouts/types';
 import { eq } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
@@ -107,9 +107,9 @@ async function seedSourceCredential(sourceId: string): Promise<string> {
   // Insert an initial encrypted blob containing { token: 'old' }.
   const id = uid();
   const initialBlob = Buffer.from('initial-encrypted-payload');
-  await db().insert(schema.sourceCredentials).values({
+  await db().insert(schema.scoutCredentials).values({
     id,
-    sourceId,
+    scoutId: sourceId,
     label: `cred-${id.slice(0, 6)}`,
     kind: 'oauth-token',
     encryptedBlob: initialBlob,
@@ -126,9 +126,9 @@ async function seedEncryptedCredential(
   // Lazy import keeps the test file independent of import order at module load.
   const { encrypt: enc } = await import('../../src/crypto');
   const blob = Buffer.from(enc(JSON.stringify(bag), TEST_SECRET));
-  await db().insert(schema.sourceCredentials).values({
+  await db().insert(schema.scoutCredentials).values({
     id,
-    sourceId,
+    scoutId: sourceId,
     label: `cred-${id.slice(0, 6)}`,
     kind: 'oauth-token',
     encryptedBlob: blob,
@@ -144,13 +144,13 @@ async function seedEncryptedCredential(
 function makeRefreshingAdapter(
   sourceId: 'cults3d',
   refreshedBag: Record<string, unknown>,
-): ScavengerAdapter {
+): ScoutAdapter {
   return {
     id: sourceId,
     supports() {
       return true;
     },
-    async *fetch(ctx: FetchContext, _target: FetchTarget): AsyncIterable<ScavengerEvent> {
+    async *fetch(ctx: FetchContext, _target: FetchTarget): AsyncIterable<ScoutEvent> {
       // Fire the refresh callback first — same shape adapters use after a 401 retry.
       if (ctx.onTokenRefreshed) {
         await ctx.onTokenRefreshed(refreshedBag);
@@ -213,11 +213,11 @@ describe('pipeline.onTokenRefreshed persistence', () => {
     // The credential row should now contain the refreshed encrypted bag.
     const rows = await db()
       .select({
-        encryptedBlob: schema.sourceCredentials.encryptedBlob,
-        lastUsedAt: schema.sourceCredentials.lastUsedAt,
+        encryptedBlob: schema.scoutCredentials.encryptedBlob,
+        lastUsedAt: schema.scoutCredentials.lastUsedAt,
       })
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.id, credId));
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.id, credId));
     expect(rows.length).toBe(1);
     const row = rows[0]!;
     // Blob should be a Buffer/Uint8Array; decrypt it back and compare to refreshed.
@@ -234,9 +234,9 @@ describe('pipeline.onTokenRefreshed persistence', () => {
 
     // sanity: confirm there is no credential row for sketchfab.
     const before = await db()
-      .select({ id: schema.sourceCredentials.id })
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.sourceId, 'sketchfab'));
+      .select({ id: schema.scoutCredentials.id })
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.scoutId, 'sketchfab'));
     expect(before.length).toBe(0);
 
     const refreshed = { kind: 'oauth', accessToken: 'tok', refreshToken: 'r', expiresAt: 1 };
@@ -256,9 +256,9 @@ describe('pipeline.onTokenRefreshed persistence', () => {
 
     // Still no credential row for sketchfab afterwards.
     const after = await db()
-      .select({ id: schema.sourceCredentials.id })
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.sourceId, 'sketchfab'));
+      .select({ id: schema.scoutCredentials.id })
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.scoutId, 'sketchfab'));
     expect(after.length).toBe(0);
   });
 
@@ -300,9 +300,9 @@ describe('pipeline.onTokenRefreshed persistence', () => {
 
     // Re-read + decrypt; clientId, clientSecret, scope MUST survive.
     const rows = await db()
-      .select({ encryptedBlob: schema.sourceCredentials.encryptedBlob })
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.id, credId));
+      .select({ encryptedBlob: schema.scoutCredentials.encryptedBlob })
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.id, credId));
     expect(rows.length).toBe(1);
     const buf = Buffer.from(rows[0]!.encryptedBlob as Uint8Array);
     const json = decrypt(buf.toString('utf8'), TEST_SECRET);

@@ -36,7 +36,7 @@ import {
   createIngestPipeline,
   defaultRegistry,
   type FetchTarget,
-} from '../scavengers';
+} from '../scouts';
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -316,9 +316,9 @@ async function readDecryptedCredentialsBag(sourceId: string): Promise<Record<str
   if (!secret) return undefined;
 
   const rows = await db()
-    .select({ encryptedBlob: schema.sourceCredentials.encryptedBlob })
-    .from(schema.sourceCredentials)
-    .where(eq(schema.sourceCredentials.sourceId, sourceId))
+    .select({ encryptedBlob: schema.scoutCredentials.encryptedBlob })
+    .from(schema.scoutCredentials)
+    .where(eq(schema.scoutCredentials.scoutId, sourceId))
     .limit(1);
   const row = rows[0];
   if (!row) return undefined;

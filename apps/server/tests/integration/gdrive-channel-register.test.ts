@@ -180,9 +180,9 @@ async function seedCredentials(opts: {
 }): Promise<void> {
   const secret = process.env.LOOTGOBLIN_SECRET!;
   const blob = encrypt(JSON.stringify(opts.bag), secret);
-  await db().insert(schema.sourceCredentials).values({
+  await db().insert(schema.scoutCredentials).values({
     id: uid(),
-    sourceId: opts.sourceId ?? 'google-drive',
+    scoutId: opts.sourceId ?? 'google-drive',
     label: `cred-${uid().slice(0, 8)}`,
     kind: opts.bag.kind === 'api-key' ? 'api-key' : 'oauth-token',
     encryptedBlob: Buffer.from(blob),
@@ -191,7 +191,7 @@ async function seedCredentials(opts: {
 }
 
 async function clearCredentials(): Promise<void> {
-  await db().delete(schema.sourceCredentials);
+  await db().delete(schema.scoutCredentials);
 }
 
 // ─── Mock fetch helpers ─────────────────────────────────────────────────────

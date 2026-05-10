@@ -45,7 +45,7 @@ import {
   createPrintablesAdapter,
   createUploadAdapter,
   createThingiverseAdapter,
-} from '../../../src/scavengers';
+} from '../../../src/scouts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -108,10 +108,10 @@ export function rewireAdaptersForMsw(): void {
   const lazyFetch: typeof fetch = (input, init) => globalThis.fetch(input as never, init as never);
   defaultRegistry.register(createUploadAdapter());
 
-  // Adapters that are BOTH ScavengerAdapter (ingest) AND SubscribableAdapter
+  // Adapters that are BOTH ScoutAdapter (ingest) AND SubscribableAdapter
   // (watchlist discovery) need re-registering on both sides so the same
   // lazy-fetch closure is used for ingest fetch() and discovery iterators.
-  // (Mirrors createDefaultRegistry in src/scavengers/index.ts.)
+  // (Mirrors createDefaultScoutRegistry in src/scavengers/index.ts.)
   const cults = createCults3dAdapter({ httpFetch: lazyFetch, retryBaseMs: 0 });
   defaultRegistry.register(cults);
   defaultRegistry.registerSubscribable(cults);
@@ -213,9 +213,9 @@ export async function seedSourceCredential(opts: {
   if (!secret) throw new Error('seedSourceCredential: LOOTGOBLIN_SECRET unset');
   const id = uid();
   const blob = encrypt(JSON.stringify(opts.bag), secret);
-  await db(opts.dbUrl).insert(schema.sourceCredentials).values({
+  await db(opts.dbUrl).insert(schema.scoutCredentials).values({
     id,
-    sourceId: opts.sourceId,
+    scoutId: opts.sourceId,
     label: opts.label ?? `e2e-${opts.sourceId}-${id.slice(0, 6)}`,
     kind: opts.kind,
     encryptedBlob: Buffer.from(blob, 'utf8'),
@@ -396,7 +396,7 @@ export async function wipeWatchlistE2eState(): Promise<void> {
   // wipe keeps test ordering predictable).
   await dbc.delete(schema.gdriveWatchChannels);
   await dbc.delete(schema.watchlistSubscriptions);
-  await dbc.delete(schema.sourceCredentials);
+  await dbc.delete(schema.scoutCredentials);
 }
 
 /**

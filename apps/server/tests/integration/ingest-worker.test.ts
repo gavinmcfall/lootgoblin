@@ -27,13 +27,13 @@ import {
   runOneIngestJob,
   resetStaleRunningRows,
 } from '../../src/workers/ingest-worker';
-import { defaultRegistry } from '../../src/scavengers';
+import { defaultRegistry } from '../../src/scouts';
 import type {
-  ScavengerAdapter,
-  ScavengerEvent,
+  ScoutAdapter,
+  ScoutEvent,
   FetchContext,
   FetchTarget,
-} from '../../src/scavengers/types';
+} from '../../src/scouts/types';
 
 const DB_PATH = '/tmp/lootgoblin-ingest-worker.db';
 const DB_URL = `file:${DB_PATH}`;
@@ -132,11 +132,11 @@ async function enqueueJob(args: {
  */
 function stubCults3dCompletes(): () => void {
   const original = defaultRegistry.getById('cults3d');
-  const stub: ScavengerAdapter = {
+  const stub: ScoutAdapter = {
     id: 'cults3d',
     metadata: original?.metadata,
     supports: () => true,
-    async *fetch(ctx: FetchContext, _target: FetchTarget): AsyncIterable<ScavengerEvent> {
+    async *fetch(ctx: FetchContext, _target: FetchTarget): AsyncIterable<ScoutEvent> {
       const stagedPath = path.join(ctx.stagingDir, 'model.stl');
       await fsp.writeFile(stagedPath, 'solid worker-test\nendsolid worker-test');
       yield {

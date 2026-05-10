@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { filesystemWriter } from '../../src/destinations/filesystem';
+import { filesystemWriter } from '../../src/hoard/filesystem';
 
 describe('filesystem destination', () => {
   let staging: string;

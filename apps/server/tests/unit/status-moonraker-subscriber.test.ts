@@ -3,9 +3,19 @@
  *
  * Injects a fake `WsClientLike` factory and a manual timer scheduler so
  * each scenario drives reconnect + JSON-RPC handling deterministically.
+ *
+ * V2-005f-CF-5b T_b1: Moonraker filament_used capture + mm→grams conversion.
+ * The conversion module is vi.mock'd so tests stay pure-unit with no DB.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// V2-005f-CF-5b T_b1: mock the conversion module so Moonraker tests stay
+// unit-only (no real DB seeding required). The real module is tested in
+// cf-5b-conversion.test.ts.
+vi.mock('@/forge/status/divergence/conversion', () => ({
+  convertFilamentMmToGrams: vi.fn().mockResolvedValue({ grams: 2.98, densitySource: 'fallback' }),
+}));
 
 import {
   createMoonrakerSubscriber,
@@ -17,6 +27,7 @@ import type {
   PrinterRecord,
   DecryptedCredential,
 } from '@/forge/status';
+import { convertFilamentMmToGrams } from '@/forge/status/divergence/conversion';
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -226,6 +237,11 @@ describe('V2-005f-T_dcf4 createMoonrakerSubscriber', () => {
     // Klipper delta updates carry print_stats.message on state='error'. Without
     // this, errorMessage is silently always undefined in production.
     expect(sent.params.objects.print_stats).toContain('message');
+    // V2-005f-CF-5b T_b1 regression (FG-L4): 'filament_used' must be in the
+    // subscription so Klipper sends delta updates for it. Without this, the
+    // subscriber never sees filament_used values and measuredConsumption is
+    // silently always undefined in production.
+    expect(sent.params.objects.print_stats).toContain('filament_used');
     expect(sent.params.objects.display_status).toContain('progress');
     // Subscriber considers itself "connected" only after subscribe-reply.
     ws.fireMessage({ jsonrpc: '2.0', id: 1, result: { status: {}, eventtime: 0 } });
@@ -728,6 +744,117 @@ describe('CF-5a state distinctions — V2-005f-CF-5a T_a2', () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]!.kind).toBe('failed');
+
+    await sub.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF-5b T_b1 — Klipper filament_used capture + mm→grams conversion
+// ---------------------------------------------------------------------------
+
+describe('CF-5b T_b1 — Klipper filament_used capture + conversion', () => {
+  let factoryRig: FactoryRig;
+  let timerRig: TimerRig;
+  let events: StatusEvent[];
+
+  beforeEach(() => {
+    factoryRig = makeFactoryRig();
+    timerRig = makeTimerRig();
+    events = [];
+    vi.clearAllMocks();
+  });
+
+  function startSubscriber() {
+    const sub = createMoonrakerSubscriber({
+      wsFactory: factoryRig.factory,
+      setTimeout: timerRig.setTimer,
+      clearTimeout: timerRig.clearTimer,
+      reconnectBackoffMs: [10, 20, 30],
+    });
+    const promise = sub.start(makePrinter(), makeCredential(), (e) => events.push(e));
+    return { sub, promise };
+  }
+
+  /** Flush micro-task queue so void promise chains in the subscriber complete. */
+  async function flushPromises(): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  it('populates measuredConsumption[0].grams on completed event when filament_used was reported', async () => {
+    const { sub } = startSubscriber();
+    factoryRig.sockets[0]!.fireOpen();
+
+    // Report filament_used during print via notify_status_update.
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_status_update',
+      params: [
+        {
+          print_stats: { state: 'printing', filename: 'test.gcode', filament_used: 1500.0 },
+          display_status: { progress: 0.9 },
+        },
+        12345.0,
+      ],
+    });
+
+    // Terminal event via notify_history_changed.
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_history_changed',
+      params: [
+        {
+          action: 'finished',
+          job: { filename: 'test.gcode', status: 'completed', filament_used: 1500.0 },
+        },
+      ],
+    });
+
+    // Wait for the void convertFilamentMmToGrams promise to resolve.
+    await flushPromises();
+
+    // The mocked conversion returns { grams: 2.98, densitySource: 'fallback' }.
+    // First event is 'progress' (from notify_status_update), second is 'completed'.
+    const completedEvent = events.find((e) => e.kind === 'completed');
+    expect(completedEvent).toBeDefined();
+    expect(completedEvent!.measuredConsumption).toBeDefined();
+    expect(completedEvent!.measuredConsumption).toHaveLength(1);
+    expect(completedEvent!.measuredConsumption![0]!.slot_index).toBe(0);
+    expect(completedEvent!.measuredConsumption![0]!.grams).toBe(2.98);
+
+    // Verify convertFilamentMmToGrams was called with the captured mm value.
+    expect(convertFilamentMmToGrams).toHaveBeenCalledWith(
+      expect.objectContaining({ filamentUsedMm: 1500.0, slotIndex: 0 }),
+    );
+
+    await sub.stop();
+  });
+
+  it('does NOT populate measuredConsumption when filament_used was never reported', async () => {
+    const { sub } = startSubscriber();
+    factoryRig.sockets[0]!.fireOpen();
+
+    // Fire the terminal event directly without any prior notify_status_update
+    // containing filament_used — latestFilamentUsedMm stays null.
+    factoryRig.sockets[0]!.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_history_changed',
+      params: [
+        {
+          action: 'finished',
+          job: { filename: 'test.gcode', status: 'completed' },
+        },
+      ],
+    });
+
+    await flushPromises();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.kind).toBe('completed');
+    expect(events[0]!.measuredConsumption).toBeUndefined();
+
+    // convertFilamentMmToGrams must NOT have been called (no filament_used seen).
+    expect(convertFilamentMmToGrams).not.toHaveBeenCalled();
 
     await sub.stop();
   });

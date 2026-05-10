@@ -67,6 +67,7 @@ import {
   afterEach,
   beforeEach,
   vi,
+  type MockInstance,
 } from 'vitest';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
@@ -94,8 +95,20 @@ import {
   createStatusEventBus,
   resetDefaultStatusEventBus,
 } from '../../src/forge/status/event-bus';
-import { createStatusEventSink } from '../../src/forge/status/status-event-handler';
+import {
+  createStatusEventSink,
+  persistStatusEvent,
+} from '../../src/forge/status/status-event-handler';
 import { emitConsumptionForCompletion } from '../../src/forge/status/consumption-emitter';
+import { logger } from '../../src/logger';
+// CF-5b T_b4 followup: real Moonraker subscriber + WS rig for test 1, so the
+// `print_stats.filament_used` (mm) → grams conversion DB chain (printer_loadouts
+// → materials → filament_products) is exercised end-to-end.
+import { createMoonrakerSubscriber } from '../../src/forge/status/subscribers/moonraker';
+import type {
+  WsClientLike,
+  WsFactory,
+} from '../../src/forge/status/subscribers/_ws-client';
 import {
   createForgeStatusWorker,
   type ForgeStatusWorker,
@@ -264,6 +277,85 @@ function makeStubMoonrakerHandler(): DispatchHandler {
       return { kind: 'success', remoteFilename: 'cube.gcode' };
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// CF-5b T_b4 followup: Fake WebSocket rig for the real Moonraker subscriber.
+// Mirrors the pattern in tests/integration/status-moonraker-integration.test.ts
+// so test 1 can drive `notify_status_update` (filament_used: 6700 mm) +
+// `notify_history_changed` (action=finished, status=completed) through the
+// REAL subscriber. The subscriber's terminal-event handler then runs
+// `convertFilamentMmToGrams` against the seeded printer_loadouts → materials
+// → filament_products chain — exercising the full T_b1 conversion path.
+// ---------------------------------------------------------------------------
+
+type WsListener = (...args: unknown[]) => void;
+
+interface FakeWs extends WsClientLike {
+  __listeners: Record<string, WsListener[]>;
+  __sent: string[];
+  __closed: boolean;
+  fireOpen(): void;
+  fireMessage(json: unknown): void;
+  fireClose(): void;
+}
+
+function makeFakeWs(): FakeWs {
+  const listeners: Record<string, WsListener[]> = {};
+  const ws: FakeWs = {
+    __listeners: listeners,
+    __sent: [],
+    __closed: false,
+    readyState: 0,
+    on(event, listener) {
+      (listeners[event] ??= []).push(listener);
+      return ws;
+    },
+    off(event, listener) {
+      const arr = listeners[event];
+      if (arr) {
+        const idx = arr.indexOf(listener);
+        if (idx >= 0) arr.splice(idx, 1);
+      }
+      return ws;
+    },
+    send(data, cb) {
+      ws.__sent.push(data);
+      cb?.(undefined);
+    },
+    close() {
+      ws.__closed = true;
+    },
+    fireOpen() {
+      const arr = listeners.open ?? [];
+      for (const fn of arr.slice()) fn();
+    },
+    fireMessage(json) {
+      const data = JSON.stringify(json);
+      const arr = listeners.message ?? [];
+      for (const fn of arr.slice()) fn(data);
+    },
+    fireClose() {
+      const arr = listeners.close ?? [];
+      for (const fn of arr.slice()) fn();
+    },
+  };
+  return ws;
+}
+
+interface WsFactoryRig {
+  factory: WsFactory;
+  sockets: FakeWs[];
+}
+
+function makeWsFactoryRig(): WsFactoryRig {
+  const sockets: FakeWs[] = [];
+  const factory: WsFactory = () => {
+    const ws = makeFakeWs();
+    sockets.push(ws);
+    return ws;
+  };
+  return { factory, sockets };
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,5 +1235,1078 @@ describe('V2-005f-T_dcf14 cross-pillar e2e', () => {
     // (e) Worker received the terminal notification + bus saw events.
     expect(workerNotifyTerminalCalls).toBeGreaterThanOrEqual(1);
     expect(busEventCounts.get(dispatchJobId) ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // V2-005f-CF-5b T_b4 — divergence detection e2e tests
+  //
+  // Four scenarios proving the full CF-5b production path end-to-end:
+  //   1. Klipper single-color: measured << estimated → warning written
+  //   2. Klipper single-color: measured ≈ estimated → no warning, ratio logged
+  //   3. Bambu multi-material: aggregate ratio < 0.40 → warning written
+  //   4. SDCP resin: isFdmKind gate → no divergence check, no warning
+  //
+  // Production-path note (FG-L12):
+  //   All four tests use the SAME sink wiring as instrumentation.ts —
+  //   `createStatusEventSink` receives a real `persistWarningStatusEvent`
+  //   closure that calls `persistStatusEvent` + bus emit. No test stubs for
+  //   Phase C. The whole point is exercising the production path end-to-end.
+  //
+  // Test 1 conversion-DB-chain coverage:
+  //   Test 1 drives `print_stats.filament_used: 6700` (mm) through the REAL
+  //   Moonraker subscriber + WS rig (NOT a stub), so convertFilamentMmToGrams
+  //   walks the real DB chain (printer_loadouts → materials → filament_products)
+  //   to produce the measured grams. A regression in the conversion (wrong
+  //   density lookup, formula error) would surface here. Tests 2/3/4 use the
+  //   simpler stub rig — protocol-conversion regressions for those protocols
+  //   live in the per-protocol integration tests.
+  //
+  // Logger spy teardown (FG-L11):
+  //   Each test that spies on logger.info restores mocks in afterEach. The
+  //   outer afterEach already calls vi.restoreAllMocks(), so we are covered.
+  // ---------------------------------------------------------------------------
+
+  it('CF-5b divergence detection — Klipper print with measured << estimated triggers warning', async () => {
+    // -----------------------------------------------------------------------
+    // DB + migrations
+    // -----------------------------------------------------------------------
+    for (const suffix of ['', '-journal', '-wal', '-shm']) {
+      try { fs.unlinkSync(`${DB_PATH}${suffix}`); } catch { /* ignore */ }
+    }
+    process.env.DATABASE_URL = DB_URL;
+    process.env.LOOTGOBLIN_SECRET = TEST_SECRET;
+    resetDbCache();
+    await runMigrations(DB_URL);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = getDb(DB_URL) as any;
+
+    // -----------------------------------------------------------------------
+    // Spy on logger.info before any test code so we catch the ratio log
+    // -----------------------------------------------------------------------
+    const infoSpy: MockInstance = vi.spyOn(logger, 'info');
+
+    // -----------------------------------------------------------------------
+    // Seed: user, stash, collection, loot + gcode, printer, material, job
+    // -----------------------------------------------------------------------
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lootgoblin-cf5b-klipper-warn-'));
+    const gcodePath = path.join(tempDir, 'cube.gcode');
+    await fsp.writeFile(gcodePath, SLICER_GCODE, 'utf8');
+
+    const ownerId = uid();
+    await db.insert(schema.user).values({
+      id: ownerId,
+      name: 'CF-5b Klipper warn user',
+      email: `${ownerId}@cf5b-klipper-warn.test`,
+      emailVerified: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const stashRootId = uid();
+    await db.insert(schema.stashRoots).values({
+      id: stashRootId, ownerId, name: 'root', path: tempDir,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const collectionId = uid();
+    await db.insert(schema.collections).values({
+      id: collectionId, ownerId, name: 'cf5b-klipper-warn-c',
+      pathTemplate: '{title|slug}', stashRootId,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const lootId = uid();
+    await db.insert(schema.loot).values({
+      id: lootId, collectionId, title: 'CF-5b Klipper warn cube',
+      tags: [], fileMissing: false, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const fileBuf = await fsp.readFile(gcodePath);
+    const fileHash = crypto.createHash('sha256').update(fileBuf).digest('hex');
+    const slicedFileId = uid();
+    await db.insert(schema.lootFiles).values({
+      id: slicedFileId, lootId, path: 'cube.gcode', format: 'gcode',
+      size: fileBuf.length, hash: fileHash, origin: 'manual', createdAt: new Date(),
+    });
+
+    const printerId = uid();
+    await db.insert(schema.printers).values({
+      id: printerId, ownerId, kind: 'fdm_klipper', name: 'CF-5b Klipper',
+      // requiresAuth=false so the real Moonraker subscriber connects without
+      // needing a credential row (status-moonraker-real.test pattern).
+      connectionConfig: { host: '192.168.1.50', port: 7125, scheme: 'http', requiresAuth: false, startPrint: true },
+      active: true, createdAt: new Date(),
+    });
+
+    // -----------------------------------------------------------------------
+    // CF-5b T_b4 followup — seed the conversion DB chain end-to-end:
+    //   filament_products (PLA, density=1.24, diameterMm=1.75)
+    //   → materials.product_id → printer_loadouts (slot 0, current)
+    //
+    // The real Moonraker subscriber's terminal-event handler calls
+    // convertFilamentMmToGrams which walks this chain. With density=1.24 and
+    // diameter=1.75 (PLA defaults), filament_used=6700mm yields
+    //   grams = 6700 × π × (1.75/2)² / 1000 × 1.24 ≈ 19.98 g
+    // ratio = 19.98 / 50 = 0.3996 < 0.50 single-color threshold → warning.
+    // -----------------------------------------------------------------------
+    const productId = uid();
+    await db.insert(schema.filamentProducts).values({
+      id: productId,
+      brand: 'TestBrand',
+      subtype: 'PLA',
+      colors: ['#aabbcc'],
+      colorPattern: 'solid',
+      diameterMm: 1.75,
+      density: 1.24,
+      ownerId: null,
+      source: 'system:spoolmandb',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Material linked to the catalog product so convertFilamentMmToGrams
+    // resolves density+diameter via the catalog (densitySource='catalog').
+    const matResult = await createMaterial(
+      { ownerId, kind: 'filament_spool', brand: 'TestBrand', subtype: 'PLA',
+        colors: ['#aabbcc'], colorPattern: 'solid', initialAmount: 1000, unit: 'g',
+        productId },
+      { dbUrl: DB_URL },
+    );
+    if (!matResult.ok) throw new Error(`createMaterial failed: ${matResult.reason}`);
+    const materialId = matResult.material.id;
+
+    // Load the material into the printer's slot 0 — populates printer_loadouts
+    // so convertFilamentMmToGrams's first JOIN resolves.
+    const loadResult = await loadInPrinter(
+      { materialId, printerId, slotIndex: 0, userId: ownerId },
+      { dbUrl: DB_URL },
+    );
+    if (!loadResult.ok) throw new Error(`loadInPrinter failed: ${loadResult.reason}`);
+
+    const CF5B_ESTIMATED_GRAMS = 50;
+    // 6700mm × π × (1.75/2)² × 1.24 / 1000 ≈ 19.9831g — the value the real
+    // T_b1 conversion will compute and surface via measured_grams.
+    const EXPECTED_KLIPPER_MEASURED_GRAMS =
+      6700 * Math.PI * (1.75 / 2) ** 2 * 1.24 / 1000;
+
+    const dispatchJobId = uid();
+    await db.insert(schema.dispatchJobs).values({
+      id: dispatchJobId, ownerId, lootId, targetKind: 'printer', targetId: printerId,
+      slicedFileId, status: 'dispatched',
+      materialsUsed: [
+        { slot_index: 0, material_id: materialId, estimated_grams: CF5B_ESTIMATED_GRAMS, measured_grams: null },
+      ],
+      createdAt: new Date(),
+    });
+
+    // -----------------------------------------------------------------------
+    // Wire the REAL Moonraker subscriber + WS rig.
+    // The stub rig is bypassed for this test — we want filament_used to flow
+    // through the actual subscriber so convertFilamentMmToGrams runs.
+    // -----------------------------------------------------------------------
+    const wsFactoryRig = makeWsFactoryRig();
+    const subscriberRegistry = createSubscriberRegistry();
+    subscriberRegistry.register('fdm_klipper', {
+      create: () =>
+        createMoonrakerSubscriber({
+          wsFactory: wsFactoryRig.factory,
+          reconnectBackoffMs: [10],
+        }),
+    });
+
+    const bus = createStatusEventBus();
+    const busEventKinds: string[] = [];
+    // Subscribe to bus events for this dispatch job to capture warning emits from
+    // persistWarningStatusEvent (which calls bus.emit directly, not via emitToBus).
+    // All bus emits (including emitToBus) are captured via this single subscription;
+    // no need to also push from emitToBus.
+    let busUnsub: (() => void) | null = null;
+
+    let workerNotifyTerminalCalls = 0;
+    // eslint-disable-next-line prefer-const
+    let workerForCircular: ForgeStatusWorker;
+
+    // Production-wired persistWarningStatusEvent closure — mirrors instrumentation.ts.
+    const persistWarningStatusEvent = async (args: {
+      dispatchJobId: string;
+      printerKind: string;
+      printerId?: string;
+      errorCode: string;
+      protocol: string;
+      severity: 'info' | 'warning' | 'error';
+      message?: string;
+      occurredAt: Date;
+    }): Promise<void> => {
+      const syntheticEvent = {
+        kind: 'warning' as const,
+        remoteJobRef: '',
+        errorCode: args.errorCode,
+        errorMessage: args.message,
+        severity: args.severity,
+        rawPayload: { source: 'cf-5b-divergence', protocol: args.protocol },
+        occurredAt: args.occurredAt,
+      };
+      if (args.printerId) {
+        await persistStatusEvent({
+          printerId: args.printerId,
+          dispatchJobId: args.dispatchJobId,
+          printerKind: args.printerKind,
+          event: syntheticEvent,
+          dbUrl: DB_URL,
+        });
+      }
+      bus.emit(args.dispatchJobId, syntheticEvent);
+    };
+
+    const sink = createStatusEventSink({
+      dbUrl: DB_URL,
+      deps: {
+        notifyTerminal: async (a) => {
+          workerNotifyTerminalCalls += 1;
+          await workerForCircular.notifyTerminal(a);
+        },
+        emitConsumption: async ({ dispatchJobId: jid, event, printerKind, printerId: pid }) => {
+          await emitConsumptionForCompletion(
+            { dispatchJobId: jid, event, printerKind, printerId: pid },
+            { dbUrl: DB_URL, persistWarningStatusEvent },
+          );
+        },
+        // All bus emits (including emitToBus) are captured via the single
+        // bus.subscribe below; don't push here too (would double-count).
+        emitToBus: (jid, event) => {
+          bus.emit(jid, event);
+        },
+      },
+    });
+
+    // Subscribe after sink is built (dispatchJobId is known) to capture ALL
+    // bus events for this job — including the warning emit from persistWarningStatusEvent.
+    busUnsub = bus.subscribe(dispatchJobId, (event) => {
+      busEventKinds.push(event.kind);
+    });
+    cleanupFns.push(async () => { busUnsub?.(); });
+
+    workerForCircular = createForgeStatusWorker({
+      registry: subscriberRegistry,
+      dbUrl: DB_URL,
+      onEvent: (printerIdArg, event) => { void sink(printerIdArg, event); },
+    });
+    workerRef = workerForCircular;
+
+    await workerForCircular.notifyDispatched({ dispatchJobId, printerId });
+    await flushAsyncQueue();
+
+    // The subscriber's start() awaits the WS factory; settle then grab the socket.
+    expect(wsFactoryRig.sockets).toHaveLength(1);
+    const ws = wsFactoryRig.sockets[0]!;
+
+    // -----------------------------------------------------------------------
+    // Drive Moonraker JSON-RPC frames through the real subscriber:
+    //   1) open + initial subscribe-reply (id=1) → marks subscriber connected
+    //   2) notify_status_update with print_stats.filament_used: 6700  (mm)
+    //      — subscriber stashes latestFilamentUsedMm=6700 (T_b1 capture)
+    //   3) notify_history_changed action=finished, status=completed
+    //      — subscriber's terminal handler runs convertFilamentMmToGrams
+    //        which walks printer_loadouts → materials → filament_products,
+    //        gets density=1.24 + diameter=1.75 from the catalog row, and
+    //        emits the completed event with measuredConsumption populated.
+    // -----------------------------------------------------------------------
+    ws.fireOpen();
+    ws.fireMessage({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        status: { print_stats: { state: 'standby', filename: '' } },
+        eventtime: 0,
+      },
+    });
+    await flushAsyncQueue();
+
+    // Drive a status update with the filament_used value so the subscriber's
+    // notify_status_update handler captures it into latestFilamentUsedMm.
+    ws.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_status_update',
+      params: [
+        {
+          print_stats: {
+            state: 'printing',
+            filename: 'cube.gcode',
+            filament_used: 6700, // mm — converted to ~19.98g via DB chain
+          },
+          display_status: { progress: 0.99 },
+        },
+        100,
+      ],
+    });
+    await flushAsyncQueue();
+
+    // Finalize via notify_history_changed — terminal handler reads the stashed
+    // latestFilamentUsedMm and runs the conversion before emitting completed.
+    ws.fireMessage({
+      jsonrpc: '2.0',
+      method: 'notify_history_changed',
+      params: [
+        {
+          action: 'finished',
+          job: {
+            filename: 'cube.gcode',
+            status: 'completed',
+            total_duration: 3600,
+            print_duration: 3550,
+          },
+        },
+      ],
+    });
+    // Settle: convertFilamentMmToGrams is async (T_b1 void promise pattern),
+    // sink correlate is async, persist+emitConsumption chain awaits DB writes,
+    // and divergence Phase C runs after Phase B. Drain generously.
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+
+    // -----------------------------------------------------------------------
+    // Assertions
+    // -----------------------------------------------------------------------
+
+    // (a) dispatch_job completed
+    const jobRows = await db.select().from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, dispatchJobId));
+    expect(jobRows[0]!.status).toBe('completed');
+
+    // (b) The back-calculated measured grams (~19.98g for 6700mm PLA 1.75mm)
+    // is pinned as a DB-level invariant via the `material.consumed` ledger row's
+    // `weightConsumed` payload field. Phase B persists this; Phase C uses the
+    // same value (in-memory backfill, see consumption-emitter.ts:370) so they
+    // share the source of truth. The dispatch_jobs.materialsUsed JSON column
+    // is intentionally NOT mutated in-place — the ledger is the canonical
+    // record of consumption, materialsUsed remains the slicer-time snapshot.
+    const measuredLedgerRows = await db
+      .select()
+      .from(schema.ledgerEvents)
+      .where(
+        and(
+          eq(schema.ledgerEvents.kind, 'material.consumed'),
+          eq(schema.ledgerEvents.provenanceClass, 'measured'),
+          eq(schema.ledgerEvents.subjectId, materialId),
+        ),
+      );
+    expect(measuredLedgerRows.length).toBeGreaterThanOrEqual(1);
+    const measuredLedgerRow = measuredLedgerRows.find(
+      (r: { payload: unknown }) => {
+        const p = (typeof r.payload === 'string'
+          ? JSON.parse(r.payload as string)
+          : r.payload) as {
+            attributedTo?: { jobId?: string; note?: string };
+          };
+        return (
+          p.attributedTo?.jobId === dispatchJobId &&
+          p.attributedTo?.note === 'slot:0'
+        );
+      },
+    );
+    expect(measuredLedgerRow).toBeDefined();
+    const measuredPayload = (typeof measuredLedgerRow!.payload === 'string'
+      ? JSON.parse(measuredLedgerRow!.payload as string)
+      : measuredLedgerRow!.payload) as { weightConsumed: number };
+    // ~19.98g back-calculated by T_b1 conversion — proves the conversion DB
+    // chain (printer_loadouts → materials → filament_products) walked
+    // correctly with density=1.24, diameter=1.75 from the catalog row.
+    expect(measuredPayload.weightConsumed).toBeCloseTo(
+      EXPECTED_KLIPPER_MEASURED_GRAMS,
+      1,
+    );
+
+    // (c) dispatch_warnings has a row for divergence-detected
+    const warnRows = await db.select().from(schema.dispatchWarnings)
+      .where(eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId));
+    expect(warnRows.length).toBeGreaterThanOrEqual(1);
+    const warnRow = warnRows.find(
+      (r: { errorCode: string; protocol: string; severity: string }) =>
+        r.errorCode === 'divergence-detected' && r.protocol === 'forge-cf-5b',
+    );
+    expect(warnRow).toBeDefined();
+    expect(warnRow!.severity).toBe('warning');
+
+    // (d) dispatch_status_events has a 'warning' row for the divergence event
+    const statusEvRows = await db.select().from(schema.dispatchStatusEvents)
+      .where(eq(schema.dispatchStatusEvents.dispatchJobId, dispatchJobId));
+    const warningStatusRow = statusEvRows.find(
+      (r: { eventKind: string }) => r.eventKind === 'warning',
+    );
+    expect(warningStatusRow).toBeDefined();
+
+    // (e) logger.info captured the ratio for this dispatch job
+    // ratio ≈ 19.98 / 50 = 0.3996 < 0.50 threshold
+    const ratioLogCall = infoSpy.mock.calls.find(
+      (args: unknown[]) => {
+        const meta = args[0];
+        return (
+          typeof meta === 'object' &&
+          meta !== null &&
+          'dispatchJobId' in meta &&
+          (meta as { dispatchJobId: string }).dispatchJobId === dispatchJobId &&
+          'divergenceRatio' in meta
+        );
+      },
+    );
+    expect(ratioLogCall).toBeDefined();
+    const loggedMeta = ratioLogCall![0] as { divergenceRatio: number };
+    expect(loggedMeta.divergenceRatio).toBeCloseTo(
+      EXPECTED_KLIPPER_MEASURED_GRAMS / CF5B_ESTIMATED_GRAMS,
+      2,
+    );
+
+    // (f) The conversion was reported as catalog-sourced (proves the DB chain
+    // was actually walked rather than falling back to PLA defaults).
+    const catalogConvertCall = infoSpy.mock.calls.find(
+      (args: unknown[]) => {
+        const meta = args[0];
+        const msg = args[1];
+        return (
+          typeof meta === 'object' &&
+          meta !== null &&
+          'filamentUsedMm' in meta &&
+          (meta as { filamentUsedMm: number }).filamentUsedMm === 6700 &&
+          'densitySource' in meta &&
+          typeof msg === 'string' &&
+          msg.includes('Klipper filament_used → grams converted')
+        );
+      },
+    );
+    expect(catalogConvertCall).toBeDefined();
+    expect((catalogConvertCall![0] as { densitySource: string }).densitySource)
+      .toBe('catalog');
+
+    // (g) SSE bus received the warning event (captured via bus.subscribe)
+    expect(busEventKinds).toContain('warning');
+
+    // (h) terminal notification reached the worker
+    expect(workerNotifyTerminalCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('CF-5b — Klipper print with measured ≈ estimated does NOT trigger warning but logs ratio', async () => {
+    // -----------------------------------------------------------------------
+    // DB + migrations
+    // -----------------------------------------------------------------------
+    for (const suffix of ['', '-journal', '-wal', '-shm']) {
+      try { fs.unlinkSync(`${DB_PATH}${suffix}`); } catch { /* ignore */ }
+    }
+    process.env.DATABASE_URL = DB_URL;
+    process.env.LOOTGOBLIN_SECRET = TEST_SECRET;
+    resetDbCache();
+    await runMigrations(DB_URL);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = getDb(DB_URL) as any;
+
+    const infoSpy: MockInstance = vi.spyOn(logger, 'info');
+
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lootgoblin-cf5b-klipper-ok-'));
+    const gcodePath = path.join(tempDir, 'cube.gcode');
+    await fsp.writeFile(gcodePath, SLICER_GCODE, 'utf8');
+
+    const ownerId = uid();
+    await db.insert(schema.user).values({
+      id: ownerId, name: 'CF-5b no-warn user',
+      email: `${ownerId}@cf5b-klipper-ok.test`,
+      emailVerified: false, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const stashRootId = uid();
+    await db.insert(schema.stashRoots).values({
+      id: stashRootId, ownerId, name: 'root', path: tempDir,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const collectionId = uid();
+    await db.insert(schema.collections).values({
+      id: collectionId, ownerId, name: 'cf5b-klipper-ok-c',
+      pathTemplate: '{title|slug}', stashRootId,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const lootId = uid();
+    await db.insert(schema.loot).values({
+      id: lootId, collectionId, title: 'CF-5b no-warn cube',
+      tags: [], fileMissing: false, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const fileBuf = await fsp.readFile(gcodePath);
+    const fileHash = crypto.createHash('sha256').update(fileBuf).digest('hex');
+    const slicedFileId = uid();
+    await db.insert(schema.lootFiles).values({
+      id: slicedFileId, lootId, path: 'cube.gcode', format: 'gcode',
+      size: fileBuf.length, hash: fileHash, origin: 'manual', createdAt: new Date(),
+    });
+
+    const printerId = uid();
+    await db.insert(schema.printers).values({
+      id: printerId, ownerId, kind: 'fdm_klipper', name: 'CF-5b Klipper ok',
+      connectionConfig: { host: '192.168.1.50', port: 7125, scheme: 'http', requiresAuth: false, startPrint: true },
+      active: true, createdAt: new Date(),
+    });
+
+    const matResult = await createMaterial(
+      { ownerId, kind: 'filament_spool', brand: 'TestBrand', subtype: 'PLA',
+        colors: ['#aabbcc'], colorPattern: 'solid', initialAmount: 1000, unit: 'g' },
+      { dbUrl: DB_URL },
+    );
+    if (!matResult.ok) throw new Error(`createMaterial failed: ${matResult.reason}`);
+    const materialId = matResult.material.id;
+
+    // 16500mm × π × (1.75/2)² × 1.24 / 1000 ≈ 49.21g
+    // ratio = 49.21 / 50 ≈ 0.98 — well above 0.50 threshold → no warning
+    const KLIPPER_MEASURED_GRAMS = 49.21;
+    const CF5B_ESTIMATED_GRAMS = 50;
+
+    const dispatchJobId = uid();
+    await db.insert(schema.dispatchJobs).values({
+      id: dispatchJobId, ownerId, lootId, targetKind: 'printer', targetId: printerId,
+      slicedFileId, status: 'dispatched',
+      materialsUsed: [
+        { slot_index: 0, material_id: materialId, estimated_grams: CF5B_ESTIMATED_GRAMS, measured_grams: null },
+      ],
+      createdAt: new Date(),
+    });
+
+    const stubRig = makeStubSubscriberRig('fdm_klipper');
+    const subscriberRegistry = createSubscriberRegistry();
+    subscriberRegistry.register('fdm_klipper', stubRig.factory);
+
+    const bus = createStatusEventBus();
+
+    let workerNotifyTerminalCalls = 0;
+    // eslint-disable-next-line prefer-const
+    let workerForCircular: ForgeStatusWorker;
+
+    const persistWarningStatusEvent = async (args: {
+      dispatchJobId: string;
+      printerKind: string;
+      printerId?: string;
+      errorCode: string;
+      protocol: string;
+      severity: 'info' | 'warning' | 'error';
+      message?: string;
+      occurredAt: Date;
+    }): Promise<void> => {
+      const syntheticEvent = {
+        kind: 'warning' as const,
+        remoteJobRef: '',
+        errorCode: args.errorCode,
+        errorMessage: args.message,
+        severity: args.severity,
+        rawPayload: { source: 'cf-5b-divergence', protocol: args.protocol },
+        occurredAt: args.occurredAt,
+      };
+      if (args.printerId) {
+        await persistStatusEvent({
+          printerId: args.printerId,
+          dispatchJobId: args.dispatchJobId,
+          printerKind: args.printerKind,
+          event: syntheticEvent,
+          dbUrl: DB_URL,
+        });
+      }
+      bus.emit(args.dispatchJobId, syntheticEvent);
+    };
+
+    const sink = createStatusEventSink({
+      dbUrl: DB_URL,
+      deps: {
+        notifyTerminal: async (a) => {
+          workerNotifyTerminalCalls += 1;
+          await workerForCircular.notifyTerminal(a);
+        },
+        emitConsumption: async ({ dispatchJobId: jid, event, printerKind, printerId: pid }) => {
+          await emitConsumptionForCompletion(
+            { dispatchJobId: jid, event, printerKind, printerId: pid },
+            { dbUrl: DB_URL, persistWarningStatusEvent },
+          );
+        },
+        emitToBus: (jid, event) => { bus.emit(jid, event); },
+      },
+    });
+
+    workerForCircular = createForgeStatusWorker({
+      registry: subscriberRegistry,
+      dbUrl: DB_URL,
+      onEvent: (printerIdArg, event) => { void sink(printerIdArg, event); },
+    });
+    workerRef = workerForCircular;
+
+    await workerForCircular.notifyDispatched({ dispatchJobId, printerId });
+    await flushAsyncQueue();
+
+    const baseTime = Date.now();
+    stubRig.emit({
+      kind: 'completed',
+      remoteJobRef: 'cube.gcode',
+      progressPct: 100,
+      measuredConsumption: [{ slot_index: 0, grams: KLIPPER_MEASURED_GRAMS }],
+      rawPayload: { phase: 'completed' },
+      occurredAt: new Date(baseTime + 1000),
+    });
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+
+    // -----------------------------------------------------------------------
+    // Assertions
+    // -----------------------------------------------------------------------
+
+    // (a) Job completed
+    const jobRows = await db.select().from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, dispatchJobId));
+    expect(jobRows[0]!.status).toBe('completed');
+
+    // (b) NO dispatch_warnings row with divergence-detected for this job
+    const warnRows = await db.select().from(schema.dispatchWarnings)
+      .where(eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId));
+    const divergenceWarnRow = warnRows.find(
+      (r: { errorCode: string }) => r.errorCode === 'divergence-detected',
+    );
+    expect(divergenceWarnRow).toBeUndefined();
+
+    // (c) logger.info still logged the ratio (always-log invariant)
+    const ratioLogCall = infoSpy.mock.calls.find(
+      (args: unknown[]) => {
+        const meta = args[0];
+        return (
+          typeof meta === 'object' &&
+          meta !== null &&
+          'dispatchJobId' in meta &&
+          (meta as { dispatchJobId: string }).dispatchJobId === dispatchJobId &&
+          'divergenceRatio' in meta
+        );
+      },
+    );
+    expect(ratioLogCall).toBeDefined();
+    const loggedMeta = ratioLogCall![0] as { divergenceRatio: number };
+    expect(loggedMeta.divergenceRatio).toBeCloseTo(
+      KLIPPER_MEASURED_GRAMS / CF5B_ESTIMATED_GRAMS,
+      2,
+    );
+
+    expect(workerNotifyTerminalCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('CF-5b multi-material (Bambu P1S) — aggregate ratio < 0.40 triggers warning', async () => {
+    // -----------------------------------------------------------------------
+    // DB + migrations
+    // -----------------------------------------------------------------------
+    for (const suffix of ['', '-journal', '-wal', '-shm']) {
+      try { fs.unlinkSync(`${DB_PATH}${suffix}`); } catch { /* ignore */ }
+    }
+    process.env.DATABASE_URL = DB_URL;
+    process.env.LOOTGOBLIN_SECRET = TEST_SECRET;
+    resetDbCache();
+    await runMigrations(DB_URL);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = getDb(DB_URL) as any;
+
+    // Bambu P1S is the natural multi-material test printer: AMS supplies per-
+    // slot grams natively. 2 slots, 50g estimated each (100g total), measured
+    // 10g + 20g (30g total) → ratio = 0.30 < 0.40 multi-material threshold.
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lootgoblin-cf5b-bambu-mm-'));
+    const gcodePath = path.join(tempDir, 'cube.gcode');
+    await fsp.writeFile(gcodePath, SLICER_GCODE, 'utf8');
+
+    const ownerId = uid();
+    await db.insert(schema.user).values({
+      id: ownerId, name: 'CF-5b Bambu MM user',
+      email: `${ownerId}@cf5b-bambu-mm.test`,
+      emailVerified: false, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const stashRootId = uid();
+    await db.insert(schema.stashRoots).values({
+      id: stashRootId, ownerId, name: 'root', path: tempDir,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const collectionId = uid();
+    await db.insert(schema.collections).values({
+      id: collectionId, ownerId, name: 'cf5b-bambu-mm-c',
+      pathTemplate: '{title|slug}', stashRootId,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const lootId = uid();
+    await db.insert(schema.loot).values({
+      id: lootId, collectionId, title: 'CF-5b Bambu MM cube',
+      tags: [], fileMissing: false, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const fileBuf = await fsp.readFile(gcodePath);
+    const fileHash = crypto.createHash('sha256').update(fileBuf).digest('hex');
+    const slicedFileId = uid();
+    await db.insert(schema.lootFiles).values({
+      id: slicedFileId, lootId, path: 'cube.gcode', format: 'gcode',
+      size: fileBuf.length, hash: fileHash, origin: 'manual', createdAt: new Date(),
+    });
+
+    // Bambu P1S — printerKind starts with 'bambu_' which isFdmKind accepts.
+    const printerId = uid();
+    await db.insert(schema.printers).values({
+      id: printerId, ownerId, kind: 'bambu_p1s', name: 'CF-5b Bambu P1S',
+      connectionConfig: { host: '192.168.1.51', serialNumber: 'BAMBU001', accessCode: 'code', startPrint: true },
+      active: true, createdAt: new Date(),
+    });
+
+    // Two materials — one per AMS slot.
+    const mat0Result = await createMaterial(
+      { ownerId, kind: 'filament_spool', brand: 'BambuBrand', subtype: 'PLA',
+        colors: ['#ff0000'], colorPattern: 'solid', initialAmount: 500, unit: 'g' },
+      { dbUrl: DB_URL },
+    );
+    if (!mat0Result.ok) throw new Error(`createMaterial slot0 failed: ${mat0Result.reason}`);
+    const materialId0 = mat0Result.material.id;
+
+    const mat1Result = await createMaterial(
+      { ownerId, kind: 'filament_spool', brand: 'BambuBrand', subtype: 'PLA',
+        colors: ['#0000ff'], colorPattern: 'solid', initialAmount: 500, unit: 'g' },
+      { dbUrl: DB_URL },
+    );
+    if (!mat1Result.ok) throw new Error(`createMaterial slot1 failed: ${mat1Result.reason}`);
+    const materialId1 = mat1Result.material.id;
+
+    // 2 slots × 50g estimated = 100g total estimated.
+    const dispatchJobId = uid();
+    await db.insert(schema.dispatchJobs).values({
+      id: dispatchJobId, ownerId, lootId, targetKind: 'printer', targetId: printerId,
+      slicedFileId, status: 'dispatched',
+      materialsUsed: [
+        { slot_index: 0, material_id: materialId0, estimated_grams: 50, measured_grams: null },
+        { slot_index: 1, material_id: materialId1, estimated_grams: 50, measured_grams: null },
+      ],
+      createdAt: new Date(),
+    });
+
+    const stubRig = makeStubSubscriberRig('bambu_p1s');
+    const subscriberRegistry = createSubscriberRegistry();
+    subscriberRegistry.register('bambu_p1s', stubRig.factory);
+
+    const bus = createStatusEventBus();
+    const busEventKindsMM: string[] = [];
+    let busUnsubMM: (() => void) | null = null;
+
+    let workerNotifyTerminalCalls = 0;
+    // eslint-disable-next-line prefer-const
+    let workerForCircular: ForgeStatusWorker;
+
+    const persistWarningStatusEvent = async (args: {
+      dispatchJobId: string;
+      printerKind: string;
+      printerId?: string;
+      errorCode: string;
+      protocol: string;
+      severity: 'info' | 'warning' | 'error';
+      message?: string;
+      occurredAt: Date;
+    }): Promise<void> => {
+      const syntheticEvent = {
+        kind: 'warning' as const,
+        remoteJobRef: '',
+        errorCode: args.errorCode,
+        errorMessage: args.message,
+        severity: args.severity,
+        rawPayload: { source: 'cf-5b-divergence', protocol: args.protocol },
+        occurredAt: args.occurredAt,
+      };
+      if (args.printerId) {
+        await persistStatusEvent({
+          printerId: args.printerId,
+          dispatchJobId: args.dispatchJobId,
+          printerKind: args.printerKind,
+          event: syntheticEvent,
+          dbUrl: DB_URL,
+        });
+      }
+      bus.emit(args.dispatchJobId, syntheticEvent);
+    };
+
+    const sink = createStatusEventSink({
+      dbUrl: DB_URL,
+      deps: {
+        notifyTerminal: async (a) => {
+          workerNotifyTerminalCalls += 1;
+          await workerForCircular.notifyTerminal(a);
+        },
+        emitConsumption: async ({ dispatchJobId: jid, event, printerKind, printerId: pid }) => {
+          await emitConsumptionForCompletion(
+            { dispatchJobId: jid, event, printerKind, printerId: pid },
+            { dbUrl: DB_URL, persistWarningStatusEvent },
+          );
+        },
+        // All bus emits (including emitToBus) are captured via the single
+        // bus.subscribe below; don't push here too (would double-count).
+        emitToBus: (jid, event) => {
+          bus.emit(jid, event);
+        },
+      },
+    });
+
+    // Subscribe to capture ALL bus emits — emitToBus AND persistWarningStatusEvent.
+    busUnsubMM = bus.subscribe(dispatchJobId, (event) => {
+      busEventKindsMM.push(event.kind);
+    });
+    cleanupFns.push(async () => { busUnsubMM?.(); });
+
+    workerForCircular = createForgeStatusWorker({
+      registry: subscriberRegistry,
+      dbUrl: DB_URL,
+      onEvent: (printerIdArg, event) => { void sink(printerIdArg, event); },
+    });
+    workerRef = workerForCircular;
+
+    await workerForCircular.notifyDispatched({ dispatchJobId, printerId });
+    await flushAsyncQueue();
+
+    // Drive Bambu terminal event: slot 0=10g, slot 1=20g (total 30g measured vs 100g estimated = 0.30 ratio).
+    // ratio 0.30 < 0.40 multi-material threshold → warning expected.
+    const baseTime = Date.now();
+    stubRig.emit({
+      kind: 'completed',
+      remoteJobRef: 'cube.gcode',
+      progressPct: 100,
+      measuredConsumption: [
+        { slot_index: 0, grams: 10 },
+        { slot_index: 1, grams: 20 },
+      ],
+      rawPayload: { phase: 'completed' },
+      occurredAt: new Date(baseTime + 1000),
+    });
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+
+    // -----------------------------------------------------------------------
+    // Assertions
+    // -----------------------------------------------------------------------
+
+    // (a) Job completed
+    const jobRows = await db.select().from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, dispatchJobId));
+    expect(jobRows[0]!.status).toBe('completed');
+
+    // (b) dispatch_warnings has a row for divergence-detected
+    const warnRows = await db.select().from(schema.dispatchWarnings)
+      .where(eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId));
+    expect(warnRows.length).toBeGreaterThanOrEqual(1);
+    const warnRow = warnRows.find(
+      (r: { errorCode: string; protocol: string; severity: string }) =>
+        r.errorCode === 'divergence-detected' && r.protocol === 'forge-cf-5b',
+    );
+    expect(warnRow).toBeDefined();
+    expect(warnRow!.severity).toBe('warning');
+
+    // (c) dispatch_status_events has a 'warning' row
+    const statusEvRows = await db.select().from(schema.dispatchStatusEvents)
+      .where(eq(schema.dispatchStatusEvents.dispatchJobId, dispatchJobId));
+    const warningStatusRow = statusEvRows.find(
+      (r: { eventKind: string }) => r.eventKind === 'warning',
+    );
+    expect(warningStatusRow).toBeDefined();
+
+    // (d) SSE bus received the warning (captured via bus.subscribe)
+    expect(busEventKindsMM).toContain('warning');
+
+    expect(workerNotifyTerminalCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('CF-5b skips divergence check for SDCP (resin) printer kind', async () => {
+    // -----------------------------------------------------------------------
+    // DB + migrations
+    // -----------------------------------------------------------------------
+    for (const suffix of ['', '-journal', '-wal', '-shm']) {
+      try { fs.unlinkSync(`${DB_PATH}${suffix}`); } catch { /* ignore */ }
+    }
+    process.env.DATABASE_URL = DB_URL;
+    process.env.LOOTGOBLIN_SECRET = TEST_SECRET;
+    resetDbCache();
+    await runMigrations(DB_URL);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = getDb(DB_URL) as any;
+
+    // Spy on logger.info to confirm NO ratio log for SDCP prints.
+    const infoSpy: MockInstance = vi.spyOn(logger, 'info');
+
+    tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lootgoblin-cf5b-sdcp-'));
+    const gcodePath = path.join(tempDir, 'cube.gcode');
+    await fsp.writeFile(gcodePath, SLICER_GCODE, 'utf8');
+
+    const ownerId = uid();
+    await db.insert(schema.user).values({
+      id: ownerId, name: 'CF-5b SDCP user',
+      email: `${ownerId}@cf5b-sdcp.test`,
+      emailVerified: false, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const stashRootId = uid();
+    await db.insert(schema.stashRoots).values({
+      id: stashRootId, ownerId, name: 'root', path: tempDir,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const collectionId = uid();
+    await db.insert(schema.collections).values({
+      id: collectionId, ownerId, name: 'cf5b-sdcp-c',
+      pathTemplate: '{title|slug}', stashRootId,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const lootId = uid();
+    await db.insert(schema.loot).values({
+      id: lootId, collectionId, title: 'CF-5b SDCP cube',
+      tags: [], fileMissing: false, createdAt: new Date(), updatedAt: new Date(),
+    });
+    const fileBuf = await fsp.readFile(gcodePath);
+    const fileHash = crypto.createHash('sha256').update(fileBuf).digest('hex');
+    const slicedFileId = uid();
+    await db.insert(schema.lootFiles).values({
+      id: slicedFileId, lootId, path: 'cube.gcode', format: 'gcode',
+      size: fileBuf.length, hash: fileHash, origin: 'manual', createdAt: new Date(),
+    });
+
+    // SDCP resin printer — does NOT start with 'fdm_klipper' or 'bambu_'.
+    // isFdmKind('sdcp_elegoo_saturn_4') === false → Phase C is skipped.
+    const printerId = uid();
+    await db.insert(schema.printers).values({
+      id: printerId, ownerId, kind: 'sdcp_elegoo_saturn_4', name: 'CF-5b SDCP Saturn 4',
+      connectionConfig: { host: '192.168.1.60', port: 3000, scheme: 'http', requiresAuth: false },
+      active: true, createdAt: new Date(),
+    });
+
+    const matResult = await createMaterial(
+      { ownerId, kind: 'resin_bottle', brand: 'Elegoo', subtype: 'ABS-Like',
+        colors: ['#888888'], colorPattern: 'solid', initialAmount: 500, unit: 'ml' },
+      { dbUrl: DB_URL },
+    );
+    if (!matResult.ok) throw new Error(`createMaterial failed: ${matResult.reason}`);
+    const materialId = matResult.material.id;
+
+    const dispatchJobId = uid();
+    await db.insert(schema.dispatchJobs).values({
+      id: dispatchJobId, ownerId, lootId, targetKind: 'printer', targetId: printerId,
+      slicedFileId, status: 'dispatched',
+      materialsUsed: [
+        { slot_index: 0, material_id: materialId, estimated_grams: 50, measured_grams: null },
+      ],
+      createdAt: new Date(),
+    });
+
+    const stubRig = makeStubSubscriberRig('sdcp_elegoo_saturn_4');
+    const subscriberRegistry = createSubscriberRegistry();
+    subscriberRegistry.register('sdcp_elegoo_saturn_4', stubRig.factory);
+
+    const bus = createStatusEventBus();
+
+    let workerNotifyTerminalCalls = 0;
+    // eslint-disable-next-line prefer-const
+    let workerForCircular: ForgeStatusWorker;
+
+    const persistWarningStatusEvent = async (args: {
+      dispatchJobId: string;
+      printerKind: string;
+      printerId?: string;
+      errorCode: string;
+      protocol: string;
+      severity: 'info' | 'warning' | 'error';
+      message?: string;
+      occurredAt: Date;
+    }): Promise<void> => {
+      const syntheticEvent = {
+        kind: 'warning' as const,
+        remoteJobRef: '',
+        errorCode: args.errorCode,
+        errorMessage: args.message,
+        severity: args.severity,
+        rawPayload: { source: 'cf-5b-divergence', protocol: args.protocol },
+        occurredAt: args.occurredAt,
+      };
+      if (args.printerId) {
+        await persistStatusEvent({
+          printerId: args.printerId,
+          dispatchJobId: args.dispatchJobId,
+          printerKind: args.printerKind,
+          event: syntheticEvent,
+          dbUrl: DB_URL,
+        });
+      }
+      bus.emit(args.dispatchJobId, syntheticEvent);
+    };
+
+    const sink = createStatusEventSink({
+      dbUrl: DB_URL,
+      deps: {
+        notifyTerminal: async (a) => {
+          workerNotifyTerminalCalls += 1;
+          await workerForCircular.notifyTerminal(a);
+        },
+        emitConsumption: async ({ dispatchJobId: jid, event, printerKind, printerId: pid }) => {
+          await emitConsumptionForCompletion(
+            { dispatchJobId: jid, event, printerKind, printerId: pid },
+            { dbUrl: DB_URL, persistWarningStatusEvent },
+          );
+        },
+        emitToBus: (jid, event) => { bus.emit(jid, event); },
+      },
+    });
+
+    workerForCircular = createForgeStatusWorker({
+      registry: subscriberRegistry,
+      dbUrl: DB_URL,
+      onEvent: (printerIdArg, event) => { void sink(printerIdArg, event); },
+    });
+    workerRef = workerForCircular;
+
+    await workerForCircular.notifyDispatched({ dispatchJobId, printerId });
+    await flushAsyncQueue();
+
+    // Drive SDCP completed event — no measuredConsumption (resin printers
+    // don't report per-slot filament usage). Phase B is a no-op (empty
+    // measuredConsumption). Phase C is skipped by isFdmKind gate.
+    const baseTime = Date.now();
+    stubRig.emit({
+      kind: 'completed',
+      remoteJobRef: 'cube.ctb',
+      progressPct: 100,
+      measuredConsumption: [],
+      rawPayload: { phase: 'completed' },
+      occurredAt: new Date(baseTime + 1000),
+    });
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+    await flushAsyncQueue();
+
+    // -----------------------------------------------------------------------
+    // Assertions
+    // -----------------------------------------------------------------------
+
+    // (a) Job completed (state machine still drives to completed)
+    const jobRows = await db.select().from(schema.dispatchJobs)
+      .where(eq(schema.dispatchJobs.id, dispatchJobId));
+    expect(jobRows[0]!.status).toBe('completed');
+
+    // (b) NO dispatch_warnings row for this job (isFdmKind gate skips Phase C)
+    const warnRows = await db.select().from(schema.dispatchWarnings)
+      .where(eq(schema.dispatchWarnings.dispatchJobId, dispatchJobId));
+    expect(warnRows.length).toBe(0);
+
+    // (c) NO dispatch_status_events 'warning' row
+    const statusEvRows = await db.select().from(schema.dispatchStatusEvents)
+      .where(eq(schema.dispatchStatusEvents.dispatchJobId, dispatchJobId));
+    const warningStatusRow = statusEvRows.find(
+      (r: { eventKind: string }) => r.eventKind === 'warning',
+    );
+    expect(warningStatusRow).toBeUndefined();
+
+    // (d) NO 'cf-5b: divergence ratio recorded' log line for this dispatch job.
+    // Proves the isFdmKind gate fires BEFORE the ratio log in runDivergenceCheck.
+    const ratioLogCall = infoSpy.mock.calls.find(
+      (args: unknown[]) => {
+        const meta = args[0];
+        return (
+          typeof meta === 'object' &&
+          meta !== null &&
+          'dispatchJobId' in meta &&
+          (meta as { dispatchJobId: string }).dispatchJobId === dispatchJobId &&
+          'divergenceRatio' in meta
+        );
+      },
+    );
+    expect(ratioLogCall).toBeUndefined();
+
+    expect(workerNotifyTerminalCalls).toBeGreaterThanOrEqual(1);
   });
 });

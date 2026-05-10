@@ -88,6 +88,36 @@ import {
 } from '@/materials/consumption';
 import type { MaterialsUsed, MaterialsUsedEntry } from '@/db/schema.forge';
 import type { StatusEvent, MeasuredConsumptionSlot } from './types';
+import { runDivergenceCheck as defaultRunDivergenceCheck } from './divergence/check';
+import { dedupAndPersistWarning } from './warnings/dedup';
+
+// ---------------------------------------------------------------------------
+// CF-5b T_b3 — FDM protocol allowlist for divergence-check gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Printer kind prefixes that indicate an FDM protocol with measured filament
+ * consumption data. Only these protocols populate `event.measuredConsumption`
+ * with per-slot grams (via Moonraker or Bambu AMS). Resin (SDCP, ChituNetwork)
+ * and OctoPrint are silently excluded — no measurement infra in v1.
+ *
+ * Covers:
+ *   - `fdm_klipper` — Klipper via Moonraker (generic + per-model variants
+ *     `fdm_klipper_phrozen_arco`, `fdm_klipper_elegoo_centauri_carbon`)
+ *   - `bambu_` — all 13 per-model Bambu kinds (`bambu_p1s`, `bambu_x1c`, etc.)
+ *     plus legacy `fdm_bambu_lan`.
+ *
+ * OctoPrint (`fdm_octoprint`) is intentionally excluded: no per-slot
+ * consumption measurement infra in v1 (it would match `fdm_` prefix if we
+ * used that, but `fdm_octoprint` does NOT start with `fdm_klipper` or
+ * `bambu_`, so the allowlist excludes it correctly by prefix specificity).
+ */
+export const FDM_KINDS_PREFIXES = ['fdm_klipper', 'bambu_', 'fdm_bambu_lan'] as const;
+
+/** True when `printerKind` is an FDM protocol with measured consumption data. */
+export function isFdmKind(printerKind: string): boolean {
+  return FDM_KINDS_PREFIXES.some((prefix) => printerKind.startsWith(prefix));
+}
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -107,6 +137,33 @@ export interface ConsumptionEmitterDeps {
   ) => Promise<ConsumptionResult>;
   /** Override the now() clock — defaults to `new Date()`. */
   now?: () => Date;
+  /**
+   * CF-5b T_b3: override the divergence-check runner. Injected by tests to
+   * spy on calls without seeding a real job. Defaults to `runDivergenceCheck`
+   * from `./divergence/check`. Only invoked for FDM protocols.
+   */
+  runDivergenceCheck?: typeof defaultRunDivergenceCheck;
+  /**
+   * CF-5b T_b3: persist a `dispatch_status_events` warning row + emit via
+   * SSE bus for first-occurrence divergence warnings. Injected by tests.
+   * Defaults to a no-op in the emitter; production wiring in
+   * `instrumentation.ts` passes the real sink (which has bus access).
+   *
+   * `printerId` is forwarded so the sink can call `persistStatusEvent`
+   * (which requires it for the FK to `dispatch_status_events`); when
+   * undefined (e.g. unit tests that don't seed a printer) the sink may
+   * skip the audit row and only emit on the bus.
+   */
+  persistWarningStatusEvent?: (args: {
+    dispatchJobId: string;
+    printerKind: string;
+    printerId?: string;
+    errorCode: string;
+    protocol: string;
+    severity: 'info' | 'warning' | 'error';
+    message?: string;
+    occurredAt: Date;
+  }) => Promise<void>;
 }
 
 export interface EmitConsumptionResult {
@@ -133,6 +190,19 @@ export interface EmitConsumptionForCompletionOpts {
   event: StatusEvent;
   /** Provenance class to record. Defaults to 'measured'. */
   provenance?: ConsumptionProvenance;
+  /**
+   * CF-5b T_b3: printer kind string (from `printers.kind`). Used to gate
+   * Phase C (divergence check) on FDM protocols only. When omitted, Phase C
+   * is skipped silently.
+   */
+  printerKind?: string;
+  /**
+   * CF-5b T_b3: printer id. Forwarded to `persistWarningStatusEvent` so the
+   * sink can write a `dispatch_status_events` row keyed off the FK. Optional
+   * because unit tests may exercise Phase C without seeding a real printer
+   * row.
+   */
+  printerId?: string;
 }
 
 /**
@@ -273,6 +343,75 @@ export async function emitConsumptionForCompletion(
           details: result.details,
         },
         'consumption-emitter[B]: handler returned not-ok',
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phase C — divergence check (CF-5b T_b3)
+  //
+  // After Phase B completes, run the divergence heuristic for FDM protocols
+  // only (Bambu LAN + Klipper-via-Moonraker). Resin (SDCP, ChituNetwork) and
+  // OctoPrint are excluded — no per-slot measurement infra in v1.
+  //
+  // We pass `materialsUsed` with `measured_grams` backfilled from the
+  // `measuredBySlot` map so the heuristic has real data to compare against
+  // the slicer estimates. This avoids a second DB read and keeps ordering
+  // clear: Phase B correlation data drives Phase C.
+  // ---------------------------------------------------------------------------
+
+  if (args.printerKind && isFdmKind(args.printerKind)) {
+    // Backfill measured_grams from the Phase B correlation so the heuristic
+    // sees actual measured values (not the DB nulls from claim time).
+    const phaseCMaterialsUsed = materialsUsed.map((slot) => {
+      const m = measuredBySlot.get(slot.slot_index);
+      if (!m) return slot;
+      const measuredGrams = computeMeasuredGrams(slot, m);
+      return { ...slot, measured_grams: measuredGrams };
+    });
+
+    const divergenceCheck =
+      deps.runDivergenceCheck ?? defaultRunDivergenceCheck;
+
+    try {
+      await divergenceCheck({
+        dispatchJobId: args.dispatchJobId,
+        materialsUsed: phaseCMaterialsUsed,
+        emitWarning: async (warningArgs) => {
+          // Synthesize occurredAt once for both dedup + audit rows.
+          const occurredAt = new Date();
+
+          // Step 1: CF-5a dedup pipeline — INSERT OR UPDATE dispatch_warnings.
+          const { isFirst } = await dedupAndPersistWarning(
+            {
+              ...warningArgs,
+              occurredAt,
+            },
+            { dbUrl: deps.dbUrl },
+          );
+
+          if (isFirst && deps.persistWarningStatusEvent) {
+            // Step 2: audit row + SSE bus — only on first occurrence.
+            await deps.persistWarningStatusEvent({
+              dispatchJobId: warningArgs.dispatchJobId,
+              printerKind: args.printerKind!,
+              printerId: args.printerId,
+              errorCode: warningArgs.errorCode,
+              protocol: warningArgs.protocol,
+              severity: warningArgs.severity,
+              message: warningArgs.message,
+              occurredAt,
+            });
+          }
+        },
+      });
+    } catch (err) {
+      // Don't let Phase C failures surface back to the caller — Phase B has
+      // already succeeded. Log and continue so the completion is still
+      // recorded correctly even if the divergence check encounters an error.
+      logger.error(
+        { err, dispatchJobId: args.dispatchJobId },
+        'consumption-emitter[C]: runDivergenceCheck threw — continuing',
       );
     }
   }

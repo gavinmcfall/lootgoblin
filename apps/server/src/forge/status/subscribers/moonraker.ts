@@ -1,5 +1,5 @@
 /**
- * moonraker.ts — V2-005f-T_dcf4
+ * moonraker.ts — V2-005f-T_dcf4, V2-005f-CF-5b T_b1
  *
  * Moonraker (Klipper) status subscriber. Connects to Moonraker's JSON-RPC
  * WebSocket at `ws://<host>:<port>/websocket` (or `wss://` when scheme is
@@ -23,8 +23,12 @@
  * arrives (not on raw ws.open), so the `reconnected` connectivity event
  * fires once Klipper has actually acknowledged the subscription.
  *
- * Klipper does NOT track per-slot grams (only filament length in mm), so
- * `measuredConsumption` is always left undefined for Moonraker events.
+ * V2-005f-CF-5b T_b1: Klipper reports filament consumed (in mm) via
+ * `print_stats.filament_used` in `notify_status_update`. This module
+ * tracks the latest value per-subscription and converts it to grams via
+ * the V2-007b catalog chain (printer_loadouts → materials → filament_products)
+ * on terminal events (completed / firmware_error / cancelled). PLA fallback
+ * (1.24 g/cm³, 1.75mm) applies when the chain is broken.
  *
  * The `WsClientLike` / `WsFactory` seam mirrors `forge/dispatch/sdcp/commander.ts`
  * — tests inject a mock factory; the default factory lazy-loads the `ws`
@@ -50,7 +54,9 @@ import type {
   StatusSubscriber,
   StatusEvent,
   StatusEventKind,
+  MeasuredConsumptionSlot,
 } from '../types';
+import { convertFilamentMmToGrams } from '../divergence/conversion';
 
 export type { WsClientLike, WsFactory } from './_ws-client';
 
@@ -281,6 +287,14 @@ export function createMoonrakerSubscriber(
     setTimeout: opts.setTimeout,
     clearTimeout: opts.clearTimeout,
     openTransport: (printer, credential, helpers): TransportHandle => {
+      // ----- Per-subscription state: filament_used tracking (V2-005f-CF-5b T_b1) -----
+      // NOTE: openTransport runs per reconnect attempt, so latestFilamentUsedMm
+      // resets to null on each reconnect. Unlike Bambu's lastGcodeState (which
+      // is event-edge-sensitive), Klipper's filament_used is cumulative — the
+      // next pushall after reconnect re-populates this value. Recovery is
+      // automatic; no missed conversions.
+      let latestFilamentUsedMm: number | null = null;
+
       // ----- Validate connection config / build URL + headers -----
       const cfgParse = MoonrakerConnectionConfig.safeParse(printer.connectionConfig);
       if (!cfgParse.success) {
@@ -333,6 +347,14 @@ export function createMoonrakerSubscriber(
         if (!Array.isArray(params)) return;
         const payload = params[0] as MoonrakerStatusPayload | undefined;
         if (!payload || typeof payload !== 'object') return;
+
+        // V2-005f-CF-5b T_b1: track latest filament_used from notify_status_update.
+        // FG-L4: filament_used is in the subscribe request so Klipper sends deltas.
+        const filamentUsed = payload.print_stats?.filament_used;
+        if (typeof filamentUsed === 'number') {
+          latestFilamentUsedMm = filamentUsed;
+        }
+
         const state = payload.print_stats?.state;
         const kind = mapPrintStatsState(state);
         if (kind === null) return;
@@ -347,7 +369,46 @@ export function createMoonrakerSubscriber(
         const job = entry.job ?? {};
         const mapping = mapHistoryStatus(job.status);
         if (mapping === null) return;
-        helpers.emitProtocolEvent(buildEventFromHistory(mapping, job, entry, new Date()));
+
+        // V2-005f-CF-5b T_b1: populate measuredConsumption on terminal events.
+        // Convert mm → grams via the V2-007b catalog chain asynchronously.
+        const isTerminal =
+          mapping.kind === 'completed' ||
+          mapping.kind === 'firmware_error' ||
+          mapping.kind === 'cancelled';
+
+        if (isTerminal && latestFilamentUsedMm !== null) {
+          const capturedMm = latestFilamentUsedMm;
+          // Capture occurredAt synchronously at message-receipt time. The void
+          // conversion promise resolves after a DB round-trip, so creating
+          // `new Date()` inside .then()/.catch() would skew occurredAt by the
+          // conversion latency. Matches buildEventFromStatus + the non-conversion
+          // emit path which both use receipt-time timestamps.
+          const occurredAt = new Date();
+          void convertFilamentMmToGrams({
+            printerId: printer.id,
+            filamentUsedMm: capturedMm,
+            // TODO: multi-extruder Klipper — slotIndex is always 0 for now (no
+            // AMS-like protocol-layer slot concept in standard Moonraker).
+            slotIndex: 0,
+          }).then(({ grams, densitySource }) => {
+            logger.info(
+              { printerId: printer.id, filamentUsedMm: capturedMm, grams, densitySource },
+              'cf-5b: Klipper filament_used → grams converted',
+            );
+            const measuredConsumption: MeasuredConsumptionSlot[] = [{ slot_index: 0, grams }];
+            const event = buildEventFromHistory(mapping, job, entry, occurredAt);
+            helpers.emitProtocolEvent({ ...event, measuredConsumption });
+          }).catch((err: unknown) => {
+            logger.warn(
+              { printerId: printer.id, err: (err as Error)?.message },
+              'cf-5b: filament_used conversion failed — emitting without measuredConsumption',
+            );
+            helpers.emitProtocolEvent(buildEventFromHistory(mapping, job, entry, occurredAt));
+          });
+        } else {
+          helpers.emitProtocolEvent(buildEventFromHistory(mapping, job, entry, new Date()));
+        }
       }
 
       function handleMessage(data: unknown): void {

@@ -222,12 +222,14 @@ export async function register() {
       const { CHITU_NETWORK_KINDS } = await import(
         './forge/dispatch/chitu-network/types'
       );
-      const { createStatusEventSink } = await import(
+      const { createStatusEventSink, persistStatusEvent } = await import(
         './forge/status/status-event-handler'
       );
       const { emitConsumptionForCompletion } = await import(
         './forge/status/consumption-emitter'
       );
+      type ConsumptionEmitterDepsT =
+        import('./forge/status/consumption-emitter').ConsumptionEmitterDeps;
       const { createForgeStatusWorker } = await import(
         './workers/forge-status-worker'
       );
@@ -275,6 +277,61 @@ export async function register() {
         });
       }
 
+      // V2-005f-CF-5b T_b3 — production sink for divergence-detected warnings.
+      //
+      // The consumption emitter's Phase C calls this when a divergence ratio
+      // crosses the threshold AND it's the first occurrence (post CF-5a dedup).
+      // Mirrors the live-status warning path in `createStatusEventSink`:
+      //   1. INSERT a synthetic `dispatch_status_events` row (kind='warning',
+      //      sourceProtocol derived from printerKind, errorCode/severity/message
+      //      carried in eventData).
+      //   2. Broadcast on the SSE bus so live UI subscribers see it.
+      //
+      // `printerId` is required for the audit-row INSERT (FK validation in
+      // `persistStatusEvent`); when missing we skip the audit row and only
+      // emit on the bus — best-effort, with a warn log so the gap is visible.
+      const persistWarningStatusEvent: NonNullable<
+        ConsumptionEmitterDepsT['persistWarningStatusEvent']
+      > = async (args) => {
+        const syntheticEvent = {
+          kind: 'warning' as const,
+          remoteJobRef: '',
+          errorCode: args.errorCode,
+          errorMessage: args.message,
+          severity: args.severity,
+          rawPayload: { source: 'cf-5b-divergence', protocol: args.protocol },
+          occurredAt: args.occurredAt,
+        };
+        if (args.printerId) {
+          try {
+            await persistStatusEvent({
+              printerId: args.printerId,
+              dispatchJobId: args.dispatchJobId,
+              printerKind: args.printerKind,
+              event: syntheticEvent,
+            });
+          } catch (err) {
+            logger.error(
+              { err, dispatchJobId: args.dispatchJobId, errorCode: args.errorCode },
+              'cf-5b: persistWarningStatusEvent → persistStatusEvent threw',
+            );
+          }
+        } else {
+          logger.warn(
+            { dispatchJobId: args.dispatchJobId, errorCode: args.errorCode },
+            'cf-5b: persistWarningStatusEvent received no printerId — skipping audit row, bus emit only',
+          );
+        }
+        try {
+          statusEventBus.emit(args.dispatchJobId, syntheticEvent);
+        } catch (err) {
+          logger.error(
+            { err, dispatchJobId: args.dispatchJobId },
+            'cf-5b: persistWarningStatusEvent → bus emit threw',
+          );
+        }
+      };
+
       // Build the worker first so we can pass `notifyTerminal` into the sink
       // without a circular dep (sink → worker → sink).
       // eslint-disable-next-line prefer-const
@@ -287,8 +344,18 @@ export async function register() {
           // event per AMS slot (provenance='measured') using the
           // event.measuredConsumption signal + cached materials_used. Phase A
           // (estimated) is emitted at dispatch time by the claim worker.
-          emitConsumption: async ({ dispatchJobId, event }) => {
-            await emitConsumptionForCompletion({ dispatchJobId, event });
+          //
+          // V2-005f-CF-5b T_b3: also threads `printerKind` + `printerId` into
+          // Phase C's divergence check + warning sink. Without this wiring
+          // Phase C is a silent no-op (its FDM gate sees `printerKind=undefined`
+          // and skips). The values are resolved per-event by the sink (not
+          // available at construction time) so closure capture is impossible —
+          // the sink dep callback signature carries them through instead.
+          emitConsumption: async ({ dispatchJobId, event, printerKind, printerId }) => {
+            await emitConsumptionForCompletion(
+              { dispatchJobId, event, printerKind, printerId },
+              { persistWarningStatusEvent },
+            );
           },
           // V2-005f-T_dcf12: live broadcast every persisted event to SSE
           // subscribers (one Set<listener> per dispatchJobId in the bus).

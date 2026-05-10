@@ -605,7 +605,7 @@ Both knobs are hardcoded constants (`RECONNECT_JITTER_PCT = 0.20`, `BOOT_STAGGER
 - **V2-005f-CF-2**: SSE retention policy + dispatch_status_events archival. **Shipped (V2-cleanup-batch-3-T2)** — see "Retention" sub-section above.
 - **V2-005f-CF-3**: Smart polling backoff for ChituNetwork printers that go offline. **Shipped (V2-cleanup-batch-3-T3)** — see "Adaptive polling — ChituNetwork" sub-section above for the OFFLINE state row + exponential-backoff details.
 - **V2-005f-CF-4**: Multi-printer concurrent reconnect storm hardening. **Shipped (V2-005f-CF-4)** — see "Reconnect storm hardening (CF-4)" sub-section above.
-- **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence. CF-5a (native failure taxonomy + warnings) **Shipped (V2-005f-CF-5a)** — see "Native failure taxonomy + warnings (CF-5a)" sub-section below. CF-5b (slicer-estimate divergence) still deferred.
+- **V2-005f-CF-5**: Print-failure detection from slicer-estimate divergence. CF-5a (native failure taxonomy + warnings) **Shipped (V2-005f-CF-5a)** — see "Native failure taxonomy + warnings (CF-5a)" sub-section below. CF-5b (slicer-estimate divergence heuristic) **Shipped (this PR)** — see "Divergence-detected suspected failure (CF-5b)" sub-section below.
 - **V2-005f-CF-6**: Playwright UI tests for status SSE streams (blocked on V2-009 UI scope).
 - **V2-005f-CF-7**: Encrypted CTB binary header parsing (today encrypted variants return null estimates).
 
@@ -830,4 +830,61 @@ V2-005f-CF-5a expanded the StatusEventKind union from 8 → 11 values. The new k
 | **CF-5a-CF-B** | Deferred | Severity classification refinement from operational data |
 | **CF-5a-CF-C** | Deferred | Per-protocol error-code dictionary for UI translation (e.g. HMS 0C00-0300-0003-0008 → "Possible spaghetti detected") |
 | **CF-5a-CF-D** | Deferred | Moonraker `interrupted` classification — currently maps to `cancelled` but is actually Moonraker service termination (host failure), not operator stop (deferred in T_a2 `72898e6`). Revisit once operational data accumulates. |
+
+## V2-005f-CF-5b Divergence-detected suspected failure
+
+### Divergence-detected suspected failure (CF-5b)
+
+V2-005f-CF-5b adds a post-completion heuristic that detects mid-print failures the firmware reports as `'completed'`. Validated by Bambu community evidence — multiple forum reports of P1S/P1P printers reporting `gcode_state=FINISH` after silent filament-runout (the `airprint_detector` doesn't always trigger in time).
+
+**Signal sources by protocol:**
+
+| Protocol | Estimate | Measured | CF-5b applies? |
+|---|---|---|---|
+| Bambu LAN | T_dcf2 .gcode.3mf slicer estimate | T_dcf6 AMS `remain_percent` back-calc → grams | Yes |
+| Klipper via Moonraker (incl. K2 single-extruder) | T_dcf2 .gcode header | NEW: `print_stats.filament_used` (mm) → grams via V2-007b catalog density lookup | Yes |
+| OctoPrint | exists | no equivalent in standard SockJS push | No (CF-5b-CF-B carry-forward) |
+| SDCP / ChituNetwork (resin) | exists (CTB volume × 1.1 g/ml) | no measurement infrastructure | No (CF-5b-CF-C carry-forward — V2-007a-T9 scale seam is the future path) |
+
+**Conversion (Klipper):** the conversion module walks the loadout chain `printer.id → printer_loadouts (V2-005f-CF-1) → materials.product_id (V2-007a) → filament_products.density + diameter (V2-007b)`. Falls back to PLA (1.24 g/cm³, 1.75mm) when product data is absent. The fallback introduces ±5% noise on density across PLA/PETG/ABS variants — well within the 50% divergence-threshold tolerance.
+
+**Thresholds (research-backed, hardcoded):**
+- Single-color: `measured_g < 0.50 × estimated_g` → flag
+- Multi-material aggregate: `total_measured_g < 0.40 × total_estimated_g` → flag
+- Skip when `estimated_g < CF_5B_MIN_GRAMS = 10` (small prints; AMS odometer quantization noise dominates)
+
+**Action on detection:** emit `'suspected_failure'` warning via the CF-5a `dispatch_warnings` infrastructure (errorCode `'divergence-detected'`, protocol `'forge-cf-5b'`, severity `'warning'`). Material consumption ledger events still emit honestly (the spool DID lose grams, regardless of whether the part is good). The dispatch_job state stays `'completed'` per the firmware's authoritative terminal report — CF-5b is heuristic overlay, not state-machine override.
+
+**Empirical tuning:** every completed print logs the divergence ratio via pino `info` regardless of threshold (`'cf-5b: divergence ratio recorded'`). Build a real-world distribution of `measured_g / estimated_g` per print to tune thresholds from production data. CF-5b-CF-K promotes to ledger-level if the data justifies.
+
+**Carry-forwards (11 documented):** custom-material density fallback (CF-A), OctoPrint plugin signal research (CF-B/CF-I), resin scale integration (CF-C), Bambu non-RFID handling (CF-D), spool-swap detection (CF-E), K2 Moonraker validation against Shane's K2 Max (CF-F), exotic materials catalog completeness (CF-G), 2.85mm filament support (CF-H), CF-5a/CF-5b signal correlation (CF-J), empirical threshold tuning (CF-K).
+
+### Operational observability
+
+**Where to find measured grams:** `dispatch_jobs.materialsUsed[*].measured_grams` is NEVER persisted (used only as in-memory channel between Phase B and Phase C). Query the `ledger_events` table for the `material.consumed` row with `provenance_class = 'measured'` — the `weight_consumed` payload field carries the back-calculated grams. UI displays should follow this query pattern.
+
+**`densitySource` log signal:** each Klipper conversion logs `{densitySource: 'catalog' | 'fallback', ...}`. Catalog source means the loadout chain (`printer_loadouts → materials → filament_products`) resolved cleanly. Fallback means the chain has a missing link (no current loadout, no `product_id` on the material, or no `density`/`diameter_mm` on the catalog row). Fallback is correct PLA-default behavior but signals a setup gap operators may want to fix.
+
+**Production wiring:** divergence detection is fully wired in production via `instrumentation.ts`. Phase C runs after every FDM (Bambu / Klipper / `fdm_bambu_lan`) terminal completion. SDCP / ChituNetwork / OctoPrint silently skip via the `isFdmKind` allowlist gate (with no log overhead — the gate fires before `runDivergenceCheck` is invoked).
+
+**Adding a new FDM printer kind:** update `FDM_KINDS_PREFIXES` in `consumption-emitter.ts` to include the new kind's prefix. Any printer kind whose name starts with `fdm_klipper`, `bambu_`, or `fdm_bambu_lan` is auto-included. New prefixes (e.g. a hypothetical `klipper_marlin_combo`) require explicit addition.
+
+**Dedup interaction with CF-5a:** `dispatch_warnings` uses a UNIQUE index on `(dispatch_job_id, protocol, error_code)`. A reconnect storm or duplicate completion event will NOT produce multiple warning rows — only the first occurrence writes the audit row + fires the SSE bus event (`isFirst === true`). Repeats just bump `count` + `last_seen_at`.
+
+### Carry-forwards
+
+| Carry-forward | Status | Notes |
+|---|---|---|
+| **CF-5b** | **Shipped** | Divergence-detected suspected failure heuristic — this section |
+| **CF-5b-CF-A** | Deferred | Custom-material density fallback — use operator-entered density when not in filament_products catalog |
+| **CF-5b-CF-B** | Deferred | OctoPrint plugin signal research — identify OctoPrint plugin(s) that expose filament_used equivalent |
+| **CF-5b-CF-C** | Deferred | Resin scale integration — V2-007a-T9 scale seam is the future path for measured grams on SDCP/ChituNetwork |
+| **CF-5b-CF-D** | Deferred | Bambu non-RFID handling — printers without RFID tags can't back-calc `remain_percent` per-slot |
+| **CF-5b-CF-E** | Deferred | Spool-swap detection — mid-print swap events invalidate the pre-print loadout snapshot |
+| **CF-5b-CF-F** | Deferred | K2 Moonraker validation — validate conversion against Shane's K2 Max once hardware access available |
+| **CF-5b-CF-G** | Deferred | Exotic materials catalog completeness — CF-G/H materials may lack density/diameter entries in seed data |
+| **CF-5b-CF-H** | Deferred | 2.85mm filament support — conversion currently assumes 1.75mm fallback; 2.85mm spools will over-estimate measured grams |
+| **CF-5b-CF-I** | Deferred | OctoPrint plugin signal research (second pass — specific plugin API coverage) |
+| **CF-5b-CF-J** | Deferred | CF-5a/CF-5b signal correlation — correlate native firmware_error events with divergence warnings on the same dispatch |
+| **CF-5b-CF-K** | Deferred | Empirical threshold tuning — promote divergence ratio to ledger-level event once production distribution justifies |
 

@@ -35,11 +35,27 @@ export interface RunDivergenceArgs {
   }) => Promise<void>;
 }
 
+/**
+ * V2-005f-CF-5b T_b2 — divergence-detection heuristic.
+ *
+ * Compares aggregated measured vs estimated consumption per dispatch and
+ * emits a warning callback when measured << estimated.
+ *
+ * **Mixed-null caveat**: when some slots have measured_grams=null but others
+ * have numeric values, null slots contribute 0g to totalMeasured. This makes
+ * the ratio LOWER (more conservative — likelier to flag), which can produce
+ * false positives when the unmeasured slot actually consumed material. T_b3
+ * may refine this by emitting a separate "partial measurement" diagnostic.
+ *
+ * **Negative measured_grams**: clamped to 0 via Math.max — handles AMS
+ * weigh-in-place tare-error edge cases without producing negative-ratio
+ * warnings. The slot is treated as "no consumption recorded."
+ */
 export async function runDivergenceCheck(args: RunDivergenceArgs): Promise<void> {
   const { dispatchJobId, materialsUsed, emitWarning } = args;
 
   const totalEstimated = materialsUsed.reduce((sum, s) => sum + s.estimated_grams, 0);
-  const totalMeasured = materialsUsed.reduce((sum, s) => sum + (s.measured_grams ?? 0), 0);
+  const totalMeasured = materialsUsed.reduce((sum, s) => sum + Math.max(0, s.measured_grams ?? 0), 0);
 
   if (totalEstimated < CF_5B_MIN_GRAMS) {
     logger.debug({ dispatchJobId, totalEstimated },

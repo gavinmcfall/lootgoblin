@@ -70,10 +70,21 @@ export interface StatusEventHandlerDeps {
   /**
    * Consumption emitter. T_dcf11 wires this. Called ONLY after a successful
    * `dispatched → completed` transition (failures don't trigger consumption).
+   *
+   * V2-005f-CF-5b T_b3: `printerKind` and `printerId` are forwarded so the
+   * consumption emitter's Phase C divergence-check gate (FDM-only) and the
+   * `persistWarningStatusEvent` sink (which needs `printerId` to write a
+   * `dispatch_status_events` row) have everything they need without a second
+   * DB read. They're already resolved earlier in the sink (per-event), so
+   * threading them through the dep callback is the lowest-blast-radius fix —
+   * the closure-capture alternative is impossible because the callback is
+   * built at sink construction time, before any per-event values exist.
    */
   emitConsumption?: (args: {
     dispatchJobId: string;
     event: StatusEvent;
+    printerKind: string;
+    printerId: string;
   }) => Promise<void> | void;
   /**
    * Notify the status worker that the dispatch reached a terminal state, so
@@ -522,7 +533,12 @@ export function createStatusEventSink(
       // 7) emitConsumption — only on a SUCCESSFUL completed transition.
       if (transitioned && event.kind === 'completed' && deps.emitConsumption) {
         try {
-          await deps.emitConsumption({ dispatchJobId, event });
+          await deps.emitConsumption({
+            dispatchJobId,
+            event,
+            printerKind,
+            printerId,
+          });
         } catch (err) {
           logger.error(
             { err, dispatchJobId },

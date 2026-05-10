@@ -20,6 +20,10 @@
  *  15. SDCP (resin) terminal completion → runDivergenceCheck NOT called
  *  16. ChituNetwork (resin) terminal completion → runDivergenceCheck NOT called
  *  17. OctoPrint terminal completion → runDivergenceCheck NOT called
+ *  18. printerKind undefined → runDivergenceCheck NOT called (defensive default)
+ *  19. fdm_bambu_lan (legacy kind) → runDivergenceCheck called
+ *  20. emitWarning chain — real runDivergenceCheck → dispatch_warnings row +
+ *      persistWarningStatusEvent called
  */
 
 import {
@@ -659,5 +663,118 @@ describe('CF-5b divergence integration — T_b3', () => {
     );
 
     expect(divergenceSpy).not.toHaveBeenCalled();
+  });
+
+  it('18. printerKind undefined → runDivergenceCheck NOT called (defensive default)', async () => {
+    // Pin the defensive `printerKind && isFdmKind(...)` gate. If a future
+    // refactor flips this to `?? "unknown"`, this test breaks loudly so the
+    // unintended fall-through gets caught at the unit boundary.
+    const ownerId = await seedUser();
+    const matId = await seedMaterial(ownerId, 500);
+    const { jobId } = await seedDispatchJob({
+      ownerId,
+      materialsUsed: measuredMaterialsUsed(matId),
+    });
+
+    const divergenceSpy = vi.fn().mockResolvedValue(undefined);
+
+    await emitConsumptionForCompletion(
+      {
+        dispatchJobId: jobId,
+        // printerKind omitted intentionally
+        event: makeCompletedEvent([{ slot_index: 0, grams: 50 }]),
+      },
+      { dbUrl: DB_URL, runDivergenceCheck: divergenceSpy },
+    );
+
+    expect(divergenceSpy).not.toHaveBeenCalled();
+  });
+
+  it('19. fdm_bambu_lan (legacy kind, 3rd prefix entry) → runDivergenceCheck called', async () => {
+    // Legacy generic LAN-mode kind that does NOT start with `bambu_`. Without
+    // the explicit 3rd prefix entry, divergence detection silently breaks on
+    // legacy installs.
+    const ownerId = await seedUser();
+    const matId = await seedMaterial(ownerId, 500);
+    const { jobId } = await seedDispatchJob({
+      ownerId,
+      materialsUsed: measuredMaterialsUsed(matId),
+    });
+
+    const divergenceSpy = vi.fn().mockResolvedValue(undefined);
+
+    await emitConsumptionForCompletion(
+      {
+        dispatchJobId: jobId,
+        printerKind: 'fdm_bambu_lan',
+        event: makeCompletedEvent([{ slot_index: 0, grams: 50 }]),
+      },
+      { dbUrl: DB_URL, runDivergenceCheck: divergenceSpy },
+    );
+
+    expect(divergenceSpy).toHaveBeenCalledOnce();
+  });
+
+  it('20. emitWarning chain — real runDivergenceCheck → dispatch_warnings + persistWarningStatusEvent', async () => {
+    // No spy on runDivergenceCheck — the real heuristic runs. We cross the
+    // single-color 0.50 threshold (estimated 100g, measured 20g → ratio 0.20).
+    // Asserts that the inner emitWarning callback chain wires through:
+    //   1. dedupAndPersistWarning → dispatch_warnings row with errorCode
+    //      'divergence-detected'
+    //   2. persistWarningStatusEvent dep called once with the right shape
+    const ownerId = await seedUser();
+    const matId = await seedMaterial(ownerId, 500);
+
+    const divergentMaterials: MaterialsUsed = [
+      {
+        slot_index: 0,
+        material_id: matId,
+        estimated_grams: 100,
+        measured_grams: null, // backfilled in Phase C from event
+      },
+    ];
+    const { jobId } = await seedDispatchJob({
+      ownerId,
+      materialsUsed: divergentMaterials,
+    });
+
+    const persistWarningSpy = vi.fn().mockResolvedValue(undefined);
+
+    await emitConsumptionForCompletion(
+      {
+        dispatchJobId: jobId,
+        printerKind: 'bambu_p1s',
+        // grams=20 against estimated=100 → ratio=0.20 < 0.50 → warning
+        event: makeCompletedEvent([{ slot_index: 0, grams: 20 }]),
+      },
+      { dbUrl: DB_URL, persistWarningStatusEvent: persistWarningSpy },
+    );
+
+    // Step 1: dispatch_warnings row exists.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = getDb(DB_URL) as any;
+    const warnings = await db
+      .select()
+      .from(schema.dispatchWarnings)
+      .where(eq(schema.dispatchWarnings.dispatchJobId, jobId));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].errorCode).toBe('divergence-detected');
+    expect(warnings[0].protocol).toBe('forge-cf-5b');
+    expect(warnings[0].severity).toBe('warning');
+    expect(warnings[0].count).toBe(1);
+
+    // Step 2: persistWarningStatusEvent dep called once with the right shape.
+    expect(persistWarningSpy).toHaveBeenCalledOnce();
+    expect(persistWarningSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dispatchJobId: jobId,
+        printerKind: 'bambu_p1s',
+        errorCode: 'divergence-detected',
+        protocol: 'forge-cf-5b',
+        severity: 'warning',
+        message: expect.stringContaining('measured'),
+        occurredAt: expect.any(Date),
+      }),
+    );
   });
 });

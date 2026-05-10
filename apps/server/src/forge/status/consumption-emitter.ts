@@ -148,10 +148,16 @@ export interface ConsumptionEmitterDeps {
    * SSE bus for first-occurrence divergence warnings. Injected by tests.
    * Defaults to a no-op in the emitter; production wiring in
    * `instrumentation.ts` passes the real sink (which has bus access).
+   *
+   * `printerId` is forwarded so the sink can call `persistStatusEvent`
+   * (which requires it for the FK to `dispatch_status_events`); when
+   * undefined (e.g. unit tests that don't seed a printer) the sink may
+   * skip the audit row and only emit on the bus.
    */
   persistWarningStatusEvent?: (args: {
     dispatchJobId: string;
     printerKind: string;
+    printerId?: string;
     errorCode: string;
     protocol: string;
     severity: 'info' | 'warning' | 'error';
@@ -190,6 +196,13 @@ export interface EmitConsumptionForCompletionOpts {
    * is skipped silently.
    */
   printerKind?: string;
+  /**
+   * CF-5b T_b3: printer id. Forwarded to `persistWarningStatusEvent` so the
+   * sink can write a `dispatch_status_events` row keyed off the FK. Optional
+   * because unit tests may exercise Phase C without seeding a real printer
+   * row.
+   */
+  printerId?: string;
 }
 
 /**
@@ -382,6 +395,7 @@ export async function emitConsumptionForCompletion(
             await deps.persistWarningStatusEvent({
               dispatchJobId: warningArgs.dispatchJobId,
               printerKind: args.printerKind!,
+              printerId: args.printerId,
               errorCode: warningArgs.errorCode,
               protocol: warningArgs.protocol,
               severity: warningArgs.severity,

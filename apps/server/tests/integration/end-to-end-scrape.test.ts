@@ -30,18 +30,18 @@ describe('end-to-end scrape', () => {
     const db = getDb() as any;
     await db.delete(schema.itemEvents);
     await db.delete(schema.items);
-    await db.delete(schema.destinations);
-    await db.delete(schema.sourceCredentials);
+    await db.delete(schema.hoardLibraries);
+    await db.delete(schema.scoutCredentials);
     destId = randomUUID();
     credId = randomUUID();
     // Credential FIRST (destinations can reference credentials; items reference both)
-    await db.insert(schema.sourceCredentials).values({
-      id: credId, sourceId: 'makerworld', label: 'test',
+    await db.insert(schema.scoutCredentials).values({
+      id: credId, scoutId: 'makerworld', label: 'test',
       kind: 'cookie-jar',
       encryptedBlob: Buffer.from(encrypt(JSON.stringify({ cookies: [] }), process.env.LOOTGOBLIN_SECRET!)),
       status: 'active',
     });
-    await db.insert(schema.destinations).values({
+    await db.insert(schema.hoardLibraries).values({
       id: destId, name: 'test', type: 'filesystem',
       config: { path: libDir, namingTemplate: '{designer}/{title}' },
       packager: 'manyfold-v0',
@@ -76,7 +76,7 @@ describe('end-to-end scrape', () => {
     await enqueueItem({
       id: itemId, sourceId: 'makerworld', sourceItemId: '2663598',
       contentType: 'model-3d', sourceUrl: 'https://makerworld.com/models/2663598',
-      destinationId: destId, credentialId: credId,
+      hoardId: destId, credentialId: credId,
     });
     const result = await runOneItem();
     expect(result).toBe('done');

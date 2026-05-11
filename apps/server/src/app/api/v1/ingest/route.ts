@@ -28,9 +28,9 @@
  *      currently accepts `programmatic` keys from this table for transitional
  *      compatibility. New consumers should use BetterAuth apikey scopes.
  *
- * The legacy /api/v1/source-credentials/[source]/route.ts (cookie-jar
+ * The legacy /api/v1/scout-credentials/[source]/route.ts (cookie-jar
  * uploads from the extension) coexists — see the route-header comment
- * there for the v2 successor at /api/v1/source-auth/:sourceId/*.
+ * there for the v2 successor at /api/v1/scout-auth/:sourceId/*.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -41,7 +41,7 @@ import { and, desc, eq, lt } from 'drizzle-orm';
 import { authenticateRequest, INVALID_API_KEY, unauthenticatedResponse } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { getServerDb, schema } from '@/db/client';
-import { defaultRegistry, type SourceId } from '@/scavengers';
+import { defaultRegistry, type SourceId } from '@/scouts';
 import { logger } from '@/logger';
 
 // ---------------------------------------------------------------------------

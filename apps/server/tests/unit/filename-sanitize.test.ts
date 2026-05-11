@@ -12,7 +12,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { Buffer } from 'node:buffer';
-import { sanitizeFilename } from '../../src/scavengers/filename-sanitize';
+import { sanitizeFilename } from '../../src/scouts/filename-sanitize';
 
 describe('sanitizeFilename', () => {
   describe('path-traversal handling', () => {

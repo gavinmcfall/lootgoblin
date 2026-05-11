@@ -37,9 +37,9 @@ function isExtensionApi(pathname: string): boolean {
     pathname.startsWith('/api/v1/items/awaiting-upload') ||
     (pathname.startsWith('/api/v1/items/') && pathname.endsWith('/upload')) ||
     pathname.startsWith('/api/v1/site-configs') ||
-    pathname.startsWith('/api/v1/sources') ||
-    pathname.startsWith('/api/v1/source-credentials/') ||
-    pathname === '/api/v1/queue'
+    pathname.startsWith('/api/v1/scouts') ||
+    pathname.startsWith('/api/v1/scout-credentials/') ||
+    pathname === '/api/v1/stash'
   );
 }
 

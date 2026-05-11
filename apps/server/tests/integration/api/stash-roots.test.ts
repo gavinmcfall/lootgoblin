@@ -280,9 +280,9 @@ describe('DELETE /api/v1/stash-roots/:id', () => {
     expect(res.status).toBe(200);
   });
 
-  it('returns 409 when a Collection references the root', async () => {
+  it('cascades: deleting a root with Collections removes both root and collections', async () => {
     const userId = await seedUser();
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-sr-restrict-'));
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lg-sr-cascade-'));
     const rootId = await seedStashRoot(userId, tmpDir);
     // Insert a collection referencing this root.
     const colId = uid();
@@ -299,8 +299,14 @@ describe('DELETE /api/v1/stash-roots/:id', () => {
 
     const { DELETE } = await import('../../../src/app/api/v1/stash-roots/[id]/route');
     const res = await DELETE(makeReq('DELETE'), { params: Promise.resolve({ id: rootId }) });
-    expect(res.status).toBe(409);
-    const json = await res.json();
-    expect(json.error).toBe('constraint-violation');
+    // With CASCADE semantics, the deletion succeeds and removes the collection too.
+    expect(res.status).toBe(200);
+
+    // Verify the collection was also deleted.
+    const remaining = await db()
+      .select()
+      .from(schema.collections)
+      .where((await import('drizzle-orm')).eq(schema.collections.id, colId));
+    expect(remaining.length).toBe(0);
   });
 });

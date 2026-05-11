@@ -9,7 +9,7 @@ export interface EnqueueInput {
   contentType: string;
   sourceUrl: string;
   snapshot?: unknown;
-  destinationId?: string;
+  hoardId?: string;
   credentialId?: string;
 }
 

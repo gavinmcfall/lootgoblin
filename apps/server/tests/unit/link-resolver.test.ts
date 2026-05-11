@@ -5,8 +5,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { createLinkResolver } from '../../src/scavengers/link-resolver';
-import type { LinkResolution } from '../../src/scavengers/link-resolver';
+import { createLinkResolver } from '../../src/scouts/link-resolver';
+import type { LinkResolution } from '../../src/scouts/link-resolver';
 
 // ---------------------------------------------------------------------------
 // Helpers

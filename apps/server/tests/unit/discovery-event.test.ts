@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { DiscoveryEvent } from '../../src/scavengers/subscribable';
+import type { DiscoveryEvent } from '../../src/scouts/subscribable';
 
 /**
  * Type-shape coverage for the DiscoveryEvent discriminated union.

@@ -326,8 +326,8 @@ describe('POST /api/v1/watchlist/subscriptions', () => {
     expect(json.error).toBe('unsupported-capability');
   });
 
-  it('returns 422 when source_adapter_id has a ScavengerAdapter but no SubscribableAdapter', async () => {
-    // makerworld is registered as a ScavengerAdapter but NOT as Subscribable —
+  it('returns 422 when source_adapter_id has a ScoutAdapter but no SubscribableAdapter', async () => {
+    // makerworld is registered as a ScoutAdapter but NOT as Subscribable —
     // the route's getSubscribable() returns undefined, so it's treated the
     // same as an unknown source.
     const userId = await seedUser();

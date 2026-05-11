@@ -50,11 +50,11 @@ import { sqliteTable, text, integer, blob, uniqueIndex, index } from 'drizzle-or
 const id = () => text('id').primaryKey();
 const ts = (name: string) => integer(name, { mode: 'timestamp_ms' });
 
-export const sourceCredentials = sqliteTable(
-  'source_credentials',
+export const scoutCredentials = sqliteTable(
+  'scout_credentials',
   {
     id: id(),
-    sourceId: text('source_id').notNull(),
+    scoutId: text('scout_id').notNull(),
     label: text('label').notNull(),
     kind: text('kind').notNull(), // cookie-jar | oauth-token | api-key
     encryptedBlob: blob('encrypted_blob').notNull(),
@@ -63,16 +63,16 @@ export const sourceCredentials = sqliteTable(
     status: text('status').notNull().default('active'),
     createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
   },
-  (t) => ({ labelUniq: uniqueIndex('src_cred_label_uniq').on(t.sourceId, t.label) }),
+  (t) => ({ labelUniq: uniqueIndex('scout_cred_label_uniq').on(t.scoutId, t.label) }),
 );
 
-export const destinations = sqliteTable('destinations', {
+export const hoardLibraries = sqliteTable('hoard_libraries', {
   id: id(),
   name: text('name').notNull(),
   type: text('type').notNull(), // 'filesystem'
   config: text('config', { mode: 'json' }).notNull(),
   packager: text('packager').notNull(), // 'manyfold-v0'
-  credentialId: text('credential_id').references(() => sourceCredentials.id), // nullable FK
+  credentialId: text('credential_id').references(() => scoutCredentials.id), // nullable FK
   createdAt: ts('created_at').notNull().default(sql`(unixepoch() * 1000)`),
   updatedAt: ts('updated_at').notNull().default(sql`(unixepoch() * 1000)`),
 });
@@ -86,8 +86,8 @@ export const items = sqliteTable(
     contentType: text('content_type').notNull(),
     sourceUrl: text('source_url').notNull(),
     snapshot: text('snapshot', { mode: 'json' }),
-    destinationId: text('destination_id').references(() => destinations.id), // nullable FK
-    credentialId: text('credential_id').references(() => sourceCredentials.id), // nullable FK
+    hoardId: text('hoard_id').references(() => hoardLibraries.id), // nullable FK
+    credentialId: text('credential_id').references(() => scoutCredentials.id), // nullable FK
     status: text('status').notNull(), // queued|running|done|failed|skipped
     retryCount: integer('retry_count').notNull().default(0),
     lastError: text('last_error'),

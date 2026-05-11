@@ -1,4 +1,145 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-html, body { background: #0b0d12; color: #e8eaed; }
+
+/*
+ * LootGoblin design tokens — premium dark + warm gold.
+ *
+ * Switchable via attributes on <html>:
+ *   data-theme="dark"   | "light"
+ *   data-accent="gold"  | "emerald" | "violet" | "copper"
+ *   data-density="comfortable" | "compact"
+ *
+ * All values in oklch so accents stay harmonically balanced when the hue swaps.
+ * Source-of-truth: planning/design-system/lib/tokens.jsx
+ */
+
+:root {
+  /* Type stack — populated by next/font/google in layout.tsx */
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: 'Playfair Display', 'Cormorant Garamond', Georgia, serif;
+  --font-mono: 'Space Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* Radius scale */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* Semantics — held constant across accent + mode swaps */
+  --running: oklch(0.72 0.11 55);
+  --running-bg: oklch(0.72 0.11 55 / 0.14);
+  --success: oklch(0.70 0.10 145);
+  --success-bg: oklch(0.70 0.10 145 / 0.14);
+  --danger: oklch(0.68 0.15 25);
+  --danger-bg: oklch(0.68 0.15 25 / 0.14);
+  --info: oklch(0.70 0.08 240);
+}
+
+/* Default = dark + gold + comfortable */
+:root,
+[data-theme='dark'] {
+  --bg: oklch(0.17 0.008 80);
+  --surface: oklch(0.21 0.008 80);
+  --surface-2: oklch(0.24 0.009 80);
+  --surface-hi: oklch(0.28 0.010 80);
+  --hairline: oklch(0.32 0.008 80 / 0.7);
+  --hairline-strong: oklch(0.40 0.010 80);
+
+  --fg: oklch(0.96 0.012 85);
+  --fg-muted: oklch(0.75 0.010 85);
+  --fg-faint: oklch(0.58 0.010 85);
+  --fg-ghost: oklch(0.45 0.008 80);
+
+  --accent-ink: oklch(0.18 0.03 80);
+
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+[data-theme='light'] {
+  --bg: oklch(0.97 0.008 80);
+  --surface: oklch(0.99 0.006 80);
+  --surface-2: oklch(0.95 0.008 80);
+  --surface-hi: oklch(0.92 0.008 80);
+  --hairline: oklch(0.80 0.008 80 / 0.8);
+  --hairline-strong: oklch(0.70 0.010 80);
+
+  --fg: oklch(0.20 0.010 80);
+  --fg-muted: oklch(0.42 0.010 80);
+  --fg-faint: oklch(0.55 0.010 80);
+  --fg-ghost: oklch(0.68 0.008 80);
+
+  --accent-ink: oklch(0.22 0.05 80);
+
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 14px rgba(40, 30, 10, 0.08);
+  --shadow-lg: 0 12px 40px rgba(40, 30, 10, 0.12);
+}
+
+/* Accent — only the hue switches; lightness + chroma constant for harmony */
+:root,
+[data-accent='gold'] {
+  --accent-h: 75;
+}
+[data-accent='emerald'] {
+  --accent-h: 150;
+}
+[data-accent='violet'] {
+  --accent-h: 290;
+}
+[data-accent='copper'] {
+  --accent-h: 45;
+}
+
+:root,
+[data-accent] {
+  --accent: oklch(0.78 0.13 var(--accent-h));
+  --accent-soft: oklch(0.78 0.13 var(--accent-h) / 0.14);
+  --accent-edge: oklch(0.78 0.13 var(--accent-h) / 0.35);
+  --accent-deep: oklch(0.52 0.12 var(--accent-h));
+}
+
+/* Density — affects row/block/gutter padding tokens */
+:root,
+[data-density='comfortable'] {
+  --pad-row: 12px;
+  --pad-block: 20px;
+  --pad-gutter: 24px;
+}
+[data-density='compact'] {
+  --pad-row: 8px;
+  --pad-block: 14px;
+  --pad-gutter: 18px;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle scrollbars to match the canvas's chrome */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--hairline);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--hairline-strong);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline) transparent;
+}

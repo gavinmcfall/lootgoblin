@@ -4,7 +4,7 @@
  * Map-backed in-memory registry of DispatchHandlers, keyed by `handler.kind`.
  * Future tasks (T_da5+) plug protocol-specific adapters in at app startup.
  *
- * Mirrors the V2-003 ScavengerRegistry pattern (apps/server/src/scavengers/
+ * Mirrors the V2-003 ScoutRegistry pattern (apps/server/src/scavengers/
  * registry.ts): factory function returns a fresh instance, plus a
  * process-level singleton accessor for production wiring. Map iteration order
  * is insertion order — `list()` relies on that.

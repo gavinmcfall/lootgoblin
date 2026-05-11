@@ -2,7 +2,7 @@
  * OAuth state table — V2-003-T9
  *
  * Stores transient state values + (PKCE) code verifiers for OAuth
- * authorization-code flows initiated via /api/v1/source-auth/:sourceId/oauth/start.
+ * authorization-code flows initiated via /api/v1/scout-auth/:sourceId/oauth/start.
  *
  * The `state` value is an opaque random 32-byte hex returned to the user-agent
  * in the authorize redirect; the `oauth/callback` endpoint validates it before

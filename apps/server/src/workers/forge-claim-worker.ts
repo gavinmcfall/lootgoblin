@@ -51,7 +51,7 @@ import { and, asc, eq, isNotNull, lt } from 'drizzle-orm';
 
 import { logger } from '../logger';
 import { getServerDb, schema } from '../db/client';
-import { sleep } from '../scavengers/rate-limit';
+import { sleep } from '../scouts/rate-limit';
 import {
   markClaimed,
   markDispatched,

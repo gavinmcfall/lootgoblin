@@ -59,7 +59,7 @@ import {
   type DiscoveryContext,
   type DiscoveryEvent,
   type SubscribableAdapter,
-} from '../scavengers';
+} from '../scouts';
 import type {
   WatchlistSubscriptionKind,
   WatchlistSubscriptionParameters,
@@ -721,9 +721,9 @@ async function readDecryptedCredentialsBag(
   if (!secret) return undefined;
 
   const rows = await db()
-    .select({ encryptedBlob: schema.sourceCredentials.encryptedBlob })
-    .from(schema.sourceCredentials)
-    .where(eq(schema.sourceCredentials.sourceId, sourceId))
+    .select({ encryptedBlob: schema.scoutCredentials.encryptedBlob })
+    .from(schema.scoutCredentials)
+    .where(eq(schema.scoutCredentials.scoutId, sourceId))
     .limit(1);
   const row = rows[0];
   if (!row) return undefined;
@@ -755,11 +755,11 @@ async function persistRefreshedCredentials(
 
   const rows = await db()
     .select({
-      id: schema.sourceCredentials.id,
-      encryptedBlob: schema.sourceCredentials.encryptedBlob,
+      id: schema.scoutCredentials.id,
+      encryptedBlob: schema.scoutCredentials.encryptedBlob,
     })
-    .from(schema.sourceCredentials)
-    .where(eq(schema.sourceCredentials.sourceId, sourceId))
+    .from(schema.scoutCredentials)
+    .where(eq(schema.scoutCredentials.scoutId, sourceId))
     .limit(1);
   const row = rows[0];
   if (!row) {
@@ -790,12 +790,12 @@ async function persistRefreshedCredentials(
   const blob = JSON.stringify(merged);
   const encrypted = encrypt(blob, secret);
   await db()
-    .update(schema.sourceCredentials)
+    .update(schema.scoutCredentials)
     .set({
       encryptedBlob: Buffer.from(encrypted),
       lastUsedAt: new Date(),
     })
-    .where(eq(schema.sourceCredentials.id, row.id));
+    .where(eq(schema.scoutCredentials.id, row.id));
 }
 
 // ---------------------------------------------------------------------------

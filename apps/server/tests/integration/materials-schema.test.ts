@@ -371,9 +371,26 @@ describe('V2-007a-T1 materials schema migration', () => {
     );
   });
 
-  it('9. catalog stub tables exist and accept inserts of just an id', async () => {
-    await db().insert(schema.filamentProducts).values({ id: 'bambu-pla-basic-black' });
-    await db().insert(schema.resinProducts).values({ id: 'elegoo-standard-grey' });
+  it('9. catalog tables exist and accept full row inserts', async () => {
+    await db().insert(schema.filamentProducts).values({
+      id: 'bambu-pla-basic-black',
+      brand: 'Bambu',
+      productLine: 'Basic',
+      subtype: 'PLA',
+      colors: ['#000000'],
+      colorPattern: 'solid',
+      source: 'spoolman',
+    });
+    await db().insert(schema.resinProducts).values({
+      id: 'elegoo-standard-grey',
+      brand: 'Elegoo',
+      productLine: 'Standard',
+      subtype: 'standard',
+      resinClass: 'photopolymer',
+      colors: ['#808080'],
+      colorPattern: 'solid',
+      source: 'hand-curated',
+    });
 
     const filaments = await db().select().from(schema.filamentProducts);
     const resins = await db().select().from(schema.resinProducts);

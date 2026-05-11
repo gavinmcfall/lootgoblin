@@ -130,7 +130,7 @@ describe('e2e — cults3d ingest', () => {
     // Wipe credentials between tests — keyed by sourceId, not user, so
     // adapter-rotated bags from a prior test would otherwise leak through.
     const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-    await db.delete(schema.sourceCredentials);
+    await db.delete(schema.scoutCredentials);
 
     // Fresh user + collection per test so each ingest is isolated.
     userId = await seedUser();

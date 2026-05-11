@@ -11,7 +11,7 @@ export interface Item {
   contentType: string;
   sourceUrl: string;
   snapshot?: Record<string, unknown>;
-  destinationId?: string;
+  hoardId?: string;
   outputPath?: string;
   lastError?: string;
   retryCount: number;
@@ -23,7 +23,7 @@ export function useItems() {
   const qc = useQueryClient();
   const query = useQuery({
     queryKey: ['items'],
-    queryFn: async (): Promise<{ items: Item[] }> => (await fetch('/api/v1/queue')).json(),
+    queryFn: async (): Promise<{ items: Item[] }> => (await fetch('/api/v1/stash')).json(),
   });
   const invalidate = useCallback(() => qc.invalidateQueries({ queryKey: ['items'] }), [qc]);
   useSSE(useCallback((ev) => { if (ev === 'item-updated') invalidate(); }, [invalidate]));

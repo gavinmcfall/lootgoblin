@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
 import os from 'node:os';
 import { getDb, schema } from '@/db/client';
 import { completeItem, failItem } from '@/workers/queue';
-import { getWriter } from '@/destinations';
+import { getWriter } from '@/hoard';
 import { emit } from '@/lib/sse';
 import { logger } from '@/logger';
 
@@ -105,7 +105,7 @@ async function assembleAndComplete(
   const db = getDb() as any;
   const [item] = await db.select().from(schema.items).where(eq(schema.items.id, id));
   if (!item) throw new Error('item not found');
-  if (!item.destinationId) throw new Error('no destination assigned');
+  if (!item.hoardId) throw new Error('no destination assigned');
 
   // Build a FetchedItem-shaped object from stored snapshot.metadata
   const meta = (snap.metadata ?? {}) as StoredMetadata;
@@ -172,8 +172,8 @@ async function assembleAndComplete(
   // Resolve destination + write
   const [dest] = await db
     .select()
-    .from(schema.destinations)
-    .where(eq(schema.destinations.id, item.destinationId));
+    .from(schema.hoardLibraries)
+    .where(eq(schema.hoardLibraries.id, item.hoardId));
   if (!dest) throw new Error('destination not found');
 
   const writer = getWriter(dest.type);

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createRegistry } from '../../src/scavengers/registry';
+import { createRegistry } from '../../src/scouts/registry';
 import { logger } from '../../src/logger';
-import type { ScavengerAdapter, FetchContext, FetchTarget, ScavengerEvent, SourceId } from '../../src/scavengers/types';
+import type { ScoutAdapter, FetchContext, FetchTarget, ScoutEvent, SourceId } from '../../src/scouts/types';
 
 // ---------------------------------------------------------------------------
 // Test helpers — minimal adapter stubs
@@ -10,11 +10,11 @@ import type { ScavengerAdapter, FetchContext, FetchTarget, ScavengerEvent, Sourc
 function makeAdapter(
   id: SourceId,
   supportsFn: (url: string) => boolean = () => false,
-): ScavengerAdapter {
+): ScoutAdapter {
   return {
     id,
     supports: supportsFn,
-    fetch(_ctx: FetchContext, _target: FetchTarget): AsyncIterable<ScavengerEvent> {
+    fetch(_ctx: FetchContext, _target: FetchTarget): AsyncIterable<ScoutEvent> {
       // Stub — not exercised in these unit tests
       return (async function* () {})();
     },
@@ -25,7 +25,7 @@ function makeAdapter(
 // Registry tests
 // ---------------------------------------------------------------------------
 
-describe('ScavengerRegistry', () => {
+describe('ScoutRegistry', () => {
   describe('empty registry', () => {
     it('resolveUrl returns null when no adapters are registered', () => {
       const registry = createRegistry();

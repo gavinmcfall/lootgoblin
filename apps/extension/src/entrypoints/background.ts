@@ -17,7 +17,7 @@ export default defineBackground(() => {
     (async () => {
       try {
         if (msg.type === 'queue-tag') {
-          const res = await api<{ id: string; duplicate?: boolean; existingId?: string; outputPath?: string }>('/api/v1/queue', {
+          const res = await api<{ id: string; duplicate?: boolean; existingId?: string; outputPath?: string }>('/api/v1/stash', {
             method: 'POST',
             body: JSON.stringify(msg.payload),
           });
@@ -73,7 +73,7 @@ async function runUploadPass(): Promise<void> {
 
   // Ask the server which sources have awaiting-upload items — we'll only
   // check sources we could plausibly fetch for. For v1 we just query the
-  // known adapters (makerworld). Future: query /api/v1/sources to enumerate.
+  // known adapters (makerworld). Future: query /api/v1/scouts to enumerate.
   const sources = ['makerworld']; // hard-coded for v1
   const allPending: Array<{ id: string; sourceItemId: string; pendingFiles: Array<{ url: string; name: string }> }> = [];
   for (const source of sources) {

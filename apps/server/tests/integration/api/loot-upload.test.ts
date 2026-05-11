@@ -366,7 +366,7 @@ describe('POST /api/v1/loot/upload', () => {
   });
 
   it('sanitizeUploadFilename strips path separators, null bytes, and leading dots', async () => {
-    const { sanitizeFilename: sanitizeUploadFilename } = await import('../../../src/scavengers/filename-sanitize');
+    const { sanitizeFilename: sanitizeUploadFilename } = await import('../../../src/scouts/filename-sanitize');
 
     expect(sanitizeUploadFilename('../etc/passwd')).toBe('passwd');
     expect(sanitizeUploadFilename('foo/../bar.stl')).toBe('bar.stl');
@@ -385,7 +385,7 @@ describe('POST /api/v1/loot/upload', () => {
   });
 
   it('sanitizeUploadFilename URL-decodes percent-encoded traversal sequences', async () => {
-    const { sanitizeFilename: sanitizeUploadFilename } = await import('../../../src/scavengers/filename-sanitize');
+    const { sanitizeFilename: sanitizeUploadFilename } = await import('../../../src/scouts/filename-sanitize');
 
     // Uppercase + lowercase %2F / %5C (forward slash and backslash).
     expect(sanitizeUploadFilename('..%2F..%2Fpasswd')).toBe('passwd');
@@ -539,7 +539,7 @@ describe('POST /api/v1/loot/upload', () => {
     mockAuthenticate.mockResolvedValueOnce(makeSessionActor(userId));
 
     // Spy on createIngestPipeline to return a pipeline whose run() throws.
-    const scavengersMod = await import('../../../src/scavengers');
+    const scavengersMod = await import('../../../src/scouts');
     const spy = vi.spyOn(scavengersMod, 'createIngestPipeline').mockImplementation(
       () => ({
         run: async () => {

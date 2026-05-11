@@ -76,7 +76,7 @@ import { asc, eq } from 'drizzle-orm';
 
 import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
-import { sleep } from '../scavengers/rate-limit';
+import { sleep } from '../scouts/rate-limit';
 import { sha256Hex } from '../stash/hash-util';
 import {
   markClaimable,

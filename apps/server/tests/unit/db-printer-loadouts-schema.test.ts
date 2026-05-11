@@ -27,7 +27,7 @@ import { runMigrations, resetDbCache, getDb } from '../../src/db/client';
 const DB_PATH = '/tmp/lootgoblin-printer-loadouts-schema.db';
 const MIGRATION_PATH = path.resolve(
   __dirname,
-  '../../src/db/migrations/0030_v2_005f_cf_1_printer_loadouts.sql',
+  '../../src/db/migrations/0000_true_viper.sql',
 );
 
 beforeAll(async () => {
@@ -139,42 +139,15 @@ describe('V2-005f-CF-1-T_g1 printer_loadouts schema', () => {
   });
 
   /**
-   * Test 5 — backfill semantics.
+   * Test 5 — consolidated migration contains printer_loadouts CREATE TABLE.
    *
-   * No migration-stepping helper exists in apps/server (verified at T_g1
-   * authoring time — see report). Without one we can't seed pre-0030 state and
-   * then run 0030 in isolation, so this test takes the syntactic-validation
-   * path: parse the migration file and assert the backfill INSERT is present,
-   * runs BEFORE the materials column drop, and joins materials with printers
-   * correctly. T_g5 e2e test will exercise the live path end-to-end with real
-   * data via the cross-pillar integration harness.
+   * The original backfill logic (INSERT from legacy loaded_in_printer_ref) was
+   * part of the incremental migration from v1. The consolidated migration creates
+   * tables fresh — no data backfill is needed. This test verifies the consolidated
+   * migration SQL contains the CREATE TABLE for printer_loadouts.
    */
-  it('migration 0030 backfills printer_loadouts before dropping materials.loaded_in_printer_ref', () => {
+  it('consolidated migration creates printer_loadouts table', () => {
     const sqlText = readFileSync(MIGRATION_PATH, 'utf8');
-
-    // The backfill INSERT exists, names the right columns, and pulls from
-    // materials filtered to rows whose ref resolves to a real printer.
-    const insertMatch = sqlText.match(
-      /INSERT\s+INTO\s+printer_loadouts\s*\(([^)]+)\)\s*SELECT[\s\S]+?FROM\s+materials\s+m[\s\S]+?WHERE\s+m\.loaded_in_printer_ref\s+IS\s+NOT\s+NULL[\s\S]+?IN\s*\(\s*SELECT\s+id\s+FROM\s+printers\s*\)/i,
-    );
-    expect(insertMatch, 'backfill INSERT not found or shape changed').not.toBeNull();
-    const insertColumns = insertMatch![1]!.split(',').map((c) => c.trim());
-    expect(insertColumns).toEqual([
-      'id',
-      'printer_id',
-      'slot_index',
-      'material_id',
-      'loaded_at',
-    ]);
-
-    // Backfill must run BEFORE the column drop, otherwise we'd be pulling
-    // from a column that no longer exists.
-    const insertIdx = sqlText.search(/INSERT\s+INTO\s+printer_loadouts/i);
-    const dropColumnIdx = sqlText.search(
-      /ALTER\s+TABLE\s+`?materials`?\s+DROP\s+COLUMN\s+`?loaded_in_printer_ref`?/i,
-    );
-    expect(insertIdx).toBeGreaterThan(-1);
-    expect(dropColumnIdx).toBeGreaterThan(-1);
-    expect(insertIdx).toBeLessThan(dropColumnIdx);
+    expect(sqlText).toContain('CREATE TABLE `printer_loadouts`');
   });
 });

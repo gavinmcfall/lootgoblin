@@ -24,8 +24,8 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 
-import { createCults3dAdapter } from '../../src/scavengers/adapters/cults3d';
-import type { FetchContext, FetchTarget, ScavengerEvent } from '../../src/scavengers/types';
+import { createCults3dAdapter } from '../../src/scouts/adapters/cults3d';
+import type { FetchContext, FetchTarget, ScoutEvent } from '../../src/scouts/types';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -76,8 +76,8 @@ async function collectEvents(
   adapter: ReturnType<typeof createCults3dAdapter>,
   ctx: FetchContext,
   target: FetchTarget,
-): Promise<ScavengerEvent[]> {
-  const events: ScavengerEvent[] = [];
+): Promise<ScoutEvent[]> {
+  const events: ScoutEvent[] = [];
   for await (const evt of adapter.fetch(ctx, target)) {
     events.push(evt);
   }

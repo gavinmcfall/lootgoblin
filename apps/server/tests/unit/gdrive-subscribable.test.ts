@@ -12,11 +12,11 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-import { createGdriveAdapter } from '../../src/scavengers/adapters/gdrive';
+import { createGdriveAdapter } from '../../src/scouts/adapters/gdrive';
 import type {
   DiscoveryContext,
   DiscoveryEvent,
-} from '../../src/scavengers/subscribable';
+} from '../../src/scouts/subscribable';
 
 function makeCtx(
   cursor?: string,

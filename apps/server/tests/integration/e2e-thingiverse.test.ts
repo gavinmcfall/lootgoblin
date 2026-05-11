@@ -31,7 +31,7 @@ import {
 } from './_helpers/e2e';
 import { getDb, schema } from '../../src/db/client';
 import { decrypt } from '../../src/crypto';
-import { defaultRegistry, createThingiverseAdapter } from '../../src/scavengers';
+import { defaultRegistry, createThingiverseAdapter } from '../../src/scouts';
 
 vi.mock('next/server', () => ({
   NextResponse: {
@@ -109,7 +109,7 @@ describe('e2e — thingiverse ingest', () => {
 
   beforeEach(async () => {
     const db = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
-    await db.delete(schema.sourceCredentials);
+    await db.delete(schema.scoutCredentials);
 
     userId = await seedUser();
     const root = await seedStashRoot(userId);
@@ -169,8 +169,8 @@ describe('e2e — thingiverse ingest', () => {
     const dbRead = getDb() as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
     const before = await dbRead
       .select()
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.id, seeded.id));
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.id, seeded.id));
     const originalBlob = before[0]!.encryptedBlob as Uint8Array;
 
     let refreshHits = 0;
@@ -211,8 +211,8 @@ describe('e2e — thingiverse ingest', () => {
 
     const after = await dbRead
       .select()
-      .from(schema.sourceCredentials)
-      .where(eq(schema.sourceCredentials.id, seeded.id));
+      .from(schema.scoutCredentials)
+      .where(eq(schema.scoutCredentials.id, seeded.id));
     const newBlob = after[0]!.encryptedBlob as Uint8Array;
     expect(Buffer.from(newBlob).equals(Buffer.from(originalBlob))).toBe(false);
 

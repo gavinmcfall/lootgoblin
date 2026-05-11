@@ -1,6 +1,7 @@
 'use client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { SectionTitle, Tile, MetaBadge, EmptyHint } from '@/components/shell/atoms';
 
 interface Pending {
   challengeId: string;
@@ -82,70 +83,80 @@ export default function ExtensionsPage() {
 
   return (
     <div className="space-y-8">
-      <h2 className="text-xl font-semibold text-slate-100">Settings — Extensions</h2>
+      <SectionTitle meta={`${activeKeys.length} paired`}>Browser Extensions</SectionTitle>
 
       {/* Pending pair requests */}
       <section>
-        <h3 className="mb-2 text-sm font-medium text-slate-300">Pending pairings</h3>
-        {pending.length === 0 ? (
-          <p className="text-sm text-slate-500">None pending. Start pairing from an extension.</p>
-        ) : (
-          <div className="space-y-2">
-            {pending.map((p) => (
-              <div key={p.challengeId} className="flex items-center justify-between rounded-lg border border-emerald-700 bg-emerald-900/20 p-3">
-                <div>
-                  <div className="font-mono text-xl text-emerald-100">{p.code}</div>
-                  <div className="text-xs text-emerald-300/70">
-                    {p.browserFingerprint ? `${p.browserFingerprint} · ` : ''}
-                    expires {new Date(p.expiresAt).toLocaleTimeString()}
+        <SectionTitle as="h3">Pair a new extension</SectionTitle>
+        <div className="mt-2">
+          {pending.length === 0 ? (
+            <EmptyHint>None pending. Start pairing from an extension.</EmptyHint>
+          ) : (
+            <div className="space-y-2">
+              {pending.map((p) => (
+                <Tile key={p.challengeId} className="p-3 border-running bg-running-bg">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-mono text-[16px] tracking-[3px] text-running">{p.code}</div>
+                      <div className="font-mono text-[10px] text-fg-faint">
+                        {p.browserFingerprint ? `${p.browserFingerprint} · ` : ''}
+                        expires {new Date(p.expiresAt).toLocaleTimeString()}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => approve(p.challengeId)}
+                      className="rounded-md bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-accent-ink hover:opacity-90"
+                    >
+                      Approve
+                    </button>
                   </div>
-                </div>
-                <button
-                  onClick={() => approve(p.challengeId)}
-                  className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-emerald-50 hover:bg-emerald-500"
-                >
-                  Approve
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+                </Tile>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Active extension pairings (api keys) */}
       <section>
-        <h3 className="mb-2 text-sm font-medium text-slate-300">Active pairings</h3>
-        {activeKeys.length === 0 ? (
-          <p className="text-sm text-slate-500">No active pairings.</p>
-        ) : (
-          <div className="space-y-2">
-            {activeKeys.map((k) => (
-              <div key={k.id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 p-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-slate-100">{k.name}</div>
-                  <div className="mt-0.5 font-mono text-xs text-slate-500">{k.scopes}</div>
-                  <div className="mt-0.5 text-xs text-slate-500">
-                    {k.lastUsedAt ? `last used ${new Date(k.lastUsedAt).toLocaleString()}` : 'never used'} · paired {new Date(k.createdAt).toLocaleDateString()}
+        <SectionTitle as="h3">Active pairings</SectionTitle>
+        <div className="mt-2">
+          {activeKeys.length === 0 ? (
+            <EmptyHint>No active pairings.</EmptyHint>
+          ) : (
+            <div className="space-y-2">
+              {activeKeys.map((k) => (
+                <Tile key={k.id} className="p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-medium text-fg">{k.name}</div>
+                      <div className="mt-0.5">
+                        <MetaBadge tone="neutral">{k.scopes}</MetaBadge>
+                      </div>
+                      <div className="mt-0.5 font-mono text-[10px] text-fg-faint">
+                        {k.lastUsedAt ? `last used ${new Date(k.lastUsedAt).toLocaleString()}` : 'never used'} · paired {new Date(k.createdAt).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        onClick={() => rename(k)}
+                        className="rounded-md border border-hairline px-2 py-1 font-mono text-[10px] uppercase tracking-[0.6px] text-fg-muted hover:text-fg"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        onClick={() => revoke(k)}
+                        className="font-mono text-[10px] uppercase tracking-[0.6px] text-fg-faint hover:text-danger"
+                      >
+                        Revoke
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  <button
-                    onClick={() => rename(k)}
-                    className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
-                  >
-                    Rename
-                  </button>
-                  <button
-                    onClick={() => revoke(k)}
-                    className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 hover:border-red-600 hover:text-red-300"
-                  >
-                    Revoke
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+                </Tile>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
     </div>
   );

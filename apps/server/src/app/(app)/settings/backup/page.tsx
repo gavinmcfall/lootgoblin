@@ -1,14 +1,16 @@
+import { SectionTitle, Tile } from '@/components/shell/atoms';
+
 export default function BackupPage() {
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-semibold text-slate-100">Settings — Backup</h2>
-      <div className="rounded-lg border border-amber-700 bg-amber-900/20 p-4 text-sm">
-        <p className="font-medium text-amber-200">Keep your secret</p>
-        <p className="mt-1 text-amber-100/80">
+      <SectionTitle>Backup</SectionTitle>
+      <Tile className="border-running p-4 bg-running-bg">
+        <p className="font-mono text-[10.5px] uppercase tracking-[1px] text-running">Keep your secret</p>
+        <p className="mt-1 text-[13px] text-fg-muted">
           Your <code className="font-mono">LOOTGOBLIN_SECRET</code> encrypts all stored source credentials. If you lose it, those credentials become unrecoverable.
         </p>
-      </div>
-      <p className="text-sm text-slate-500">Backup download coming soon. For now, copy <code className="font-mono text-slate-300">/config/lootgoblin.db</code> from the container volume.</p>
+      </Tile>
+      <p className="text-[13px] text-fg-faint">Backup download coming soon. For now, copy <code className="font-mono text-fg">/config/lootgoblin.db</code> from the container volume.</p>
     </div>
   );
 }

@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { SectionTitle, Tile, MetaBadge, EmptyHint } from '@/components/shell/atoms';
 
 interface ApiKey {
   id: string;
@@ -45,34 +46,55 @@ export default function ApiKeysPage() {
     }
   }
 
+  const keys = data?.keys ?? [];
+
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-slate-100">Settings — API Keys</h2>
+      <SectionTitle meta={`${keys.length} key${keys.length === 1 ? '' : 's'}`}>API Keys</SectionTitle>
 
-      <form onSubmit={create} className="flex items-end gap-2">
-        <label className="block flex-1">
-          <span className="text-xs text-slate-400">Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded border border-slate-700 bg-slate-900 p-2 text-sm" placeholder="e.g. cli" />
-        </label>
-        <label className="block flex-1">
-          <span className="text-xs text-slate-400">Scopes (csv)</span>
-          <input value={scopes} onChange={(e) => setScopes(e.target.value)} className="mt-1 w-full rounded border border-slate-700 bg-slate-900 p-2 font-mono text-xs" />
-        </label>
-        <button type="submit" className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-emerald-50 hover:bg-emerald-500">Create</button>
-      </form>
+      <Tile className="p-6 max-w-2xl">
+        <form onSubmit={create} className="flex items-end gap-2">
+          <label className="block flex-1">
+            <span className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">Name</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-1.5 text-[13px] text-fg focus:outline-none focus:ring-2 focus:ring-accent-edge"
+              placeholder="e.g. cli"
+            />
+          </label>
+          <label className="block flex-1">
+            <span className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">Scopes (csv)</span>
+            <input
+              value={scopes}
+              onChange={(e) => setScopes(e.target.value)}
+              className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-1.5 font-mono text-[13px] text-fg focus:outline-none focus:ring-2 focus:ring-accent-edge"
+            />
+          </label>
+          <button
+            type="submit"
+            className="rounded-md bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-accent-ink hover:opacity-90"
+          >
+            Create
+          </button>
+        </form>
+      </Tile>
 
       {revealed && (
-        <div className="rounded-lg border border-emerald-700 bg-emerald-900/20 p-4">
-          <p className="text-sm font-medium text-emerald-200">New key (copy now — will not be shown again):</p>
+        <div className="rounded-md border border-running bg-running-bg p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[1px] text-running">New key — copy now, will not be shown again</p>
           <div className="mt-2 flex items-center gap-2">
-            <code className="flex-1 truncate rounded bg-slate-900 p-2 font-mono text-xs text-emerald-200">{revealed}</code>
+            <code className="flex-1 truncate rounded-md bg-surface p-2 font-mono text-[12.5px] text-fg">{revealed}</code>
             <button
               onClick={() => { navigator.clipboard.writeText(revealed); toast.success('Copied'); }}
-              className="rounded border border-emerald-700 px-2 py-1 text-xs text-emerald-200 hover:bg-emerald-900/40"
+              className="rounded-md border border-running px-2 py-1 font-mono text-[10px] uppercase tracking-[0.6px] text-running hover:bg-running"
             >
               Copy
             </button>
-            <button onClick={() => setRevealed(null)} className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300">
+            <button
+              onClick={() => setRevealed(null)}
+              className="rounded-md border border-hairline px-2 py-1 font-mono text-[10px] uppercase tracking-[0.6px] text-fg-muted hover:text-fg"
+            >
               Done
             </button>
           </div>
@@ -80,27 +102,31 @@ export default function ApiKeysPage() {
       )}
 
       {isLoading ? (
-        <p className="text-sm text-slate-400">Loading…</p>
-      ) : (data?.keys.length ?? 0) === 0 ? (
-        <p className="text-sm text-slate-500">No API keys yet.</p>
+        <EmptyHint>Loading…</EmptyHint>
+      ) : keys.length === 0 ? (
+        <EmptyHint>No API keys yet.</EmptyHint>
       ) : (
         <div className="space-y-2">
-          {data!.keys.map((k) => (
-            <div key={k.id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 p-3">
-              <div>
-                <div className="text-sm font-medium text-slate-100">{k.name}</div>
-                <div className="font-mono text-xs text-slate-500">{k.scopes}</div>
-                <div className="mt-0.5 text-xs text-slate-500">
-                  {k.lastUsedAt ? `last used ${new Date(k.lastUsedAt).toLocaleString()}` : 'never used'}
+          {keys.map((k) => (
+            <Tile key={k.id} className="p-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[13px] font-medium text-fg">{k.name}</div>
+                  <div className="mt-0.5">
+                    <MetaBadge tone="neutral">{k.scopes}</MetaBadge>
+                  </div>
+                  <div className="mt-0.5 font-mono text-[10px] text-fg-faint">
+                    {k.lastUsedAt ? `last used ${new Date(k.lastUsedAt).toLocaleString()}` : 'never used'}
+                  </div>
                 </div>
+                <button
+                  onClick={() => revoke(k.id)}
+                  className="font-mono text-[10px] uppercase tracking-[0.6px] text-fg-faint hover:text-danger"
+                >
+                  Revoke
+                </button>
               </div>
-              <button
-                onClick={() => revoke(k.id)}
-                className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-red-600 hover:text-red-300"
-              >
-                Revoke
-              </button>
-            </div>
+            </Tile>
           ))}
         </div>
       )}

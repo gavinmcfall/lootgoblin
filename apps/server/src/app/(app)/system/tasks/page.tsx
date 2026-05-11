@@ -35,7 +35,7 @@ export default function TasksPage() {
       <SectionTitle meta={`${tasks.length} task${tasks.length === 1 ? '' : 's'}`}>System tasks</SectionTitle>
       {isError && <EmptyHint>Failed to load tasks.</EmptyHint>}
       {isLoading ? (
-        <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>
+        <EmptyHint>Loading…</EmptyHint>
       ) : tasks.length === 0 ? (
         <EmptyHint>No scheduled tasks.</EmptyHint>
       ) : (

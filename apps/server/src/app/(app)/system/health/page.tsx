@@ -1,6 +1,6 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
-import { SectionTitle, MetaBadge, type Tone } from '@/components/shell/atoms';
+import { SectionTitle, MetaBadge, EmptyHint, type Tone } from '@/components/shell/atoms';
 
 interface HealthReport {
   status: 'ok' | 'degraded' | 'fail';
@@ -20,8 +20,8 @@ export default function HealthPage() {
     refetchInterval: 10_000,
   });
 
-  if (isError) return <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Failed to load health data.</p>;
-  if (isLoading || !data) return <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>;
+  if (isError) return <EmptyHint>Failed to load health data.</EmptyHint>;
+  if (isLoading || !data) return <EmptyHint>Loading…</EmptyHint>;
 
   return (
     <div className="space-y-4">

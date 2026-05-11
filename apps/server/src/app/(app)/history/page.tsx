@@ -3,11 +3,7 @@ import { useItems } from '@/hooks/useItems';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { SectionTitle, MetaBadge, EmptyHint } from '@/components/shell/atoms';
-import { relativeAge } from '@/lib/time';
-
-function dayKey(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
+import { relativeAge, localDayKey } from '@/lib/time';
 
 export default function HistoryPage() {
   const { data, isLoading } = useItems();
@@ -47,7 +43,7 @@ export default function HistoryPage() {
   const groups: Record<string, typeof items> = {};
   for (const it of items) {
     const at = it.completedAt ? new Date(it.completedAt) : new Date(it.createdAt);
-    const k = dayKey(at);
+    const k = localDayKey(at);
     (groups[k] ??= []).push(it);
   }
   const dayKeys = Object.keys(groups).sort().reverse();
@@ -57,7 +53,11 @@ export default function HistoryPage() {
       {dayKeys.map((k) => (
         <section key={k}>
           <SectionTitle as="h3" meta={`${groups[k]!.length} events`}>
-            {new Date(k).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}
+            {new Date(`${k}T12:00:00Z`).toLocaleDateString(undefined, {
+              weekday: 'long',
+              month: 'short',
+              day: 'numeric',
+            })}
           </SectionTitle>
           <div>
             {groups[k]!.map((it) => {
@@ -75,12 +75,22 @@ export default function HistoryPage() {
                   </span>
                   <MetaBadge tone={tone}>{it.status}</MetaBadge>
                   <span className="flex-1 truncate text-[13px] text-fg">{title}</span>
-                  <button
-                    onClick={() => retry(it.id, it.sourceId, it.sourceItemId, it.sourceUrl)}
-                    className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint hover:text-accent"
-                  >
-                    retry
-                  </button>
+                  {it.status === 'failed' ? (
+                    <button
+                      type="button"
+                      onClick={() => retry(it.id, it.sourceId, it.sourceItemId, it.sourceUrl)}
+                      className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint hover:text-accent"
+                    >
+                      retry
+                    </button>
+                  ) : (
+                    <span
+                      className="font-mono text-[10px] tracking-[1px] text-fg-ghost"
+                      aria-hidden="true"
+                    >
+                      —
+                    </span>
+                  )}
                 </div>
               );
             })}

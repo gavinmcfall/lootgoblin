@@ -17,3 +17,15 @@ export function relativeAge(date: Date): string {
   const days = Math.floor(hours / 24);
   return `${days}d`;
 }
+
+/**
+ * Local-timezone date key, format `YYYY-MM-DD`.
+ * Avoids the UTC-midnight off-by-one trap that `d.toISOString().slice(0, 10)`
+ * creates for users east or west of UTC (especially NZ at UTC+12/13).
+ */
+export function localDayKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}

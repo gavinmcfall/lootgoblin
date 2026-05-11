@@ -2,7 +2,7 @@
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { use } from 'react';
+import { use, useState } from 'react';
 import { DestinationForm, type DestinationFormValues } from '@/components/hoard/DestinationForm';
 import { SectionTitle, Tile } from '@/components/shell/atoms';
 
@@ -17,6 +17,7 @@ interface Destination {
 export default function EditLibraryPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const [serverError, setServerError] = useState<string | undefined>(undefined);
   const { data, isLoading } = useQuery({
     queryKey: ['destination', id],
     queryFn: async (): Promise<{ destination: Destination }> =>
@@ -24,6 +25,7 @@ export default function EditLibraryPage({ params }: { params: Promise<{ id: stri
   });
 
   async function onSubmit(values: DestinationFormValues) {
+    setServerError(undefined);
     const res = await fetch(`/api/v1/hoard/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -36,6 +38,7 @@ export default function EditLibraryPage({ params }: { params: Promise<{ id: stri
     });
     if (!res.ok) {
       toast.error('Save failed');
+      setServerError('Save failed. Please try again or contact support.');
       return;
     }
     toast.success('Saved');
@@ -75,6 +78,7 @@ export default function EditLibraryPage({ params }: { params: Promise<{ id: stri
             credentialId: d.credentialId,
           }}
           submitLabel="Save"
+          serverError={serverError}
         />
       </Tile>
     </div>

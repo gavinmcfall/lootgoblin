@@ -27,7 +27,7 @@ export default function ActivityPage() {
         {running.length === 0 ? (
           <EmptyHint>Nothing on the rack. The goblin waits.</EmptyHint>
         ) : (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {running.map((i) => <ItemCard key={i.id} item={i} />)}
           </div>
         )}
@@ -38,7 +38,7 @@ export default function ActivityPage() {
         {done24h.length === 0 ? (
           <EmptyHint>No loot today yet.</EmptyHint>
         ) : (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {done24h.slice(0, 12).map((i) => <ItemCard key={i.id} item={i} />)}
           </div>
         )}

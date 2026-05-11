@@ -18,7 +18,7 @@ export function ItemCard({ item }: { item: Item }) {
   const tone = STATUS_TONE[item.status];
 
   return (
-    <div className="rounded-md border border-hairline bg-surface p-3 hover:bg-surface-hi">
+    <div className="rounded-md border border-hairline bg-surface p-3">
       <div className="flex min-w-0 items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
@@ -27,7 +27,13 @@ export function ItemCard({ item }: { item: Item }) {
             <MetaBadge tone={tone}>{item.status}</MetaBadge>
           </div>
           {item.status === 'running' && (
-            <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface-2">
+            <div
+              role="progressbar"
+              aria-label="Downloading"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              className="mt-2 h-1 w-full overflow-hidden rounded-full bg-surface-2"
+            >
               <div className="h-full w-2/5 animate-pulse bg-running" />
             </div>
           )}

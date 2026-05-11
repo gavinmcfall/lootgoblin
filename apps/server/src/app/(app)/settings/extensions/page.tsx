@@ -21,13 +21,13 @@ interface ApiKey {
 export default function ExtensionsPage() {
   const qc = useQueryClient();
 
-  const { data: pendingData } = useQuery({
+  const { data: pendingData, isError: pendingIsError } = useQuery({
     queryKey: ['pair-pending'],
     queryFn: async (): Promise<{ pending: Pending[] }> => (await fetch('/api/v1/pair/pending')).json(),
     refetchInterval: 3000,
   });
 
-  const { data: keysData } = useQuery({
+  const { data: keysData, isError: keysIsError } = useQuery({
     queryKey: ['api-keys'],
     queryFn: async (): Promise<{ keys: ApiKey[] }> => (await fetch('/api/v1/api-keys')).json(),
   });
@@ -89,12 +89,14 @@ export default function ExtensionsPage() {
       <section>
         <SectionTitle as="h3">Pair a new extension</SectionTitle>
         <div className="mt-2">
-          {pending.length === 0 ? (
+          {pendingIsError ? (
+            <EmptyHint>Failed to load pending pairings.</EmptyHint>
+          ) : pending.length === 0 ? (
             <EmptyHint>None pending. Start pairing from an extension.</EmptyHint>
           ) : (
             <div className="space-y-2">
               {pending.map((p) => (
-                <Tile key={p.challengeId} className="p-3 border-running bg-running-bg">
+                <div key={p.challengeId} className="rounded-md border border-running bg-running-bg p-3">
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="font-mono text-[16px] tracking-[3px] text-running">{p.code}</div>
@@ -110,7 +112,7 @@ export default function ExtensionsPage() {
                       Approve
                     </button>
                   </div>
-                </Tile>
+                </div>
               ))}
             </div>
           )}
@@ -121,7 +123,9 @@ export default function ExtensionsPage() {
       <section>
         <SectionTitle as="h3">Active pairings</SectionTitle>
         <div className="mt-2">
-          {activeKeys.length === 0 ? (
+          {keysIsError ? (
+            <EmptyHint>Failed to load paired extensions.</EmptyHint>
+          ) : activeKeys.length === 0 ? (
             <EmptyHint>No active pairings.</EmptyHint>
           ) : (
             <div className="space-y-2">

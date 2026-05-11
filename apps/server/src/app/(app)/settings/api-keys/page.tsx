@@ -14,7 +14,7 @@ interface ApiKey {
 
 export default function ApiKeysPage() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['api-keys'],
     queryFn: async (): Promise<{ keys: ApiKey[] }> => (await fetch('/api/v1/api-keys')).json(),
   });
@@ -54,18 +54,20 @@ export default function ApiKeysPage() {
 
       <Tile className="p-6 max-w-2xl">
         <form onSubmit={create} className="flex items-end gap-2">
-          <label className="block flex-1">
+          <label htmlFor="key-name" className="block flex-1">
             <span className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">Name</span>
             <input
+              id="key-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-1.5 text-[13px] text-fg focus:outline-none focus:ring-2 focus:ring-accent-edge"
               placeholder="e.g. cli"
             />
           </label>
-          <label className="block flex-1">
+          <label htmlFor="key-scopes" className="block flex-1">
             <span className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">Scopes (csv)</span>
             <input
+              id="key-scopes"
               value={scopes}
               onChange={(e) => setScopes(e.target.value)}
               className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-1.5 font-mono text-[13px] text-fg focus:outline-none focus:ring-2 focus:ring-accent-edge"
@@ -87,7 +89,7 @@ export default function ApiKeysPage() {
             <code className="flex-1 truncate rounded-md bg-surface p-2 font-mono text-[12.5px] text-fg">{revealed}</code>
             <button
               onClick={() => { navigator.clipboard.writeText(revealed); toast.success('Copied'); }}
-              className="rounded-md border border-running px-2 py-1 font-mono text-[10px] uppercase tracking-[0.6px] text-running hover:bg-running"
+              className="rounded-md border border-running px-2 py-1 font-mono text-[10px] uppercase tracking-[0.6px] text-running hover:bg-running-bg"
             >
               Copy
             </button>
@@ -101,7 +103,9 @@ export default function ApiKeysPage() {
         </div>
       )}
 
-      {isLoading ? (
+      {isError ? (
+        <EmptyHint>Failed to load keys.</EmptyHint>
+      ) : isLoading ? (
         <EmptyHint>Loading…</EmptyHint>
       ) : keys.length === 0 ? (
         <EmptyHint>No API keys yet.</EmptyHint>

@@ -3,7 +3,6 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const TABS = [
-  { href: '/settings/auth', label: 'Auth' },
   { href: '/settings/api-keys', label: 'API Keys' },
   { href: '/settings/extensions', label: 'Extensions' },
   { href: '/settings/backup', label: 'Backup' },

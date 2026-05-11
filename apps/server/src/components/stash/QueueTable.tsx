@@ -2,6 +2,17 @@
 import type { Item } from '@/hooks/useItems';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
+import { MetaBadge, Tile } from '@/components/shell/atoms';
+
+function relativeAge(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d`;
+}
 
 export function QueueTable({
   items,
@@ -33,52 +44,75 @@ export function QueueTable({
     }
   }
 
-  if (items.length === 0) {
-    return <p className="text-sm text-slate-500">Queue is empty.</p>;
-  }
-
   return (
-    <div className="overflow-hidden rounded-lg border border-slate-800">
+    <Tile>
       <table className="w-full border-collapse text-sm">
-        <thead className="bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
-          <tr>
-            <th className="w-10 px-3 py-2 text-left">
-              <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+        <thead>
+          <tr className="border-b border-hairline-strong">
+            <th className="w-10 px-3 py-2.5 text-left">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleAll}
+                aria-label="Select all"
+              />
             </th>
-            <th className="px-3 py-2 text-left font-medium">Title</th>
-            <th className="px-3 py-2 text-left font-medium">Source</th>
-            <th className="px-3 py-2 text-left font-medium">Destination</th>
-            <th className="px-3 py-2 text-left font-medium">Status</th>
-            <th className="w-24 px-3 py-2"></th>
+            <th className="w-16 px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[1.2px] text-fg-faint">
+              Landed
+            </th>
+            <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[1.2px] text-fg-faint">
+              Item
+            </th>
+            <th className="w-32 px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[1.2px] text-fg-faint">
+              Source
+            </th>
+            <th className="w-32 px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[1.2px] text-fg-faint">
+              Destination
+            </th>
+            <th className="w-20 px-3 py-2.5" />
           </tr>
         </thead>
         <tbody>
-          {items.map((i) => {
+          {items.map((i, idx) => {
             const snap = (i.snapshot ?? {}) as Record<string, unknown>;
             const title = (snap.title as string | undefined) ?? `${i.sourceId}:${i.sourceItemId}`;
+            const isLast = idx === items.length - 1;
+            const isSelected = selected.includes(i.id);
             return (
-              <tr key={i.id} className="border-t border-slate-800 hover:bg-slate-900/60">
-                <td className="px-3 py-2">
+              <tr
+                key={i.id}
+                className={`border-b border-hairline hover:bg-surface-hi ${isLast ? 'border-b-0' : ''} ${isSelected ? 'bg-accent-soft' : ''}`}
+              >
+                <td className="px-3 py-2.5">
                   <input
                     type="checkbox"
-                    checked={selected.includes(i.id)}
+                    checked={isSelected}
                     onChange={() => toggleOne(i.id)}
+                    aria-label={`Select ${title}`}
                   />
                 </td>
-                <td className="max-w-sm truncate px-3 py-2 text-slate-100">{title}</td>
-                <td className="px-3 py-2 text-slate-400">{i.sourceId}</td>
-                <td className="px-3 py-2 text-slate-400">
+                <td className="px-3 py-2.5">
+                  <span className="font-serif text-[15px] italic leading-none tracking-[-0.3px] text-fg-muted">
+                    {relativeAge(i.createdAt)}
+                  </span>
+                </td>
+                <td className="max-w-sm truncate px-3 py-2.5 text-[13.5px] font-medium text-fg">
+                  {title}
+                </td>
+                <td className="px-3 py-2.5">
+                  <MetaBadge tone="neutral">{i.sourceId}</MetaBadge>
+                </td>
+                <td className="px-3 py-2.5 font-mono text-[10.5px] text-fg-muted">
                   {i.hoardId ? (
-                    <span className="text-emerald-300">assigned</span>
+                    <span className="text-success">assigned</span>
                   ) : (
-                    <span className="italic">unassigned</span>
+                    <span className="italic text-fg-faint">unassigned</span>
                   )}
                 </td>
-                <td className="px-3 py-2 text-slate-400">{i.status}</td>
-                <td className="px-3 py-2 text-right">
+                <td className="px-3 py-2.5 text-right">
                   <button
                     onClick={() => remove(i.id)}
-                    className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-red-600 hover:text-red-300"
+                    className="rounded-sm border border-hairline px-2 py-1 font-mono text-[10.5px] text-fg-muted transition-colors hover:border-danger hover:text-danger"
                   >
                     Remove
                   </button>
@@ -88,6 +122,6 @@ export function QueueTable({
           })}
         </tbody>
       </table>
-    </div>
+    </Tile>
   );
 }

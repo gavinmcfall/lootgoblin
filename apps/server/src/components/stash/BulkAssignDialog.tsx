@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import Link from 'next/link';
 
 interface Destination {
   id: string;
@@ -12,11 +13,9 @@ interface Destination {
 export function BulkAssignDialog({
   ids,
   onClose,
-  onDone,
 }: {
   ids: string[];
   onClose: () => void;
-  onDone: () => void;
 }) {
   const [destinations, setDestinations] = useState<Destination[] | null>(null);
   const [destId, setDestId] = useState<string>('');
@@ -49,41 +48,46 @@ export function BulkAssignDialog({
         toast.success(`Assigned ${ids.length} item${ids.length === 1 ? '' : 's'}`);
       }
       qc.invalidateQueries({ queryKey: ['items'] });
-      onDone();
+      onClose();
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={onClose}
+    >
       <div
-        className="w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-lg"
+        className="w-full max-w-md rounded-lg border border-hairline-strong bg-surface p-6 shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="text-base font-semibold text-slate-100">
+        <h2 className="font-serif text-[18px] font-normal tracking-[-0.3px] text-fg">
           Assign library to {ids.length} item{ids.length === 1 ? '' : 's'}
         </h2>
 
         <div className="mt-4 space-y-2">
           {!destinations ? (
-            <p className="text-sm text-slate-400">Loading libraries…</p>
+            <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">
+              Loading libraries…
+            </p>
           ) : destinations.length === 0 ? (
-            <p className="text-sm text-slate-400">
+            <p className="text-[13px] text-fg-muted">
               No libraries configured.{' '}
-              <a href="/hoard/new" className="text-sky-300 underline">
+              <Link href="/hoard/new" className="text-accent underline">
                 Create one
-              </a>
+              </Link>
               .
             </p>
           ) : (
             destinations.map((d) => (
               <label
                 key={d.id}
-                className={`flex cursor-pointer items-start gap-3 rounded border p-3 ${
+                className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors ${
                   destId === d.id
-                    ? 'border-emerald-600 bg-emerald-500/10'
-                    : 'border-slate-700 hover:border-slate-600'
+                    ? 'border-accent-edge bg-accent-soft'
+                    : 'border-hairline hover:border-hairline-strong hover:bg-surface-hi'
                 }`}
               >
                 <input
@@ -95,8 +99,8 @@ export function BulkAssignDialog({
                   className="mt-1"
                 />
                 <div>
-                  <div className="text-sm font-medium text-slate-100">{d.name}</div>
-                  <div className="font-mono text-xs text-slate-400">
+                  <div className="text-[13.5px] font-medium text-fg">{d.name}</div>
+                  <div className="font-mono text-[10.5px] text-fg-faint">
                     {d.config.path} · {d.config.namingTemplate}
                   </div>
                 </div>
@@ -108,14 +112,14 @@ export function BulkAssignDialog({
         <div className="mt-6 flex items-center justify-end gap-2">
           <button
             onClick={onClose}
-            className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+            className="rounded-md border border-hairline px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.6px] text-fg-muted transition-colors hover:bg-surface-hi"
           >
             Cancel
           </button>
           <button
             onClick={apply}
             disabled={!destId || submitting}
-            className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-emerald-50 hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-md bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-accent-ink shadow-sm transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting ? 'Assigning…' : 'Assign'}
           </button>

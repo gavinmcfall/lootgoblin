@@ -8,14 +8,18 @@ export function SectionTitle({
   children,
   meta,
   right,
+  as: Tag = 'h2',
 }: {
   children: ReactNode;
   meta?: string;
   right?: ReactNode;
+  as?: 'h2' | 'h3' | 'h4';
 }) {
   return (
     <div className="mb-3.5 flex items-baseline gap-3">
-      <span className="font-serif text-[19px] tracking-[-0.3px] text-fg">{children}</span>
+      <Tag className="m-0 font-serif text-[19px] font-normal tracking-[-0.3px] text-fg">
+        {children}
+      </Tag>
       {meta && (
         <span className="font-mono text-[10.5px] tracking-[0.4px] text-fg-faint">{meta}</span>
       )}
@@ -25,6 +29,12 @@ export function SectionTitle({
   );
 }
 
+/**
+ * Key/value row rendered as a `<dt>`/`<dd>` pair for semantic association.
+ * Wrap a group of `<KV>` rows in `<dl>` at the call site for semantic
+ * correctness. (HTML5 permits `<div>` wrappers around `<dt>`/`<dd>` groups
+ * inside `<dl>` — see https://html.spec.whatwg.org/multipage/grouping-content.html#the-dl-element.)
+ */
 export function KV({
   k,
   v,
@@ -36,10 +46,10 @@ export function KV({
 }) {
   return (
     <div className="flex items-baseline gap-2.5 border-b border-dashed border-hairline py-1.5">
-      <span className="min-w-[110px] font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">
+      <dt className="min-w-[110px] font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">
         {k}
-      </span>
-      <span className={`text-[12.5px] text-fg ${mono ? 'font-mono' : ''}`}>{v}</span>
+      </dt>
+      <dd className={`m-0 text-[12.5px] text-fg ${mono ? 'font-mono' : ''}`}>{v}</dd>
     </div>
   );
 }
@@ -70,7 +80,14 @@ export function MetaBadge({
   );
 }
 
-/** Small framed container. Pages compose Tiles inside grids. */
+/**
+ * Small framed container. Pages compose Tiles inside grids.
+ *
+ * Note: `className` is APPENDED to defaults, not merged. Pass layout/spacing
+ * classes only (`p-4`, `col-span-2`, `h-full`). Do NOT override `bg-surface`,
+ * `border-hairline`, or `rounded-md` via className — without `tailwind-merge`
+ * the cascade order is non-deterministic.
+ */
 export function Tile({
   className = '',
   children,
@@ -86,7 +103,10 @@ export function Tile({
 /** Centred placeholder used by empty states. */
 export function EmptyHint({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-[140px] items-center justify-center rounded-md border border-dashed border-hairline bg-surface-2 px-6 py-8 text-center font-serif text-[14.5px] italic text-fg-faint">
+    <div
+      role="status"
+      className="flex min-h-[140px] items-center justify-center rounded-md border border-dashed border-hairline bg-surface-2 px-6 py-8 text-center font-serif text-[14.5px] italic text-fg-faint"
+    >
       {children}
     </div>
   );

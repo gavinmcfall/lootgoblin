@@ -54,7 +54,7 @@ export function KV({
   );
 }
 
-type Tone = 'neutral' | 'accent' | 'running' | 'success' | 'danger';
+export type Tone = 'neutral' | 'accent' | 'running' | 'success' | 'danger';
 
 const TONE_CLASS: Record<Tone, string> = {
   neutral: 'bg-surface-2 text-fg-muted border-hairline',

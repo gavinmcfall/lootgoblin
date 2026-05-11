@@ -1,7 +1,7 @@
 'use client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Tile, MetaBadge } from '@/components/shell/atoms';
+import { Tile, MetaBadge, type Tone } from '@/components/shell/atoms';
 import { ReshareHint } from './ReshareHint';
 
 interface Credential {
@@ -11,11 +11,10 @@ interface Credential {
   lastUsedAt: string | null;
 }
 
-type Tone = 'neutral' | 'success' | 'running' | 'danger';
-
 function statusTone(status: Credential['status']): Tone {
   if (status === 'active') return 'success';
   if (status === 'expired') return 'danger';
+  if (status === 'revoked') return 'danger';
   return 'neutral';
 }
 

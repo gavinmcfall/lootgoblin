@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import Link from 'next/link';
@@ -21,12 +21,35 @@ export function BulkAssignDialog({
   const [destId, setDestId] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const qc = useQueryClient();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousActiveElement = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     fetch('/api/v1/hoard')
       .then((r) => r.json())
       .then((d: { destinations: Destination[] }) => setDestinations(d.destinations));
   }, []);
+
+  // Capture trigger element on mount; restore focus on unmount.
+  useEffect(() => {
+    previousActiveElement.current = document.activeElement as HTMLElement | null;
+    const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    firstFocusable?.focus();
+    return () => {
+      previousActiveElement.current?.focus();
+    };
+  }, []);
+
+  // Escape closes the dialog.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   async function apply() {
     if (!destId) return;
@@ -60,10 +83,17 @@ export function BulkAssignDialog({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="bulk-assign-title"
         className="w-full max-w-md rounded-lg border border-hairline-strong bg-surface p-6 shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="font-serif text-[18px] font-normal tracking-[-0.3px] text-fg">
+        <h2
+          id="bulk-assign-title"
+          className="m-0 font-serif text-[18px] font-normal tracking-[-0.3px] text-fg"
+        >
           Assign library to {ids.length} item{ids.length === 1 ? '' : 's'}
         </h2>
 

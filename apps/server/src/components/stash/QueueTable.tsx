@@ -2,11 +2,13 @@
 import type { Item } from '@/hooks/useItems';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
 import { MetaBadge, Tile } from '@/components/shell/atoms';
 
 function relativeAge(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return '<1m';
   if (mins < 60) return `${mins}m`;
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h`;
@@ -25,6 +27,14 @@ export function QueueTable({
 }) {
   const qc = useQueryClient();
   const allSelected = items.length > 0 && selected.length === items.length;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate =
+        selected.length > 0 && selected.length < items.length;
+    }
+  }, [selected, items]);
 
   function toggleAll() {
     onSelected(allSelected ? [] : items.map((i) => i.id));
@@ -51,6 +61,7 @@ export function QueueTable({
           <tr className="border-b border-hairline-strong">
             <th className="w-10 px-3 py-2.5 text-left">
               <input
+                ref={selectAllRef}
                 type="checkbox"
                 checked={allSelected}
                 onChange={toggleAll}
@@ -104,7 +115,7 @@ export function QueueTable({
                 </td>
                 <td className="px-3 py-2.5 font-mono text-[10.5px] text-fg-muted">
                   {i.hoardId ? (
-                    <span className="text-success">assigned</span>
+                    <span className="text-fg">assigned</span>
                   ) : (
                     <span className="italic text-fg-faint">unassigned</span>
                   )}

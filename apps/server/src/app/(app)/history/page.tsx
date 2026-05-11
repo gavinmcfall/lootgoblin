@@ -53,7 +53,7 @@ export default function HistoryPage() {
       {dayKeys.map((k) => (
         <section key={k}>
           <SectionTitle as="h3" meta={`${groups[k]!.length} events`}>
-            {new Date(`${k}T12:00:00Z`).toLocaleDateString(undefined, {
+            {new Date(`${k}T12:00:00`).toLocaleDateString(undefined, {
               weekday: 'long',
               month: 'short',
               day: 'numeric',

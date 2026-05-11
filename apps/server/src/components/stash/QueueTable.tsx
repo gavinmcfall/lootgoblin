@@ -4,17 +4,7 @@ import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { MetaBadge, Tile } from '@/components/shell/atoms';
-
-function relativeAge(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return '<1m';
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d`;
-}
+import { relativeAge } from '@/lib/time';
 
 export function QueueTable({
   items,
@@ -104,7 +94,7 @@ export function QueueTable({
                 </td>
                 <td className="px-3 py-2.5">
                   <span className="font-serif text-[15px] italic leading-none tracking-[-0.3px] text-fg-muted">
-                    {relativeAge(i.createdAt)}
+                    {relativeAge(new Date(i.createdAt))}
                   </span>
                 </td>
                 <td className="max-w-sm truncate px-3 py-2.5 text-[13.5px] font-medium text-fg">

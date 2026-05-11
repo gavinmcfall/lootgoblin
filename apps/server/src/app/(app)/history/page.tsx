@@ -2,16 +2,21 @@
 import { useItems } from '@/hooks/useItems';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
+import { SectionTitle, MetaBadge, EmptyHint } from '@/components/shell/atoms';
+import { relativeAge } from '@/lib/time';
+
+function dayKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
 
 export default function HistoryPage() {
   const { data, isLoading } = useItems();
   const qc = useQueryClient();
-  const items = (data?.items ?? []).filter((i) =>
-    i.status === 'done' || i.status === 'failed' || i.status === 'skipped',
+  const items = (data?.items ?? []).filter(
+    (i) => i.status === 'done' || i.status === 'failed' || i.status === 'skipped',
   );
 
   async function retry(id: string, sourceId: string, sourceItemId: string, sourceUrl: string) {
-    // Re-enqueue with force=true to bypass dedup
     const res = await fetch('/api/v1/stash', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -31,85 +36,57 @@ export default function HistoryPage() {
     }
   }
 
-  function copyPath(path: string) {
-    navigator.clipboard.writeText(path);
-    toast.success('Path copied');
+  if (isLoading) {
+    return <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>;
+  }
+  if (items.length === 0) {
+    return <EmptyHint>No history yet. The Ledger awaits the goblin&apos;s first move.</EmptyHint>;
   }
 
-  if (isLoading) return <p className="text-sm text-slate-400">Loading…</p>;
+  // group by day
+  const groups: Record<string, typeof items> = {};
+  for (const it of items) {
+    const at = it.completedAt ? new Date(it.completedAt) : new Date(it.createdAt);
+    const k = dayKey(at);
+    (groups[k] ??= []).push(it);
+  }
+  const dayKeys = Object.keys(groups).sort().reverse();
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-xl font-semibold text-slate-100">History</h2>
-      {items.length === 0 ? (
-        <p className="text-sm text-slate-500">Nothing here yet.</p>
-      ) : (
-        <div className="overflow-hidden rounded-lg border border-slate-800">
-          <table className="w-full border-collapse text-sm">
-            <thead className="bg-slate-900 text-xs uppercase tracking-wider text-slate-500">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium">Title</th>
-                <th className="px-3 py-2 text-left font-medium">Source</th>
-                <th className="px-3 py-2 text-left font-medium">Status</th>
-                <th className="px-3 py-2 text-left font-medium">Completed</th>
-                <th className="px-3 py-2 text-left font-medium">Output</th>
-                <th className="w-40 px-3 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((i) => {
-                const snap = (i.snapshot ?? {}) as Record<string, unknown>;
-                const title = (snap.title as string | undefined) ?? `${i.sourceId}:${i.sourceItemId}`;
-                return (
-                  <tr key={i.id} className="border-t border-slate-800">
-                    <td className="max-w-xs truncate px-3 py-2 text-slate-100">{title}</td>
-                    <td className="px-3 py-2 text-slate-400">{i.sourceId}</td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={
-                          i.status === 'done'
-                            ? 'text-emerald-300'
-                            : i.status === 'failed'
-                            ? 'text-red-300'
-                            : 'text-slate-400'
-                        }
-                      >
-                        {i.status}
-                      </span>
-                      {i.lastError && (
-                        <span className="ml-2 text-xs text-slate-500">· {i.lastError.slice(0, 40)}</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-xs text-slate-500">
-                      {i.completedAt ? new Date(i.completedAt).toLocaleString() : '—'}
-                    </td>
-                    <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-slate-400">
-                      {i.outputPath ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {i.status === 'failed' ? (
-                        <button
-                          onClick={() => retry(i.id, i.sourceId, i.sourceItemId, i.sourceUrl)}
-                          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-emerald-600 hover:text-emerald-300"
-                        >
-                          Retry
-                        </button>
-                      ) : i.status === 'done' && i.outputPath ? (
-                        <button
-                          onClick={() => copyPath(i.outputPath!)}
-                          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-sky-600 hover:text-sky-300"
-                        >
-                          Copy path
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+    <div className="space-y-8">
+      {dayKeys.map((k) => (
+        <section key={k}>
+          <SectionTitle as="h3" meta={`${groups[k]!.length} events`}>
+            {new Date(k).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}
+          </SectionTitle>
+          <div>
+            {groups[k]!.map((it) => {
+              const at = it.completedAt ? new Date(it.completedAt) : new Date(it.createdAt);
+              const snap = (it.snapshot ?? {}) as Record<string, unknown>;
+              const title = (snap.title as string | undefined) ?? `${it.sourceId}:${it.sourceItemId}`;
+              const tone = it.status === 'done' ? 'success' : it.status === 'failed' ? 'danger' : 'neutral';
+              return (
+                <div
+                  key={it.id}
+                  className="flex items-baseline gap-3 border-b border-hairline py-2.5 last:border-b-0"
+                >
+                  <span className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">
+                    {relativeAge(at)}
+                  </span>
+                  <MetaBadge tone={tone}>{it.status}</MetaBadge>
+                  <span className="flex-1 truncate text-[13px] text-fg">{title}</span>
+                  <button
+                    onClick={() => retry(it.id, it.sourceId, it.sourceItemId, it.sourceUrl)}
+                    className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint hover:text-accent"
+                  >
+                    retry
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }

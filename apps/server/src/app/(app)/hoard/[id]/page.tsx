@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { use } from 'react';
 import { DestinationForm, type DestinationFormValues } from '@/components/hoard/DestinationForm';
+import { SectionTitle, Tile } from '@/components/shell/atoms';
 
 interface Destination {
   id: string;
@@ -54,26 +55,28 @@ export default function EditLibraryPage({ params }: { params: Promise<{ id: stri
     router.refresh();
   }
 
-  if (isLoading || !data) return <p className="text-sm text-slate-400">Loading…</p>;
+  if (isLoading || !data) return <p className="mt-1 text-[11.5px] text-fg-faint">Loading…</p>;
   const d = data.destination;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-slate-100">Edit library</h2>
-        <button onClick={onDelete} className="rounded border border-red-700 px-3 py-1.5 text-xs text-red-300 hover:bg-red-900/40">Delete</button>
+        <SectionTitle>Edit library</SectionTitle>
+        <button onClick={onDelete} className="bg-danger-bg text-danger border border-danger rounded-md px-3 py-1.5 text-[12.5px] font-semibold hover:bg-danger hover:text-bg transition-colors">Delete</button>
       </div>
-      <DestinationForm
-        onSubmit={onSubmit}
-        defaults={{
-          name: d.name,
-          path: d.config.path,
-          namingTemplate: d.config.namingTemplate,
-          packager: d.packager as 'manyfold-v0',
-          credentialId: d.credentialId,
-        }}
-        submitLabel="Save"
-      />
+      <Tile className="p-6 max-w-2xl">
+        <DestinationForm
+          onSubmit={onSubmit}
+          defaults={{
+            name: d.name,
+            path: d.config.path,
+            namingTemplate: d.config.namingTemplate,
+            packager: d.packager as 'manyfold-v0',
+            credentialId: d.credentialId,
+          }}
+          submitLabel="Save"
+        />
+      </Tile>
     </div>
   );
 }

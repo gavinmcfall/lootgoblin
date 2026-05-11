@@ -2,6 +2,7 @@
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { DestinationForm, type DestinationFormValues } from '@/components/hoard/DestinationForm';
+import { SectionTitle, Tile } from '@/components/shell/atoms';
 
 export default function NewLibraryPage() {
   const router = useRouter();
@@ -27,8 +28,10 @@ export default function NewLibraryPage() {
   }
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-slate-100">New library</h2>
-      <DestinationForm onSubmit={onSubmit} submitLabel="Create" />
+      <SectionTitle>New library</SectionTitle>
+      <Tile className="p-6 max-w-2xl">
+        <DestinationForm onSubmit={onSubmit} submitLabel="Create" />
+      </Tile>
     </div>
   );
 }

@@ -14,7 +14,7 @@ export function NamingTemplatePreview({ template }: { template: string }) {
     preview = '(invalid template)';
   }
   return (
-    <div className="rounded bg-slate-900 p-3 text-xs font-mono text-emerald-300">
+    <div className="rounded-md bg-surface-2 border border-hairline p-3 text-xs font-mono text-accent">
       Preview: {preview || '(empty)'}
     </div>
   );

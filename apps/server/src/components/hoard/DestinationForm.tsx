@@ -18,10 +18,12 @@ export function DestinationForm({
   onSubmit,
   defaults,
   submitLabel = 'Save',
+  serverError,
 }: {
   onSubmit: (v: DestinationFormValues) => Promise<void>;
   defaults?: Partial<DestinationFormValues>;
   submitLabel?: string;
+  serverError?: string;
 }) {
   const { register, handleSubmit, watch, formState } = useForm<DestinationFormValues>({
     resolver: zodResolver(Schema),
@@ -40,26 +42,62 @@ export function DestinationForm({
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="max-w-xl space-y-4">
       <label className="block">
-        <span className="text-sm text-slate-300">Name</span>
-        <input {...register('name')} className="mt-1 w-full rounded border border-slate-700 bg-slate-900 p-2 text-slate-100" />
-        {errors.name && <p className="mt-1 text-xs text-red-400">{errors.name.message}</p>}
+        <span className="block font-mono text-[10px] uppercase tracking-[1px] text-fg-faint mb-1">Name</span>
+        <input
+          {...register('name')}
+          id="field-name"
+          aria-describedby={errors.name ? 'err-name' : undefined}
+          aria-invalid={errors.name ? true : undefined}
+          className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-1.5 text-[13.5px] text-fg placeholder:text-fg-ghost focus:outline-none focus:ring-2 focus:ring-accent-edge focus:border-accent"
+        />
+        {errors.name && (
+          <p id="err-name" role="alert" className="mt-1 text-[11px] text-danger">
+            {errors.name.message}
+          </p>
+        )}
       </label>
       <label className="block">
-        <span className="text-sm text-slate-300">Filesystem path</span>
-        <input {...register('path')} className="mt-1 w-full rounded border border-slate-700 bg-slate-900 p-2 font-mono text-slate-100" />
-        {errors.path && <p className="mt-1 text-xs text-red-400">{errors.path.message}</p>}
+        <span className="block font-mono text-[10px] uppercase tracking-[1px] text-fg-faint mb-1">Filesystem path</span>
+        <input
+          {...register('path')}
+          id="field-path"
+          aria-describedby={errors.path ? 'err-path' : undefined}
+          aria-invalid={errors.path ? true : undefined}
+          className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-1.5 text-[13.5px] font-mono text-fg placeholder:text-fg-ghost focus:outline-none focus:ring-2 focus:ring-accent-edge focus:border-accent"
+        />
+        {errors.path && (
+          <p id="err-path" role="alert" className="mt-1 text-[11px] text-danger">
+            {errors.path.message}
+          </p>
+        )}
       </label>
       <label className="block">
-        <span className="text-sm text-slate-300">Naming template</span>
-        <input {...register('namingTemplate')} className="mt-1 w-full rounded border border-slate-700 bg-slate-900 p-2 font-mono text-slate-100" />
-        {errors.namingTemplate && <p className="mt-1 text-xs text-red-400">{errors.namingTemplate.message}</p>}
+        <span className="block font-mono text-[10px] uppercase tracking-[1px] text-fg-faint mb-1">Naming template</span>
+        <input
+          {...register('namingTemplate')}
+          id="field-naming-template"
+          aria-describedby={errors.namingTemplate ? 'err-naming-template' : undefined}
+          aria-invalid={errors.namingTemplate ? true : undefined}
+          className="mt-1 w-full rounded-md border border-hairline bg-surface-2 px-3 py-1.5 text-[13.5px] font-mono text-fg placeholder:text-fg-ghost focus:outline-none focus:ring-2 focus:ring-accent-edge focus:border-accent"
+        />
+        {errors.namingTemplate && (
+          <p id="err-naming-template" role="alert" className="mt-1 text-[11px] text-danger">
+            {errors.namingTemplate.message}
+          </p>
+        )}
       </label>
       <NamingTemplatePreview template={template} />
+      {/* TODO: credentialId UI — currently hidden passthrough only */}
       <input type="hidden" {...register('packager')} value="manyfold-v0" />
+      {serverError && (
+        <p role="alert" className="text-[11.5px] text-danger">
+          {serverError}
+        </p>
+      )}
       <button
         type="submit"
         disabled={!formState.isValid || formState.isSubmitting}
-        className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-emerald-50 hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+        className="bg-accent text-accent-ink rounded-md px-4 py-2 text-[12.5px] font-semibold shadow-sm hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
       >
         {submitLabel}
       </button>

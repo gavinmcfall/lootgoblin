@@ -3,37 +3,40 @@ import { useState } from 'react';
 import { useItems } from '@/hooks/useItems';
 import { QueueTable } from '@/components/stash/QueueTable';
 import { BulkAssignDialog } from '@/components/stash/BulkAssignDialog';
+import { SectionTitle, EmptyHint } from '@/components/shell/atoms';
 
-export default function QueuePage() {
+export default function StashPage() {
   const { data, isLoading } = useItems();
   const queued = (data?.items ?? []).filter((i) => i.status === 'queued');
   const [selected, setSelected] = useState<string[]>([]);
   const [dialog, setDialog] = useState(false);
-
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-slate-100">Queue</h2>
-        <button
-          disabled={selected.length === 0}
-          onClick={() => setDialog(true)}
-          className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-emerald-50 hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Assign library ({selected.length})
-        </button>
-      </div>
-
+      <SectionTitle
+        meta={`${queued.length} item${queued.length === 1 ? '' : 's'}`}
+        right={
+          <button
+            disabled={selected.length === 0}
+            onClick={() => setDialog(true)}
+            className="rounded-md bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-accent-ink shadow-sm transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Sort selected ({selected.length})
+          </button>
+        }
+      >
+        In the stash
+      </SectionTitle>
       {isLoading ? (
-        <p className="text-sm text-slate-400">Loading…</p>
+        <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>
+      ) : queued.length === 0 ? (
+        <EmptyHint>Nothing to sort. The goblin&apos;s shelves are tidy.</EmptyHint>
       ) : (
         <QueueTable items={queued} selected={selected} onSelected={setSelected} />
       )}
-
       {dialog && (
         <BulkAssignDialog
           ids={selected}
-          onClose={() => setDialog(false)}
-          onDone={() => {
+          onClose={() => {
             setDialog(false);
             setSelected([]);
           }}

@@ -1,19 +1,24 @@
 'use client';
+import { Tile } from '@/components/shell/atoms';
 
-export function StatRow({ queued, running, done24h, failed }: { queued: number; running: number; done24h: number; failed: number }) {
-  const tiles = [
-    { label: 'QUEUED', value: queued, border: 'border-slate-700', valueCls: 'text-slate-100' },
-    { label: 'RUNNING', value: running, border: 'border-emerald-600', valueCls: 'text-emerald-300' },
-    { label: 'COMPLETED 24h', value: done24h, border: 'border-slate-700', valueCls: 'text-slate-100' },
-    { label: 'FAILED', value: failed, border: 'border-red-600', valueCls: 'text-red-300' },
+interface Props { queued: number; running: number; done24h: number; failed: number; }
+
+export function StatRow({ queued, running, done24h, failed }: Props) {
+  const stats = [
+    { label: 'Queued',  value: queued,  color: 'text-fg' },
+    { label: 'Running', value: running, color: 'text-running' },
+    { label: 'Done 24h', value: done24h, color: 'text-success' },
+    { label: 'Failed',  value: failed,  color: 'text-danger' },
   ];
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-      {tiles.map((t) => (
-        <div key={t.label} className={`rounded-lg border bg-slate-900 p-3 ${t.border}`}>
-          <div className="text-[10px] uppercase tracking-wider text-slate-500">{t.label}</div>
-          <div className={`mt-1 text-2xl font-semibold ${t.valueCls}`}>{t.value}</div>
-        </div>
+      {stats.map((s) => (
+        <Tile key={s.label} className="p-4">
+          <div className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">{s.label}</div>
+          <div className={`mt-2 font-serif text-[34px] leading-none tracking-[-1px] ${s.color}`}>
+            {s.value}
+          </div>
+        </Tile>
       ))}
     </div>
   );

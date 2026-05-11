@@ -1,36 +1,42 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
+import { SectionTitle, MetaBadge, EmptyHint, type Tone } from '@/components/shell/atoms';
 
 interface HealthReport {
   status: 'ok' | 'degraded' | 'fail';
   checks: { db: 'ok' | 'fail'; secret: 'ok' | 'fail'; disk: 'ok' | 'fail' };
 }
 
-const COLOR = {
-  ok: 'border-emerald-600 text-emerald-300',
-  fail: 'border-red-600 text-red-300',
-} as const;
+function overallTone(s: HealthReport['status']): Tone {
+  if (s === 'ok') return 'success';
+  if (s === 'degraded') return 'running';
+  return 'danger';
+}
 
 export default function HealthPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['health'],
     queryFn: async (): Promise<HealthReport> => (await fetch('/api/health')).json(),
     refetchInterval: 10_000,
   });
 
-  if (isLoading || !data) return <p className="text-sm text-slate-400">Loading…</p>;
+  if (isError) return <EmptyHint>Failed to load health data.</EmptyHint>;
+  if (isLoading || !data) return <EmptyHint>Loading…</EmptyHint>;
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-semibold text-slate-100">System — Health</h2>
-      <p className="text-sm text-slate-400">Overall: <span className={data.status === 'ok' ? 'text-emerald-300' : 'text-red-300'}>{data.status}</span></p>
+      <SectionTitle right={<MetaBadge tone={overallTone(data.status)}>{data.status}</MetaBadge>}>System health</SectionTitle>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {Object.entries(data.checks).map(([key, status]) => (
-          <div key={key} className={`rounded-lg border bg-slate-900 p-4 ${COLOR[status]}`}>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500">{key}</div>
-            <div className="mt-1 text-xl font-semibold">{status}</div>
-          </div>
-        ))}
+        {Object.entries(data.checks).map(([key, status]) => {
+          const borderClass = status === 'ok' ? 'border-success' : 'border-danger';
+          const textClass = status === 'ok' ? 'text-success' : 'text-danger';
+          return (
+            <div key={key} className={`rounded-md border bg-surface p-4 ${borderClass}`}>
+              <div className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">{key}</div>
+              <div className={`mt-1 text-[18px] font-semibold ${textClass}`}>{status}</div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 'use client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { SectionTitle, Tile, MetaBadge, EmptyHint } from '@/components/shell/atoms';
 
 interface Task {
   id: string;
@@ -12,7 +13,7 @@ interface Task {
 
 export default function TasksPage() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['system-tasks'],
     queryFn: async (): Promise<{ tasks: Task[] }> => (await fetch('/api/v1/system/tasks')).json(),
   });
@@ -27,33 +28,36 @@ export default function TasksPage() {
     else toast.error('Update failed');
   }
 
-  if (isLoading) return <p className="text-sm text-slate-400">Loading…</p>;
   const tasks = data?.tasks ?? [];
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-semibold text-slate-100">System — Tasks</h2>
-      {tasks.length === 0 ? (
-        <p className="text-sm text-slate-500">No scheduled tasks.</p>
+      <SectionTitle meta={`${tasks.length} task${tasks.length === 1 ? '' : 's'}`}>System tasks</SectionTitle>
+      {isError && <EmptyHint>Failed to load tasks.</EmptyHint>}
+      {isLoading ? (
+        <EmptyHint>Loading…</EmptyHint>
+      ) : tasks.length === 0 ? (
+        <EmptyHint>No scheduled tasks.</EmptyHint>
       ) : (
         <div className="space-y-2">
           {tasks.map((t) => (
-            <div key={t.id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 p-3">
+            <Tile key={t.id} className="p-3 flex items-center justify-between">
               <div>
-                <div className="text-sm font-medium text-slate-100">{t.label}</div>
-                <div className="mt-0.5 text-xs text-slate-500">
+                <div className="text-[13px] font-medium text-fg">{t.label}</div>
+                <div className="mt-0.5 font-mono text-[10px] tracking-[0.5px] text-fg-faint">
                   every {Math.round(t.intervalMs / 60_000)}m · {t.lastRunAt ? `last ran ${new Date(t.lastRunAt).toLocaleString()}` : 'never run yet'}
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-xs text-slate-300">
+              <label htmlFor={`task-${t.id}`} className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.6px] text-fg-muted">
                 <input
+                  id={`task-${t.id}`}
                   type="checkbox"
                   checked={t.enabled}
                   onChange={(e) => toggle(t.id, e.target.checked)}
                 />
-                {t.enabled ? 'Enabled' : 'Disabled'}
+                <MetaBadge tone={t.enabled ? 'success' : 'neutral'}>{t.enabled ? 'enabled' : 'disabled'}</MetaBadge>
               </label>
-            </div>
+            </Tile>
           ))}
         </div>
       )}

@@ -1,6 +1,8 @@
 'use client';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
+import { Plus } from 'lucide-react';
+import { SectionTitle, EmptyHint, MetaBadge } from '@/components/shell/atoms';
 
 interface Destination {
   id: string;
@@ -10,35 +12,50 @@ interface Destination {
   packager: string;
 }
 
-export default function LibrariesPage() {
+export default function HoardPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['destinations'],
-    queryFn: async (): Promise<{ destinations: Destination[] }> => (await fetch('/api/v1/hoard')).json(),
+    queryFn: async (): Promise<{ destinations: Destination[] }> =>
+      (await fetch('/api/v1/hoard')).json(),
   });
-
+  const libraries = data?.destinations ?? [];
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-slate-100">Libraries</h2>
-        <Link href="/hoard/new" className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-emerald-50 hover:bg-emerald-500">
-          + New library
-        </Link>
-      </div>
+      <SectionTitle
+        meta={`${libraries.length} librar${libraries.length === 1 ? 'y' : 'ies'}`}
+        right={
+          <Link
+            href="/hoard/new"
+            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink shadow-sm hover:opacity-90"
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={2} /> New library
+          </Link>
+        }
+      >
+        Libraries in the hoard
+      </SectionTitle>
       {isLoading ? (
-        <p className="text-sm text-slate-400">Loading…</p>
-      ) : (data?.destinations.length ?? 0) === 0 ? (
-        <p className="text-sm text-slate-500">No libraries yet. Create one to get started.</p>
+        <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>
+      ) : libraries.length === 0 ? (
+        <EmptyHint>
+          The hoard is empty. Start by creating a library — every Loot lives in one.
+        </EmptyHint>
       ) : (
         <div className="space-y-2">
-          {data!.destinations.map((d) => (
+          {libraries.map((d) => (
             <Link
               key={d.id}
               href={`/hoard/${d.id}`}
-              className="block rounded-lg border border-slate-700 bg-slate-900 p-3 hover:border-slate-600"
+              className="group block rounded-md border border-hairline bg-surface px-4 py-3 transition-colors hover:bg-surface-hi"
             >
-              <div className="text-sm font-medium text-slate-100">{d.name}</div>
-              <div className="mt-0.5 font-mono text-xs text-slate-400">
-                {d.config.path} · {d.config.namingTemplate} · {d.packager}
+              <div className="flex items-baseline gap-3">
+                <span className="font-serif text-[20px] tracking-[-0.3px] text-fg group-hover:text-accent">
+                  {d.name}
+                </span>
+                <MetaBadge tone="neutral">{d.packager}</MetaBadge>
+              </div>
+              <div className="mt-1 font-mono text-[11px] text-fg-faint">
+                {d.config.path} · {d.config.namingTemplate}
               </div>
             </Link>
           ))}

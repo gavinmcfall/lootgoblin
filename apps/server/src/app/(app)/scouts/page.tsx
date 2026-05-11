@@ -1,6 +1,7 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
 import { CredentialList } from '@/components/scouts/CredentialList';
+import { SectionTitle, EmptyHint, MetaBadge } from '@/components/shell/atoms';
 
 interface SourceCapabilities {
   id: string;
@@ -11,36 +12,43 @@ interface SourceCapabilities {
   defaultRateLimitPerSec: number;
 }
 
-export default function SourcesPage() {
+export default function ScoutsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['sources'],
     queryFn: async (): Promise<{ sources: SourceCapabilities[] }> =>
       (await fetch('/api/v1/scouts')).json(),
   });
 
-  if (isLoading) return <p className="text-sm text-slate-400">Loading…</p>;
+  if (isLoading) {
+    return <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>;
+  }
+
   const sources = data?.sources ?? [];
 
   return (
     <div className="space-y-8">
-      <h2 className="text-xl font-semibold text-slate-100">Sources</h2>
-
+      <SectionTitle meta={`${sources.length} adapters`}>Scout adapters &amp; credentials</SectionTitle>
+      <p className="max-w-2xl font-serif text-[14px] italic text-fg-faint">
+        These are the sources the goblin can scout. Each adapter holds its credentials below;
+        Roster / Dispatch / Rules views land in a future plan.
+      </p>
       {sources.length === 0 ? (
-        <p className="text-sm text-slate-500">No sources registered.</p>
+        <EmptyHint>No scout adapters registered.</EmptyHint>
       ) : (
-        sources.map((s) => (
-          <section key={s.id} className="space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-              <div>
-                <h3 className="text-base font-medium text-slate-100">{s.displayName}</h3>
-                <p className="text-xs text-slate-500">
-                  {s.id} · {s.authKind} · {s.triggerModes.join(', ')} · {s.contentTypes.join(', ')}
-                </p>
+        <div className="space-y-6">
+          {sources.map((s) => (
+            <section key={s.id}>
+              <div className="mb-3 flex items-baseline gap-3">
+                <h3 className="m-0 font-serif text-[18px] tracking-[-0.3px] text-fg">{s.displayName}</h3>
+                <MetaBadge tone="neutral">{s.authKind}</MetaBadge>
+                <span className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">
+                  {s.triggerModes.join(' · ')}
+                </span>
               </div>
-            </div>
-            <CredentialList sourceId={s.id} />
-          </section>
-        ))
+              <CredentialList sourceId={s.id} authKind={s.authKind} />
+            </section>
+          ))}
+        </div>
       )}
     </div>
   );

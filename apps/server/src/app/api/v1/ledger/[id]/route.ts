@@ -85,7 +85,7 @@ export async function GET(
   // 'reject' = explicitly blocked kind (dispatch_job)
   // undefined = unknown subjectType or resource not found in DB
   // null = subject exists but ownerId is NULL (treat as no-owner)
-  if (ownerId === 'reject' || ownerId === undefined || ownerId === null || ownerId !== user.id) {
+  if (ownerId === 'reject' || ownerId == null || ownerId !== user.id) {
     return NextResponse.json({ error: 'not-found' }, { status: 404 });
   }
 

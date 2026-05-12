@@ -168,6 +168,8 @@ describe('GET /api/v1/ledger/[id] — 401 unauthenticated', () => {
       makeCtx(id),
     );
     expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe('unauthenticated');
   });
 });
 
@@ -182,6 +184,8 @@ describe('GET /api/v1/ledger/[id] — unknown id → 404', () => {
       makeCtx(unknownId),
     );
     expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('not-found');
   });
 });
 
@@ -273,6 +277,8 @@ describe('GET /api/v1/ledger/[id] — non-admin cross-owner → 404 (not 403)', 
     expect(res.status).toBe(404);
     // Must NOT be 403
     expect(res.status).not.toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('not-found');
   });
 });
 
@@ -293,6 +299,8 @@ describe('GET /api/v1/ledger/[id] — unresolvable subjectType → 404 for non-a
       makeCtx(evId),
     );
     expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('not-found');
   });
 });
 
@@ -314,5 +322,7 @@ describe('GET /api/v1/ledger/[id] — dispatch_job subjectType → 404 for non-a
       makeCtx(evId),
     );
     expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('not-found');
   });
 });

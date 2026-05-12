@@ -139,7 +139,7 @@ async function filterRowsByOwnership(
         return false;
       default: {
         const ownerId = ownerByKey.get(`${row.subjectType}:${row.subjectId}`);
-        if (!ownerId) return false; // unknown subjectType or resource not found → reject
+        if (ownerId == null) return false; // unknown subjectType or resource not found → reject
         return ownerId === user.id;  // owner-only, ignoring resolveAcl's fleet-visible read policy
       }
     }

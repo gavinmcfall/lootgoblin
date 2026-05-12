@@ -17,7 +17,6 @@
 
 import { NextResponse } from 'next/server';
 
-import { getServerDb, schema } from '@/db/client';
 import {
   authenticateRequest,
   INVALID_API_KEY,
@@ -25,7 +24,6 @@ import {
 } from '@/auth/request-auth';
 import { resolveQuarantineAcl } from '@/acl/quarantine';
 import { toQuarantineItemDto } from '../_shared';
-import { eq } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/quarantine/[id]
@@ -47,24 +45,12 @@ export async function GET(
   // ACL — resolveQuarantineAcl does the DB lookup internally and returns
   // { allowed: false, reason: 'not-found' } for all deny cases (owner hiding
   // included), so we never expose a 403 to a non-owner.
+  // On the allowed path it also returns the loaded row, so no second SELECT
+  // is needed.
   const acl = await resolveQuarantineAcl(actor, id, 'read');
   if (!acl.allowed) {
     return NextResponse.json({ error: 'not-found' }, { status: 404 });
   }
 
-  // Fetch the full row for the DTO.
-  const db = getServerDb();
-  const rows = await db
-    .select()
-    .from(schema.quarantineItems)
-    .where(eq(schema.quarantineItems.id, id))
-    .limit(1);
-
-  if (rows.length === 0) {
-    // Should not happen — ACL check already confirmed the row exists,
-    // but guard anyway for safety.
-    return NextResponse.json({ error: 'not-found' }, { status: 404 });
-  }
-
-  return NextResponse.json(toQuarantineItemDto(rows[0]!));
+  return NextResponse.json(toQuarantineItemDto(acl.item!));
 }

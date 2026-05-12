@@ -23,6 +23,11 @@ export interface QuarantineAclResult {
   reason?: 'not-found';
   /** The ownerId of the parent stashRoot — populated when allowed:true. */
   ownerId?: string;
+  /**
+   * The loaded quarantine_items row — populated when allowed:true.
+   * Callers can use this directly rather than issuing a second SELECT.
+   */
+  item?: typeof schema.quarantineItems.$inferSelect;
 }
 
 /**
@@ -41,12 +46,9 @@ export async function resolveQuarantineAcl(
 ): Promise<QuarantineAclResult> {
   const db = getServerDb(dbUrl);
 
-  // Look up the quarantine item to find its parent stashRoot.
+  // Load the full quarantine item row (reused by callers on the allowed path).
   const itemRows = await db
-    .select({
-      id: schema.quarantineItems.id,
-      stashRootId: schema.quarantineItems.stashRootId,
-    })
+    .select()
     .from(schema.quarantineItems)
     .where(eq(schema.quarantineItems.id, itemId))
     .limit(1);
@@ -55,11 +57,13 @@ export async function resolveQuarantineAcl(
     return { allowed: false, reason: 'not-found' };
   }
 
+  const item = itemRows[0]!;
+
   // Look up the owning stashRoot.
   const rootRows = await db
     .select({ ownerId: schema.stashRoots.ownerId })
     .from(schema.stashRoots)
-    .where(eq(schema.stashRoots.id, itemRows[0]!.stashRootId))
+    .where(eq(schema.stashRoots.id, item.stashRootId))
     .limit(1);
 
   if (rootRows.length === 0) {
@@ -71,13 +75,13 @@ export async function resolveQuarantineAcl(
 
   // Owner can read and write.
   if (ownerId === actor.id) {
-    return { allowed: true, ownerId };
+    return { allowed: true, ownerId, item };
   }
 
   // Admin can read cross-owner (for triage), but NOT write (avoid accidental
   // cross-tenant mutation — mirrors the Forge printer consent model).
   if (actor.role === 'admin' && action === 'read') {
-    return { allowed: true, ownerId };
+    return { allowed: true, ownerId, item };
   }
 
   // Everyone else (including admin writes to non-owned items) → not-found.

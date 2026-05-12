@@ -96,6 +96,8 @@ describe('resolveQuarantineAcl — owner can read', () => {
 
     expect(result.allowed).toBe(true);
     expect(result.ownerId).toBe(ownerId);
+    expect(result.item).toBeDefined();
+    expect(result.item?.id).toBe(itemId);
   });
 });
 
@@ -113,6 +115,8 @@ describe('resolveQuarantineAcl — owner can write', () => {
 
     expect(result.allowed).toBe(true);
     expect(result.ownerId).toBe(ownerId);
+    expect(result.item).toBeDefined();
+    expect(result.item?.id).toBe(itemId);
   });
 });
 
@@ -131,6 +135,8 @@ describe('resolveQuarantineAcl — admin read cross-owner', () => {
 
     expect(result.allowed).toBe(true);
     expect(result.ownerId).toBe(ownerId);
+    expect(result.item).toBeDefined();
+    expect(result.item?.id).toBe(itemId);
   });
 });
 

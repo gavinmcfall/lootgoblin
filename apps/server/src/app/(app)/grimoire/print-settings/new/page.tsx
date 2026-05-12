@@ -1,0 +1,41 @@
+'use client';
+// /grimoire/print-settings/new — create a print setting.
+
+import Link from 'next/link';
+import { PrintSettingForm } from '@/components/grimoire/PrintSettingForm';
+
+export default function PrintSettingNewPage() {
+  return (
+    <div>
+      {/* Breadcrumb */}
+      <div className="mb-2 flex items-baseline gap-3.5">
+        <Link
+          href="/grimoire"
+          className="font-mono text-[10px] uppercase tracking-[1.8px] text-fg-faint hover:text-fg-muted"
+        >
+          Grimoire
+        </Link>
+        <span className="font-mono text-[10px] text-fg-faint">›</span>
+        <Link
+          href="/grimoire"
+          className="font-mono text-[10px] uppercase tracking-[1.8px] text-fg-faint hover:text-fg-muted"
+        >
+          Print settings
+        </Link>
+        <span className="font-mono text-[10px] text-fg-faint">›</span>
+        <span className="font-mono text-[10px] uppercase tracking-[1.8px] text-fg-faint">New</span>
+        <span className="flex-1 border-b border-hairline" />
+      </div>
+
+      {/* Page header */}
+      <h1 className="m-0 mb-1.5 font-serif text-[44px] font-normal leading-[1.02] tracking-[-1.1px] text-fg">
+        New print setting.
+      </h1>
+      <p className="mb-[22px] font-serif text-[16px] italic text-fg-muted">
+        A sparse override JSON that the Forge merges at dispatch time.
+      </p>
+
+      <PrintSettingForm />
+    </div>
+  );
+}

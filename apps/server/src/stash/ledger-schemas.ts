@@ -216,6 +216,20 @@ const QuarantineDismissedPayload = z.object({
   path: z.string().min(1),
 });
 
+/**
+ * Emitted by POST /api/v1/quarantine/[id]/retry when an operator re-enqueues
+ * a quarantined file. The newIngestJobId mirrors the relatedResources entry so
+ * readers can locate the retry job without parsing the JSON relatedResources
+ * array. overrideClassifierHint is stored when the caller supplies one.
+ */
+const QuarantineRetriedPayload = z.object({
+  stashRootId: z.string().uuid(),
+  reason: z.string().min(1),
+  path: z.string().min(1),
+  newIngestJobId: z.string().uuid(),
+  overrideClassifierHint: z.string().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -237,6 +251,7 @@ const ledgerEventSchemas = new Map<string, z.ZodTypeAny>([
   ['material.consumed', MaterialConsumedPayload],
   // Quarantine
   ['quarantine.dismissed', QuarantineDismissedPayload],
+  ['quarantine.retried', QuarantineRetriedPayload],
 ]);
 
 /**

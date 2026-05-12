@@ -49,17 +49,29 @@ export function SearchPaletteProvider({
   const open = useCallback(() => setIsOpen(true), []);
   const close = useCallback(() => setIsOpen(false), []);
 
-  // Global ⌘K / Ctrl+K hotkey
+  // Global ⌘K / Ctrl+K hotkey.
+  // Guard against hijacking the hotkey when the user is typing inside another
+  // form field (e.g. naming a material). If the palette is already open, the
+  // toggle MUST still work — its own input would otherwise swallow the close.
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        if (!isOpen) {
+          const target = e.target as HTMLElement | null;
+          if (
+            target &&
+            ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+          ) {
+            return;
+          }
+        }
         e.preventDefault();
         setIsOpen((prev) => !prev);
       }
     }
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, []);
+  }, [isOpen]);
 
   return (
     <SearchPaletteContext.Provider value={{ isOpen, open, close }}>

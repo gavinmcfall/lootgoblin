@@ -2,13 +2,15 @@
 // SearchPaletteInput — top input row with prefix indicator, scope badge, mode badge.
 // Canvas reference: CKInput (page-search-palette.jsx line 107–136).
 
-import type { ReactNode, KeyboardEvent, RefObject } from 'react';
+import type { KeyboardEvent, RefObject } from 'react';
 import { MetaBadge } from '@/components/shell/atoms';
 
 interface SearchPaletteInputProps {
   inputRef: RefObject<HTMLInputElement | null>;
   inputId: string;
   labelId: string;
+  /** id of the listbox element this input controls — required for ARIA combobox spec. */
+  listboxId: string;
   value: string;
   onChange: (v: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
@@ -24,6 +26,7 @@ export function SearchPaletteInput({
   inputRef,
   inputId,
   labelId,
+  listboxId,
   value,
   onChange,
   onKeyDown,
@@ -77,7 +80,10 @@ export function SearchPaletteInput({
             ? 'Type a command…'
             : 'Search the hoard, or type > for commands…'
         }
+        role="combobox"
         aria-autocomplete="list"
+        aria-controls={listboxId}
+        aria-expanded={true}
         aria-activedescendant={activeDescendant}
         className="flex-1 border-none bg-transparent font-sans text-[17px] text-fg placeholder:text-fg-faint focus:outline-none"
       />

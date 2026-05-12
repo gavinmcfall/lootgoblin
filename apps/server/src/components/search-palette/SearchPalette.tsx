@@ -23,6 +23,7 @@ import { SearchPaletteInput } from './SearchPaletteInput';
 import { SearchPaletteFooter } from './SearchPaletteFooter';
 import { SearchResultRow } from './SearchResultRow';
 import { SearchGroupHeader } from './SearchGroupHeader';
+import { KIND_LABEL } from './search-palette-labels';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -176,6 +177,7 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
   const dialogId = useId();
   const labelId = useId();
   const inputId = useId();
+  const listboxId = useId();
 
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -186,22 +188,32 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
   const commandsMode = rawQuery.startsWith('>');
   const searchQuery = commandsMode ? rawQuery.slice(1).trimStart() : rawQuery;
 
+  // 200ms debounce on the search query — avoid hammering /api/v1/search on
+  // every keystroke. placeholderData keeps the UI calm during the in-flight
+  // fetch, but only debounce actually suppresses the fetches themselves.
+  const [debouncedQuery, setDebouncedQuery] = useState(searchQuery);
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedQuery(searchQuery), 200);
+    return () => clearTimeout(id);
+  }, [searchQuery]);
+
   // Separate index tracks for loot vs commands so switching modes resets it
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   // ── FTS5 search (Loot only, wired to /api/v1/search) ──────────────────────
   const { data, isError } = useQuery<SearchResponse>({
-    queryKey: ['search', { q: searchQuery }],
+    queryKey: ['search', { q: debouncedQuery }],
     queryFn: async ({ queryKey }) => {
       const { q } = (queryKey as [string, { q: string }])[1];
+      // offset=0 — palette shows first page only; pagination not yet wired
       const res = await fetch(
-        `/api/v1/search?q=${encodeURIComponent(q)}&limit=10`,
+        `/api/v1/search?q=${encodeURIComponent(q)}&limit=10&offset=0`,
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json() as Promise<SearchResponse>;
     },
-    enabled: !commandsMode && searchQuery.trim().length > 0,
-    staleTime: 30_000,
+    enabled: !commandsMode && debouncedQuery.trim().length > 0,
+    staleTime: 30_000, // 30s — palette results stay fresh while open
     placeholderData: (prev) => prev, // keep showing previous results while next fetch loads
   });
 
@@ -209,6 +221,31 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
 
   // ── Commands (client-side, filtered) ──────────────────────────────────────
   const commands = useCommands(router, onClose, searchQuery);
+
+  // ── Empty-state suggestions (keyboard-navigable) ──────────────────────────
+  const suggestions: Command[] = [
+    {
+      id: 'sg-new-lib',
+      icon: '+',
+      title: 'New library…',
+      sub: 'Define schema and choose a Stash root',
+      action: () => { router.push('/hoard/new'); onClose(); },
+    },
+    {
+      id: 'sg-new-mat',
+      icon: '◆',
+      title: 'New material…',
+      sub: 'Register a spool, bottle, or custom',
+      action: () => { router.push('/materials/new'); onClose(); },
+    },
+    {
+      id: 'sg-new-watch',
+      icon: '⊙',
+      title: 'New watchlist rule…',
+      sub: 'Watch for new items from a source',
+      action: () => { router.push('/scouts/watchlist/new'); onClose(); },
+    },
+  ];
 
   // ── Focus management ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -249,8 +286,19 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
     return () => document.removeEventListener('keydown', handleKey);
   }, [onClose]);
 
+  // ── Empty (no query) state ─────────────────────────────────────────────────
+  const isEmpty = !rawQuery.trim();
+
   // ── Arrow / Enter navigation ──────────────────────────────────────────────
-  const totalResults = commandsMode ? commands.length : lootResults.length;
+  // totalResults reflects whichever list is keyboard-active for this mode:
+  //   - commands mode → commands list
+  //   - search mode + empty query → empty-state suggestions
+  //   - search mode + has query → loot results
+  const totalResults = commandsMode
+    ? commands.length
+    : isEmpty
+    ? suggestions.length
+    : lootResults.length;
 
   const handleInputKeyDown = useCallback(
     (e: KeyboardEvent<HTMLInputElement>) => {
@@ -266,13 +314,25 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
         e.preventDefault();
         if (commandsMode) {
           commands[selectedIndex]?.action();
+        } else if (isEmpty) {
+          suggestions[selectedIndex]?.action();
         } else if (lootResults[selectedIndex]) {
           router.push(`/loot/${lootResults[selectedIndex]!.id}`);
           onClose();
         }
       }
     },
-    [totalResults, commandsMode, commands, lootResults, selectedIndex, router, onClose],
+    [
+      totalResults,
+      commandsMode,
+      isEmpty,
+      commands,
+      suggestions,
+      lootResults,
+      selectedIndex,
+      router,
+      onClose,
+    ],
   );
 
   // Reset selection when query or mode changes
@@ -285,22 +345,22 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
     ? totalResults > 0
       ? `${dialogId}-cmd-${selectedIndex}`
       : undefined
+    : isEmpty
+    ? suggestions.length > 0
+      ? `${dialogId}-sug-${selectedIndex}`
+      : undefined
     : lootResults.length > 0
     ? `${dialogId}-loot-${selectedIndex}`
     : undefined;
 
-  // ── Empty (no query) state ─────────────────────────────────────────────────
-  const isEmpty = !rawQuery.trim();
-
   // ── Render ─────────────────────────────────────────────────────────────────
   const palette = (
-    // Backdrop
+    // Backdrop — z-50 sits below sonner toasts (z-999); matches other dialogs in the codebase.
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-bg/70 px-4 pt-20"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
-      aria-hidden="false"
     >
       {/* Dialog frame — plain div (NOT Tile so we control bg/border/shadow exactly) */}
       <div
@@ -316,6 +376,7 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
           inputRef={inputRef}
           inputId={inputId}
           labelId={labelId}
+          listboxId={listboxId}
           value={rawQuery}
           onChange={setRawQuery}
           onKeyDown={handleInputKeyDown}
@@ -324,7 +385,7 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
         />
 
         {/* Results area */}
-        <div className="flex-1 overflow-y-auto" role="listbox">
+        <div id={listboxId} className="flex-1 overflow-y-auto" role="listbox">
           {/* ── Commands mode ── */}
           {commandsMode && (
             <>
@@ -341,7 +402,7 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
                     role="option"
                     aria-selected={i === selectedIndex}
                     icon={cmd.icon}
-                    kind="Cmd"
+                    kind={KIND_LABEL.cmd}
                     kindTone="accent"
                     title={cmd.title}
                     sub={cmd.sub}
@@ -357,22 +418,19 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
           {!commandsMode && isEmpty && (
             <div className="px-4 py-3">
               <SearchGroupHeader label="Suggested commands" />
-              {[
-                { id: 'sg-new-lib', icon: '+', title: 'New library…', sub: 'Define schema and choose a Stash root', href: '/hoard/new' },
-                { id: 'sg-new-mat', icon: '◆', title: 'New material…', sub: 'Register a spool, bottle, or custom', href: '/materials/new' },
-                { id: 'sg-new-watch', icon: '⊙', title: 'New watchlist rule…', sub: 'Watch for new items from a source', href: '/scouts/watchlist/new' },
-              ].map((s, i) => (
+              {suggestions.map((s, i) => (
                 <SearchResultRow
                   key={s.id}
                   id={`${dialogId}-sug-${i}`}
                   role="option"
-                  aria-selected={false}
+                  aria-selected={i === selectedIndex}
                   icon={s.icon}
-                  kind="Cmd"
+                  kind={KIND_LABEL.cmd}
                   kindTone="accent"
                   title={s.title}
                   sub={s.sub}
-                  onClick={() => { router.push(s.href); onClose(); }}
+                  selected={i === selectedIndex}
+                  onClick={s.action}
                 />
               ))}
               <p className="mt-3 px-1 font-mono text-[10.5px] italic text-fg-faint">
@@ -385,14 +443,14 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
             <>
               {/* Loot (live FTS5) */}
               <SearchGroupHeader
-                label="Loot"
+                label={KIND_LABEL.loot}
                 count={isError ? undefined : data?.total}
               />
               {isError ? (
                 <p className="px-4 py-2 font-mono text-[10.5px] text-fg-muted">
                   Search failed.
                 </p>
-              ) : lootResults.length === 0 && searchQuery.trim() ? (
+              ) : lootResults.length === 0 && debouncedQuery.trim() ? (
                 <p className="px-4 py-2 font-mono text-[10.5px] text-fg-faint">
                   No loot found.
                 </p>
@@ -404,7 +462,7 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
                     role="option"
                     aria-selected={i === selectedIndex}
                     icon="◫"
-                    kind="Loot"
+                    kind={KIND_LABEL.loot}
                     title={item.title}
                     sub={item.creator ?? undefined}
                     selected={i === selectedIndex}
@@ -415,17 +473,17 @@ export function SearchPalette({ onClose }: SearchPaletteProps) {
 
               {/* Stubbed future result kinds — other indexes not yet landed */}
               {/* TODO: replace stubs when cross-kind search backend ships */}
-              <SearchGroupHeader label="Libraries" />
+              <SearchGroupHeader label={`${KIND_LABEL.library} (soon)`} />
               <p className="px-4 py-2 font-mono text-[10.5px] text-fg-faint">
                 Other result kinds coming when their indexes land.
               </p>
 
-              <SearchGroupHeader label="Scouts" />
+              <SearchGroupHeader label={`${KIND_LABEL.scout} (soon)`} />
               <p className="px-4 py-2 font-mono text-[10.5px] text-fg-faint">
                 Other result kinds coming when their indexes land.
               </p>
 
-              <SearchGroupHeader label="Materials" />
+              <SearchGroupHeader label={`${KIND_LABEL.material} (soon)`} />
               <p className="px-4 py-2 font-mono text-[10.5px] text-fg-faint">
                 Other result kinds coming when their indexes land.
               </p>

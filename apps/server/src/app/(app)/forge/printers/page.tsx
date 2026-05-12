@@ -126,22 +126,28 @@ function summarise(vms: PrinterViewModel[]) {
 export default function ForgeFleetPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('casual');
 
+  // Nested queryKey arrays enable hierarchical invalidation —
+  // `queryClient.invalidateQueries({ queryKey: ['forge'] })` refreshes everything.
+  // staleTime under refetchInterval prevents mount-triggered duplicate fetches.
   const printersQ = useQuery({
-    queryKey: ['forge-printers'],
+    queryKey: ['forge', 'printers'],
     queryFn: fetchPrinters,
     refetchInterval: 30_000,
+    staleTime: 5_000,
   });
 
   const runningQ = useQuery({
-    queryKey: ['forge-dispatch-running'],
+    queryKey: ['forge', 'dispatch', 'running'],
     queryFn: () => fetchDispatch('running'),
     refetchInterval: 15_000,
+    staleTime: 5_000,
   });
 
   const queuedQ = useQuery({
-    queryKey: ['forge-dispatch-queued'],
+    queryKey: ['forge', 'dispatch', 'queued'],
     queryFn: () => fetchDispatch('queued'),
     refetchInterval: 30_000,
+    staleTime: 5_000,
   });
 
   const isError = printersQ.isError || runningQ.isError || queuedQ.isError;
@@ -251,14 +257,14 @@ export default function ForgeFleetPage() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-surface-2 border-b border-hairline">
-                  {['', 'Printer', 'Kind', 'Via', 'Status', 'Progress', 'Job', ''].map((h, i) => (
-                    <th
-                      key={i}
-                      className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium"
-                    >
-                      {h}
-                    </th>
-                  ))}
+                  <th className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium" />
+                  <th className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium">Printer</th>
+                  <th className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium">Kind</th>
+                  <th className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium">Via</th>
+                  <th className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium">Status</th>
+                  <th className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium">Progress</th>
+                  <th className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium">Job</th>
+                  <th className="px-[10px] py-2 text-left font-mono text-[9.5px] uppercase tracking-[1px] text-fg-faint font-medium" />
                 </tr>
               </thead>
               <tbody>

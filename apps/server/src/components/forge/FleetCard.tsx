@@ -1,10 +1,10 @@
 // Human-friendly card for the Casual grid view.
 // Canvas ref: FleetCardCasual (page-fleet.jsx line 63–127).
 
-import { MetaBadge, Tile, type Tone } from '@/components/shell/atoms';
+import { MetaBadge, Tile } from '@/components/shell/atoms';
 import { PrinterDot } from './PrinterDot';
 import { PrinterGlyph } from './PrinterGlyph';
-import { printerKindLabel, printerStateLabel, type PrinterState } from './forge-labels';
+import { printerKindLabel, printerStateLabel, STATE_TONE, type PrinterState } from './forge-labels';
 
 export interface FleetCardProps {
   id: string;
@@ -22,16 +22,6 @@ export interface FleetCardProps {
   /** Whether the printer ACL is disabled. */
   disabled?: boolean;
 }
-
-const STATE_TONE: Record<PrinterState, Tone> = {
-  running:  'running',
-  queue:    'accent',
-  idle:     'neutral',
-  disabled: 'neutral',
-  error:    'danger',
-  offline:  'neutral',
-  unknown:  'neutral',
-};
 
 export function FleetCard({ id: _id, name, kind, state, protocol, jobName, progress, eta, disabled }: FleetCardProps) {
   const tone = STATE_TONE[state];

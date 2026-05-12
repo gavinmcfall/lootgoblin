@@ -1,9 +1,10 @@
 // Single row in the Power table.
 // Canvas ref: FleetPowerRow (page-fleet.jsx line 187–243).
 
-import { MetaBadge, type Tone } from '@/components/shell/atoms';
+import Link from 'next/link';
+import { MetaBadge } from '@/components/shell/atoms';
 import { PrinterDot } from './PrinterDot';
-import { printerKindLabel, printerStateLabel, type PrinterState } from './forge-labels';
+import { printerKindLabel, printerStateLabel, STATE_TONE, type PrinterState } from './forge-labels';
 
 export interface FleetPowerRowProps {
   id: string;
@@ -20,17 +21,7 @@ export interface FleetPowerRowProps {
   disabled?: boolean;
 }
 
-const STATE_TONE: Record<PrinterState, Tone> = {
-  running:  'running',
-  queue:    'accent',
-  idle:     'neutral',
-  disabled: 'neutral',
-  error:    'danger',
-  offline:  'neutral',
-  unknown:  'neutral',
-};
-
-export function FleetPowerRow({ name, kind, state, protocol, jobName, progress, eta, disabled }: FleetPowerRowProps) {
+export function FleetPowerRow({ id, name, kind, state, protocol, jobName, progress, eta, disabled }: FleetPowerRowProps) {
   const tone = STATE_TONE[state];
   const isOffline = state === 'offline' || state === 'disabled';
 
@@ -89,12 +80,12 @@ export function FleetPowerRow({ name, kind, state, protocol, jobName, progress, 
 
       {/* Actions */}
       <td className="px-[10px] py-[9px]">
-        <button
-          type="button"
-          className="font-mono text-[10px] uppercase tracking-[0.6px] px-[9px] py-1 rounded bg-transparent text-fg-muted border border-hairline cursor-pointer hover:text-fg"
+        <Link
+          href={`/forge/printers/${id}`}
+          className="font-mono text-[10px] uppercase tracking-[0.6px] px-[9px] py-1 rounded bg-transparent text-fg-muted border border-hairline cursor-pointer hover:text-fg inline-block"
         >
           details
-        </button>
+        </Link>
       </td>
     </tr>
   );

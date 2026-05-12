@@ -1,6 +1,8 @@
 // Shared label helpers for Forge fleet UI.
 // Single source of truth across FleetCard, FleetPowerRow, and fleet pages.
 
+import { type Tone } from '@/components/shell/atoms';
+
 /** Human-readable printer kind label. */
 export function printerKindLabel(kind: string): string {
   switch (kind) {
@@ -58,7 +60,30 @@ export function printerGlyphKind(kind: string): 'fdm' | 'resin' {
   return 'fdm';
 }
 
-/** Human-readable agent label (connection route). */
+/**
+ * Tone for the printer state MetaBadge. Single source of truth — both
+ * FleetCard and FleetPowerRow import this rather than maintaining their own
+ * copies (prevents drift).
+ *
+ * Note: 'disabled' uses 'neutral' tone; visual distinction comes from
+ * row-level opacity-55 + italic suffix at the consumer, not the badge tone.
+ */
+export const STATE_TONE: Record<PrinterState, Tone> = {
+  running:  'running',
+  queue:    'accent',
+  idle:     'neutral',
+  disabled: 'neutral',
+  error:    'danger',
+  offline:  'neutral',
+  unknown:  'neutral',
+};
+
+/**
+ * Human-readable agent label (connection route).
+ *
+ * TODO(courier-v3): wire agentLabel into FleetPowerRow Via cell when
+ * Courier pillar lands — currently hardcoded to 'LAN direct'.
+ */
 export function agentLabel(kind: string): string {
   switch (kind) {
     case 'central_worker': return 'Local agent';

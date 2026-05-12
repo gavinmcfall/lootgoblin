@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import * as fsp from 'node:fs/promises';
 import * as crypto from 'node:crypto';
+import { eq, desc, count } from 'drizzle-orm';
 
 import { runMigrations, getDb, schema, resetDbCache } from '../../src/db/client';
 
@@ -137,9 +138,7 @@ async function getQuarantineRow(id: string) {
   const rows = await db()
     .select()
     .from(schema.quarantineItems)
-    .where(
-      (await import('drizzle-orm')).eq(schema.quarantineItems.id, id),
-    )
+    .where(eq(schema.quarantineItems.id, id))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -148,12 +147,18 @@ async function getLatestLedgerEvent(subjectId: string) {
   const rows = await db()
     .select()
     .from(schema.ledgerEvents)
-    .where(
-      (await import('drizzle-orm')).eq(schema.ledgerEvents.subjectId, subjectId),
-    )
-    .orderBy(schema.ledgerEvents.ingestedAt)
-    .limit(10);
-  return rows.filter((r) => r.kind === 'quarantine.dismissed');
+    .where(eq(schema.ledgerEvents.subjectId, subjectId))
+    .orderBy(desc(schema.ledgerEvents.ingestedAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+async function countLedgerEvents(subjectId: string): Promise<number> {
+  const rows = await db()
+    .select({ n: count() })
+    .from(schema.ledgerEvents)
+    .where(eq(schema.ledgerEvents.subjectId, subjectId));
+  return rows[0]?.n ?? 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,15 +276,14 @@ describe('DELETE /api/v1/quarantine/[id]', () => {
     );
     expect(res.status).toBe(200);
 
-    const events = await getLatestLedgerEvent(itemId);
-    expect(events.length).toBe(1);
-    const ev = events[0]!;
-    expect(ev.kind).toBe('quarantine.dismissed');
-    expect(ev.subjectType).toBe('quarantine_item');
-    expect(ev.subjectId).toBe(itemId);
-    expect(ev.actorUserId).toBe(userId);
+    const ev = await getLatestLedgerEvent(itemId);
+    expect(ev).not.toBeNull();
+    expect(ev!.kind).toBe('quarantine.dismissed');
+    expect(ev!.subjectType).toBe('quarantine_item');
+    expect(ev!.subjectId).toBe(itemId);
+    expect(ev!.actorUserId).toBe(userId);
     // Payload must carry the audit fields
-    const payload = JSON.parse(ev.payload!) as {
+    const payload = JSON.parse(ev!.payload!) as {
       stashRootId: string;
       reason: string;
       path: string;
@@ -289,31 +293,46 @@ describe('DELETE /api/v1/quarantine/[id]', () => {
     expect(payload.path).toBe('/tmp/dismiss-ledger-test.stl');
   });
 
-  it('returns 200 + unchanged resolvedAt on idempotent re-dismiss', async () => {
+  it('two-shot idempotency: same resolvedAt + no duplicate ledger event on second DELETE', async () => {
+    // Seed an unresolved item.
     const userId = await seedUser();
     const root = await seedStashRoot(userId);
-    const firstDismissal = new Date(Date.now() - 5000); // 5 s ago
     const itemId = await seedQuarantineItem(root, {
       reason: 'integrity-failed',
-      path: '/tmp/dismiss-idempotent-test.stl',
-      resolvedAt: firstDismissal,
+      path: '/tmp/dismiss-idempotent-two-shot.stl',
     });
 
-    mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { DELETE } = await import('../../src/app/api/v1/quarantine/[id]/route');
-    const res = await DELETE(
+
+    // First DELETE — must dismiss and write exactly one ledger event.
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const res1 = await DELETE(
       makeDelete(`http://local/api/v1/quarantine/${itemId}`),
       { params: Promise.resolve({ id: itemId }) },
     );
-    expect(res.status).toBe(200);
+    expect(res1.status).toBe(200);
+    const body1 = (await res1.json()) as { resolvedAt: string | null };
+    expect(body1.resolvedAt).not.toBeNull();
+    const resolvedAt1 = body1.resolvedAt!;
 
-    const body = (await res.json()) as { resolvedAt: string | null };
-    expect(body.resolvedAt).not.toBeNull();
-    // resolvedAt must be exactly the original timestamp (no update happened)
-    expect(new Date(body.resolvedAt!).getTime()).toBe(firstDismissal.getTime());
+    const countAfterFirst = await countLedgerEvents(itemId);
+    expect(countAfterFirst).toBe(1);
 
-    // DB row must still have the original resolvedAt
-    const row = await getQuarantineRow(itemId);
-    expect(row!.resolvedAt!.getTime()).toBe(firstDismissal.getTime());
+    // Second DELETE — must return 200 with the same resolvedAt, no new DB write.
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const res2 = await DELETE(
+      makeDelete(`http://local/api/v1/quarantine/${itemId}`),
+      { params: Promise.resolve({ id: itemId }) },
+    );
+    expect(res2.status).toBe(200);
+    const body2 = (await res2.json()) as { resolvedAt: string | null };
+    expect(body2.resolvedAt).not.toBeNull();
+
+    // resolvedAt must be the exact same ISO string — proves no second UPDATE.
+    expect(body2.resolvedAt).toBe(resolvedAt1);
+
+    // Ledger count must still be 1 — proves no duplicate ledger event.
+    const countAfterSecond = await countLedgerEvents(itemId);
+    expect(countAfterSecond).toBe(1);
   });
 });

@@ -28,7 +28,7 @@ import {
 } from '@/auth/request-auth';
 import { resolveQuarantineAcl } from '@/acl/quarantine';
 import { getServerDb, schema } from '@/db/client';
-import { persistLedgerEventInTx, type LedgerTxHandle } from '@/stash/ledger';
+import { persistLedgerEventInTx, LedgerValidationError, type LedgerTxHandle } from '@/stash/ledger';
 import { toQuarantineItemDto } from '../_shared';
 
 // ---------------------------------------------------------------------------
@@ -106,10 +106,10 @@ export async function DELETE(
   const now = new Date();
   const db = getServerDb();
 
-  let updatedItem: typeof schema.quarantineItems.$inferSelect | undefined;
-
-  (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction(
-    (tx) => {
+  try {
+    const result = (
+      db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }
+    ).transaction((tx) => {
       const t = tx as ReturnType<typeof getServerDb>;
 
       t.update(schema.quarantineItems)
@@ -132,11 +132,15 @@ export async function DELETE(
         ingestedAt: now,
       });
 
-      // Capture the updated row for the response (avoids a second SELECT
-      // outside the transaction).
-      updatedItem = { ...item, resolvedAt: now };
-    },
-  );
+      // Return the updated row — avoids a second SELECT outside the tx.
+      return { ...item, resolvedAt: now };
+    });
 
-  return NextResponse.json(toQuarantineItemDto(updatedItem!));
+    return NextResponse.json(toQuarantineItemDto(result));
+  } catch (err) {
+    if (err instanceof LedgerValidationError) {
+      return NextResponse.json({ error: 'ledger-validation-failed' }, { status: 500 });
+    }
+    throw err;
+  }
 }

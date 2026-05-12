@@ -70,9 +70,7 @@ export default function WatchlistPage() {
         </Link>
       </div>
 
-      {isLoading && (
-        <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>
-      )}
+      {isLoading && <EmptyHint>Loading…</EmptyHint>}
 
       {!isLoading && subscriptions.length === 0 && <WatchlistEmpty />}
 

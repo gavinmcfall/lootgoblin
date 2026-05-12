@@ -8,6 +8,7 @@ import { EmptyHint } from '@/components/shell/atoms';
 import { WatchlistDetailHeader } from '@/components/scouts/WatchlistDetailHeader';
 import { WatchlistStats } from '@/components/scouts/WatchlistStats';
 import { WatchlistFireHistory } from '@/components/scouts/WatchlistFireHistory';
+import { subscriptionLabel } from '@/components/scouts/watchlist-labels';
 
 interface Subscription {
   id: string;
@@ -30,17 +31,6 @@ interface Subscription {
   updatedAt: string;
 }
 
-function subscriptionLabel(sub: Subscription): string {
-  const p = sub.parameters;
-  if (!p) return sub.id.slice(0, 8);
-  if ('creatorId' in p && p.creatorId) return p.creatorId;
-  if ('tag' in p && p.tag) return `#${p.tag}`;
-  if ('query' in p && p.query) return p.query;
-  if ('url' in p && p.url) return p.url;
-  if ('folderId' in p && p.folderId) return p.folderId;
-  return sub.id.slice(0, 8);
-}
-
 export default function WatchlistDetailPage({
   params,
 }: {
@@ -56,11 +46,7 @@ export default function WatchlistDetailPage({
 
   if (isError) return <EmptyHint>Failed to load subscription.</EmptyHint>;
 
-  if (isLoading) {
-    return (
-      <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>
-    );
-  }
+  if (isLoading) return <EmptyHint>Loading…</EmptyHint>;
 
   const sub = data?.subscription;
   if (!sub) return <EmptyHint>Subscription not found.</EmptyHint>;
@@ -76,6 +62,9 @@ export default function WatchlistDetailPage({
         active={sub.active}
       />
       <WatchlistStats
+        // TODO(watchlist-firesCount): backend DTO has no aggregate counter — either
+        // fetch first page of /firings and pass `data?.firings?.length ?? 0` OR add
+        // totalFirings to toSubscriptionDto. Current placeholder always shows 0.
         firesCount={0}
         lastFiredAt={sub.lastFiredAt}
         cadenceSeconds={sub.cadenceSeconds}

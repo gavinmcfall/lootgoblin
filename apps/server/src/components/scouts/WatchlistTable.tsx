@@ -5,6 +5,7 @@
 import Link from 'next/link';
 import { relativeAge } from '@/lib/time';
 import { WatchKindChip } from './WatchKindChip';
+import { cadenceLabel, subscriptionLabel } from './watchlist-labels';
 
 interface Subscription {
   id: string;
@@ -15,23 +16,6 @@ interface Subscription {
   active: boolean;
   lastFiredAt: string | null;
   errorStreak: number;
-}
-
-function cadenceLabel(seconds: number): string {
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
-  return `${Math.round(seconds / 86400)}d`;
-}
-
-function subscriptionLabel(sub: Subscription): string {
-  const p = sub.parameters;
-  if (!p) return sub.id.slice(0, 8);
-  if ('creatorId' in p && p.creatorId) return p.creatorId;
-  if ('tag' in p && p.tag) return `#${p.tag}`;
-  if ('query' in p && p.query) return p.query;
-  if ('url' in p && p.url) return p.url;
-  if ('folderId' in p && p.folderId) return p.folderId;
-  return sub.id.slice(0, 8);
 }
 
 export function WatchlistTable({ subscriptions }: { subscriptions: Subscription[] }) {

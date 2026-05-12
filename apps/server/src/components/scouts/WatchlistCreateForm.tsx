@@ -62,13 +62,21 @@ export function WatchlistCreateForm() {
   // Field-level errors
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const { data: sourcesData, isError: sourcesError } = useQuery({
+  const {
+    data: sourcesData,
+    isError: sourcesError,
+    isLoading: sourcesLoading,
+  } = useQuery({
     queryKey: ['sources'],
     queryFn: async (): Promise<{ sources: SourceCapabilities[] }> =>
       (await fetch('/api/v1/scouts')).json(),
   });
 
-  const { data: collectionsData, isError: collectionsError } = useQuery({
+  const {
+    data: collectionsData,
+    isError: collectionsError,
+    isLoading: collectionsLoading,
+  } = useQuery({
     queryKey: ['collections'],
     queryFn: async (): Promise<{ collections: Collection[] }> =>
       (await fetch('/api/v1/collections')).json(),
@@ -196,10 +204,16 @@ export function WatchlistCreateForm() {
         {/* Source adapter */}
         <div>
           <label htmlFor="field-source-adapter" className={LABEL_CLASS}>Source adapter</label>
+          {sourcesLoading && (
+            <div className="mb-1">
+              <EmptyHint>Loading sources…</EmptyHint>
+            </div>
+          )}
           <select
             id="field-source-adapter"
             value={sourceAdapterId}
             onChange={(e) => setSourceAdapterId(e.target.value)}
+            disabled={sourcesLoading}
             aria-invalid={errors.sourceAdapterId ? true : undefined}
             aria-describedby={errors.sourceAdapterId ? 'err-source-adapter' : undefined}
             className={SELECT_CLASS}
@@ -234,10 +248,16 @@ export function WatchlistCreateForm() {
         {/* Default collection */}
         <div>
           <label htmlFor="field-collection" className={LABEL_CLASS}>Land in collection</label>
+          {collectionsLoading && (
+            <div className="mb-1">
+              <EmptyHint>Loading libraries…</EmptyHint>
+            </div>
+          )}
           <select
             id="field-collection"
             value={defaultCollectionId}
             onChange={(e) => setDefaultCollectionId(e.target.value)}
+            disabled={collectionsLoading}
             aria-invalid={errors.defaultCollectionId ? true : undefined}
             aria-describedby={errors.defaultCollectionId ? 'err-collection' : undefined}
             className={SELECT_CLASS}

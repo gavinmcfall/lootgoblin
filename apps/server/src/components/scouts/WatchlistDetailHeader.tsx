@@ -75,18 +75,21 @@ export function WatchlistDetailHeader({ id, label, kind, active }: Props) {
           {label}
         </h1>
         <button
+          type="button"
           onClick={fireNow}
           className="rounded-md border border-hairline px-3 py-[7px] font-mono text-[11px] text-fg-muted transition-colors hover:border-accent hover:text-accent"
         >
           Fire now
         </button>
         <button
+          type="button"
           onClick={togglePause}
           className="rounded-md border border-hairline px-3 py-[7px] font-mono text-[11px] text-fg-muted transition-colors hover:border-accent hover:text-accent"
         >
           {active ? 'Pause' : 'Resume'}
         </button>
         <button
+          type="button"
           onClick={unwatch}
           className="rounded-md border border-danger px-3 py-[7px] font-mono text-[11px] text-danger transition-colors hover:bg-danger-bg"
         >

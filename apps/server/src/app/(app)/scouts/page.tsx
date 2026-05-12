@@ -30,10 +30,9 @@ export default function ScoutsPage() {
     <div className="space-y-8">
       {/* Watchlist discovery link — sits under Scouts (breadcrumb: Scouts › Watchlist) */}
       <div className="flex items-baseline gap-3">
-        <span className="font-mono text-[10px] uppercase tracking-[1.8px] text-fg-faint">Watchlist</span>
         <Link
           href="/scouts/watchlist"
-          className="font-mono text-[10px] uppercase tracking-[0.6px] text-accent hover:underline"
+          className="font-mono text-[10px] uppercase tracking-[1.8px] text-accent hover:underline"
         >
           Watchlist →
         </Link>

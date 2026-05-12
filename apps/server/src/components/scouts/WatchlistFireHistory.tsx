@@ -56,9 +56,7 @@ export function WatchlistFireHistory({ subscriptionId }: { subscriptionId: strin
         <span className="flex-1 border-b border-dashed border-hairline" />
       </div>
 
-      {isLoading && (
-        <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>
-      )}
+      {isLoading && <EmptyHint>Loading…</EmptyHint>}
 
       {!isLoading && firings.length === 0 && (
         <EmptyHint>No firings yet — this subscription has not run.</EmptyHint>

@@ -179,6 +179,7 @@ export function Sidebar() {
 
       {/* Collapse toggle */}
       <button
+        type="button"
         onClick={toggle}
         aria-label={expanded ? 'Collapse sidebar' : 'Expand sidebar'}
         title={expanded ? 'Collapse sidebar' : 'Expand sidebar'}

@@ -203,13 +203,21 @@ export function GrimoireAttachModal({ lootId, onClose }: GrimoireAttachModalProp
 
           {/* List selection */}
           <div className="px-[22px] pb-3.5">
+            <label
+              htmlFor="attach-selection"
+              className="mb-1.5 block font-mono text-[9px] uppercase tracking-[1.4px] text-fg-faint"
+            >
+              Select a {kind === 'slicer-profile' ? 'slicer profile' : 'print setting'}
+            </label>
             {listError && <EmptyHint>Failed to load {kind === 'slicer-profile' ? 'profiles' : 'settings'}.</EmptyHint>}
             {!listError && listLoading && <EmptyHint>Loading…</EmptyHint>}
             {!listError && !listLoading && (
               <select
+                id="attach-selection"
                 value={selectedId}
                 onChange={(e) => setSelectedId(e.target.value)}
-                className="w-full rounded-sm border border-hairline bg-bg px-[10px] py-2 font-sans text-[13px] text-fg focus:outline-none focus:ring-1 focus:ring-accent"
+                disabled={isPending}
+                className="w-full rounded-sm border border-hairline bg-bg px-[10px] py-2 font-sans text-[13px] text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
               >
                 <option value="">— pick one —</option>
                 {kind === 'slicer-profile'

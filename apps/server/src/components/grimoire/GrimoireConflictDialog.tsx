@@ -10,6 +10,7 @@
 // Canvas reference: GrimoireConflict (page-grimoire.jsx line 280–362).
 
 import { useEffect, useId, useRef, useState } from 'react';
+import { type Tone } from '@/components/shell/atoms';
 
 export type ConflictResolution = 'keep-existing' | 'replace-incoming' | 'keep-both' | 'merge';
 
@@ -40,7 +41,7 @@ interface GrimoireConflictDialogProps {
 const FOCUSABLE_SELECTOR =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
-const RESOLUTIONS: { value: ConflictResolution; label: string; sub: string; tone: 'neutral' | 'danger' | 'accent' }[] = [
+const RESOLUTIONS: { value: ConflictResolution; label: string; sub: string; tone: Tone }[] = [
   {
     value: 'keep-existing',
     label: 'Keep existing',
@@ -217,7 +218,7 @@ export function GrimoireConflictDialog({
                     ? 'border-accent-edge bg-accent-soft'
                     : r.tone === 'danger'
                     ? 'border-danger bg-danger-bg'
-                    : 'border-accent-edge bg-accent-soft'
+                    : 'border-hairline-strong bg-surface-2'
                   : 'border-hairline bg-transparent hover:bg-surface-2'
               }`}
             >

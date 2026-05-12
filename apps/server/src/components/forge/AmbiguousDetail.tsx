@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { EmptyHint } from '@/components/shell/atoms';
 import { ConfidenceBar } from './ConfidenceBar';
 import type { PairingCandidate } from './PairingAmbiguousRow';
 
@@ -43,8 +44,9 @@ const FOCUSABLE = [
 function trapFocus(container: HTMLElement, event: KeyboardEvent) {
   const focusable = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
   if (focusable.length === 0) return;
-  const first = focusable[0] as HTMLElement;
-  const last = focusable[focusable.length - 1] as HTMLElement;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first || !last) return;
 
   if (event.key === 'Tab') {
     if (event.shiftKey) {
@@ -259,27 +261,28 @@ export function AmbiguousDetail({
           <div className="font-mono text-[9.5px] uppercase tracking-[1.2px] text-fg-faint mb-3">
             candidates
           </div>
-          <div className="flex flex-col gap-2">
-            {candidates.map((c, i) => (
-              <CandidateRow
-                key={c.lootId}
-                candidate={c}
-                rank={i}
-                onPick={handlePick}
-                picking={picking}
-              />
-            ))}
-          </div>
-
-          {candidates.length === 0 && (
-            <div className="font-sans text-[12px] italic text-fg-faint">
-              No candidates available — use the unknown flow instead.
+          {candidates.length === 0 ? (
+            <EmptyHint>No candidates available — use the unknown flow instead.</EmptyHint>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {candidates.map((c, i) => (
+                <CandidateRow
+                  key={c.lootId}
+                  candidate={c}
+                  rank={i}
+                  onPick={handlePick}
+                  picking={picking}
+                />
+              ))}
             </div>
           )}
         </div>
 
         {/* Footer */}
         <div className="flex items-center justify-end gap-2.5 border-t border-hairline bg-surface-2 px-5 py-3">
+          {/* Skip closes the dialog without resolving. For an explicit skip/quarantine
+              action see PairingUnknownRow. TODO(forge-skip-endpoint): backend has no
+              POST /api/v1/forge/pending-pairings/[id]/skip yet. */}
           <button
             type="button"
             onClick={onClose}

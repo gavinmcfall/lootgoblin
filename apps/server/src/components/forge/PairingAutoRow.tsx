@@ -5,7 +5,6 @@ import { ConfidenceBar } from './ConfidenceBar';
 import { MetaBadge } from '@/components/shell/atoms';
 
 interface PairingAutoRowProps {
-  id: string;
   filename: string;
   targetPath: string | null;
   confidence: number;

@@ -220,6 +220,8 @@ export default function ForgeInboxesPage() {
                 id={p.id}
                 filename={p.sliceLootId}
                 kind="unknown"
+                /* 0.5 = mid-range placeholder; PendingPairingDto has no confidence field
+                   (TODO: backend extension to expose classifier candidates + scores). */
                 confidence={0.5}
                 sourceFilenameHint={p.sourceFilenameHint}
                 candidates={[] as PairingCandidate[]}
@@ -270,7 +272,9 @@ export default function ForgeInboxesPage() {
                   <div className="font-mono text-[12px] font-medium text-fg">{inbox.name}</div>
                   <div className="mt-0.5 font-mono text-[10px] text-fg-faint">{inbox.path}</div>
                 </div>
-                <MetaBadge tone={inbox.active ? 'neutral' : 'neutral'}>
+                {/* Disabled inboxes: badge text fades (opacity-55 italic), but the row
+                    stays full-opacity so the user can still click to re-enable. */}
+                <MetaBadge tone="neutral">
                   <span className={inbox.active ? '' : 'opacity-55 italic'}>
                     {inbox.active ? 'active' : 'disabled'}
                   </span>

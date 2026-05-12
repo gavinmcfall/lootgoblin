@@ -3,6 +3,7 @@
 
 import { MetaBadge } from '@/components/shell/atoms';
 import { InboxKindIcon } from './InboxKindIcon';
+import { pairingStateTone } from './inbox-labels';
 import { useState } from 'react';
 import { toast } from 'sonner';
 
@@ -64,7 +65,7 @@ export function PairingUnknownRow({
       <div>
         <div className="flex items-baseline gap-2.5">
           <span className="font-mono text-[11.5px] font-semibold text-fg">{filename}</span>
-          <MetaBadge tone="danger">unknown</MetaBadge>
+          <MetaBadge tone={pairingStateTone('unknown')}>unknown</MetaBadge>
         </div>
         {sourceFilenameHint && (
           <div className="mt-0.5 font-sans text-[11.5px] italic text-fg-muted">

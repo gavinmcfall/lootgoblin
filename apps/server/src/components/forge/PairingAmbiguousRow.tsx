@@ -6,6 +6,7 @@ import { MetaBadge } from '@/components/shell/atoms';
 import { InboxKindIcon } from './InboxKindIcon';
 import { ConfidenceBar } from './ConfidenceBar';
 import { AmbiguousDetail } from './AmbiguousDetail';
+import { pairingStateTone } from './inbox-labels';
 import { useState } from 'react';
 
 export interface PairingCandidate {
@@ -49,7 +50,7 @@ export function PairingAmbiguousRow({
           <div>
             <div className="flex items-baseline gap-2.5">
               <span className="font-mono text-[12px] font-semibold text-fg">{filename}</span>
-              <MetaBadge tone="running">ambiguous</MetaBadge>
+              <MetaBadge tone={pairingStateTone('ambiguous')}>ambiguous</MetaBadge>
             </div>
             {sourceFilenameHint && (
               <div className="mt-1 font-sans text-[12px] italic text-fg-muted">

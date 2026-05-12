@@ -43,21 +43,28 @@ export default function HoardPage() {
       ) : (
         <div className="space-y-2">
           {libraries.map((d) => (
-            <Link
+            <div
               key={d.id}
-              href={`/hoard/${d.id}`}
-              className="group block rounded-md border border-hairline bg-surface px-4 py-3 transition-colors hover:bg-surface-hi"
+              className="group flex items-center rounded-md border border-hairline bg-surface px-4 py-3 transition-colors hover:bg-surface-hi"
             >
-              <div className="flex items-baseline gap-3">
-                <span className="font-serif text-[20px] tracking-[-0.3px] text-fg group-hover:text-accent">
-                  {d.name}
-                </span>
-                <MetaBadge tone="neutral">{d.packager}</MetaBadge>
-              </div>
-              <div className="mt-1 font-mono text-[11px] text-fg-faint">
-                {d.config.path} · {d.config.namingTemplate}
-              </div>
-            </Link>
+              <Link href={`/hoard/${d.id}`} className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-3">
+                  <span className="font-serif text-[20px] tracking-[-0.3px] text-fg group-hover:text-accent">
+                    {d.name}
+                  </span>
+                  <MetaBadge tone="neutral">{d.packager}</MetaBadge>
+                </div>
+                <div className="mt-1 font-mono text-[11px] text-fg-faint">
+                  {d.config.path} · {d.config.namingTemplate}
+                </div>
+              </Link>
+              <Link
+                href={`/hoard/${d.id}/browse`}
+                className="ml-4 shrink-0 font-mono text-[10.5px] tracking-[0.3px] text-accent hover:underline"
+              >
+                browse →
+              </Link>
+            </div>
           ))}
         </div>
       )}

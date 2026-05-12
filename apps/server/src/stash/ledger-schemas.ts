@@ -205,6 +205,25 @@ const MaterialConsumedPayload = z.object({
 // Registry
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Quarantine schemas (quarantine HTTP layer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emitted by DELETE /api/v1/quarantine/[id] when an operator dismisses a
+ * quarantine item. Carries the audit context (stashRootId, reason, path) so
+ * ledger readers can describe the dismissal without re-joining.
+ */
+const QuarantineDismissedPayload = z.object({
+  stashRootId: z.string().uuid(),
+  reason: z.string().min(1),
+  path: z.string().min(1),
+});
+
+// ---------------------------------------------------------------------------
+// Registry
+// ---------------------------------------------------------------------------
+
 const ledgerEventSchemas = new Map<string, z.ZodTypeAny>([
   // Stash
   ['bulk.move-to-collection', BulkMoveToCollectionPayload],
@@ -220,6 +239,8 @@ const ledgerEventSchemas = new Map<string, z.ZodTypeAny>([
   ['material.mix_created', MaterialMixCreatedPayload],
   ['material.recycled', MaterialRecycledPayload],
   ['material.consumed', MaterialConsumedPayload],
+  // Quarantine
+  ['quarantine.dismissed', QuarantineDismissedPayload],
 ]);
 
 /**

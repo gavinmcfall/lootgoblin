@@ -1,7 +1,10 @@
 /**
- * GET /api/v1/quarantine/[id] — Quarantine HTTP Layer T3
+ * GET + DELETE /api/v1/quarantine/[id] — Quarantine HTTP Layer T3 + T4
  *
- * Returns the full DTO for a single quarantine item.
+ * GET  — Returns the full DTO for a single quarantine item.
+ * DELETE — Dismisses the item (sets resolved_at = NOW()). Idempotent: re-
+ *          dismissing an already-resolved item returns 200 with the unchanged
+ *          row (no UPDATE, no duplicate ledger event).
  *
  * Auth model
  * ──────────
@@ -9,12 +12,13 @@
  *
  * ACL (mirrors Forge pattern — existence is hidden for denied callers)
  * ───
- * owner  → 200
- * admin  → 200 (cross-owner read for triage)
+ * owner  → 200  (read + write)
+ * admin  → 200 read only (cross-owner triage); write → 404 (no accidental cross-tenant mutation)
  * non-owner / non-admin → 404  (hides existence, never 403)
  * unknown id → 404
  */
 
+import { eq } from 'drizzle-orm';
 import { NextResponse } from 'next/server';
 
 import {
@@ -23,6 +27,8 @@ import {
   unauthenticatedResponse,
 } from '@/auth/request-auth';
 import { resolveQuarantineAcl } from '@/acl/quarantine';
+import { getServerDb, schema } from '@/db/client';
+import { persistLedgerEventInTx, type LedgerTxHandle } from '@/stash/ledger';
 import { toQuarantineItemDto } from '../_shared';
 
 // ---------------------------------------------------------------------------
@@ -53,4 +59,84 @@ export async function GET(
   }
 
   return NextResponse.json(toQuarantineItemDto(acl.item!));
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/v1/quarantine/[id]
+// ---------------------------------------------------------------------------
+
+/**
+ * Dismiss a quarantine item — sets resolved_at = NOW().
+ *
+ * Idempotency: if the item is already resolved, returns 200 with the existing
+ * row and emits no second ledger event (check acl.item.resolvedAt before
+ * writing).
+ *
+ * Atomic: the UPDATE + ledger event are executed inside a single sync
+ * better-sqlite3 transaction so either both land or neither does.
+ */
+export async function DELETE(
+  req: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  const { id } = await context.params;
+
+  // Auth
+  const authResult = await authenticateRequest(req);
+  if (!authResult || authResult === INVALID_API_KEY) {
+    return unauthenticatedResponse(authResult as null | typeof INVALID_API_KEY);
+  }
+  const actor = authResult;
+
+  // ACL — 'write' action; admin cross-owner writes are denied (returns
+  // not-found) to mirror the Forge consent model.
+  const acl = await resolveQuarantineAcl(actor, id, 'write');
+  if (!acl.allowed) {
+    return NextResponse.json({ error: 'not-found' }, { status: 404 });
+  }
+
+  const item = acl.item!;
+
+  // Idempotency: already resolved — return unchanged row without touching DB.
+  if (item.resolvedAt !== null) {
+    return NextResponse.json(toQuarantineItemDto(item));
+  }
+
+  // Atomic UPDATE + ledger event.
+  const now = new Date();
+  const db = getServerDb();
+
+  let updatedItem: typeof schema.quarantineItems.$inferSelect | undefined;
+
+  (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction(
+    (tx) => {
+      const t = tx as ReturnType<typeof getServerDb>;
+
+      t.update(schema.quarantineItems)
+        .set({ resolvedAt: now })
+        .where(eq(schema.quarantineItems.id, id))
+        .run();
+
+      persistLedgerEventInTx(t as LedgerTxHandle, {
+        kind: 'quarantine.dismissed',
+        actorUserId: actor.id,
+        subjectType: 'quarantine_item',
+        subjectId: id,
+        payload: {
+          stashRootId: item.stashRootId,
+          reason: item.reason,
+          path: item.path,
+        },
+        provenanceClass: 'system',
+        occurredAt: now,
+        ingestedAt: now,
+      });
+
+      // Capture the updated row for the response (avoids a second SELECT
+      // outside the transaction).
+      updatedItem = { ...item, resolvedAt: now };
+    },
+  );
+
+  return NextResponse.json(toQuarantineItemDto(updatedItem!));
 }

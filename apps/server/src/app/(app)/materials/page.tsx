@@ -42,6 +42,7 @@ export default function MaterialsPage() {
   });
 
   if (isError) return <EmptyHint>Failed to load materials.</EmptyHint>;
+  if (isLoading) return <EmptyHint>Loading materials…</EmptyHint>;
 
   const materials = data?.materials ?? [];
 
@@ -54,7 +55,7 @@ export default function MaterialsPage() {
         </span>
         <span className="flex-1 border-b border-hairline" />
         <span className="font-mono text-[10px] text-fg-faint">
-          {isLoading ? '…' : `${materials.length} lines`}
+          {`${materials.length} lines`}
         </span>
       </div>
 
@@ -83,15 +84,11 @@ export default function MaterialsPage() {
         onState={setStateFilter}
       />
 
-      {isLoading && <EmptyHint>Loading materials…</EmptyHint>}
-
-      {!isLoading && materials.length === 0 && (
+      {materials.length === 0 ? (
         <EmptyHint>
           No materials found. Add your first spool or bottle to get started.
         </EmptyHint>
-      )}
-
-      {!isLoading && materials.length > 0 && (
+      ) : (
         <MaterialsTable materials={materials} />
       )}
     </div>

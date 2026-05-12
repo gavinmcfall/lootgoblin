@@ -1,12 +1,14 @@
 'use client';
-// MaterialAddForm — manual create form for a material.
+// MaterialAddForm — manual create form with catalog autocomplete.
 // Canvas reference: MatAddFlow "Step 2 · fill the line" (page-materials.jsx line 391-412).
-// Barcode + receipt paths (B + C) are canvas-only; this ships the manual (A) path.
+// Catalog autocomplete (filaments + resins) auto-populates fields; manual
+// override is always allowed. Barcode + receipt paths (B + C) are deferred.
 
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { EmptyHint } from '@/components/shell/atoms';
 
 const KIND_OPTIONS = [
   { value: 'filament_spool', label: 'Filament spool' },
@@ -37,6 +39,7 @@ type FormFields = {
   colorPattern: string;
   initialAmount: string;
   unit: string;
+  density: string;
 };
 
 const EMPTY: FormFields = {
@@ -48,7 +51,21 @@ const EMPTY: FormFields = {
   colorPattern: 'solid',
   initialAmount: '1000',
   unit: 'g',
+  density: '',
 };
+
+// Shape of catalog hits — the subset we consume. Filament hits expose
+// `density`; resin hits expose `densityGMl`. We accept both at runtime.
+interface CatalogHit {
+  id: string;
+  brand: string;
+  subtype: string;
+  colors: string[] | null;
+  colorName: string | null;
+  density?: number | null;
+  densityGMl?: number | null;
+  colorPattern?: string;
+}
 
 function FieldWrap({
   label,
@@ -89,15 +106,90 @@ const inputCls =
 const selectCls =
   'w-full rounded-sm border border-hairline bg-bg px-[10px] py-2 font-sans text-[13px] text-fg focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50';
 
+// Debounce a string value. 300ms matches the spec.
+function useDebounced<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return debounced;
+}
+
 export function MaterialAddForm() {
   const router = useRouter();
   const [form, setForm] = useState<FormFields>(EMPTY);
+  const [productId, setProductId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Partial<Record<keyof FormFields, string>>>({});
   const [serverError, setServerError] = useState<string | null>(null);
+
+  // Catalog search state.
+  const [searchTerm, setSearchTerm] = useState('');
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const listboxRef = useRef<HTMLUListElement>(null);
+  const debouncedSearch = useDebounced(searchTerm, 300);
+
+  // Catalog applies to filaments + resins only.
+  const catalogEndpoint = useMemo<'filaments' | 'resins' | null>(() => {
+    if (form.kind === 'filament_spool') return 'filaments';
+    if (form.kind === 'resin_bottle') return 'resins';
+    return null;
+  }, [form.kind]);
+
+  const catalogQ = useQuery({
+    queryKey: ['catalog-search', catalogEndpoint, debouncedSearch],
+    queryFn: async (): Promise<{ products: CatalogHit[] }> => {
+      const res = await fetch(
+        `/api/v1/catalog/${catalogEndpoint}/search?q=${encodeURIComponent(debouncedSearch)}`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      // Filament endpoint returns { filaments } or { products }; resin returns
+      // { resins } or { products }. Normalise to a single list.
+      const list =
+        (body as { filaments?: CatalogHit[] }).filaments ??
+        (body as { resins?: CatalogHit[] }).resins ??
+        (body as { products?: CatalogHit[] }).products ??
+        [];
+      return { products: list };
+    },
+    enabled: !!catalogEndpoint && debouncedSearch.length >= 2,
+  });
 
   function set<K extends keyof FormFields>(k: K, v: string) {
     setForm((f) => ({ ...f, [k]: v }));
     setErrors((e) => ({ ...e, [k]: undefined }));
+    // Mutating any populated field clears the catalog binding — user is
+    // overriding, productId should no longer track that catalog row.
+    if (
+      productId &&
+      (k === 'brand' || k === 'subtype' || k === 'colorName' || k === 'color1' || k === 'colorPattern')
+    ) {
+      setProductId(null);
+    }
+  }
+
+  function applyCatalogHit(hit: CatalogHit) {
+    const density = hit.density ?? hit.densityGMl ?? null;
+    setForm((f) => ({
+      ...f,
+      brand: hit.brand ?? f.brand,
+      subtype: hit.subtype ?? f.subtype,
+      colorName: hit.colorName ?? f.colorName,
+      color1: hit.colors && hit.colors[0] ? hit.colors[0] : f.color1,
+      colorPattern: hit.colorPattern ?? f.colorPattern,
+      density: density != null ? String(density) : f.density,
+    }));
+    setProductId(hit.id);
+    setSearchTerm('');
+    setDropdownOpen(false);
+    setErrors({});
+  }
+
+  function skipCatalog() {
+    setProductId(null);
+    setSearchTerm('');
+    setDropdownOpen(false);
   }
 
   function validate(): boolean {
@@ -110,6 +202,8 @@ export function MaterialAddForm() {
     const hexRe = /^#[0-9A-Fa-f]{6}$/;
     if (form.color1 && !hexRe.test(form.color1))
       next.color1 = 'Must be a 6-digit hex, e.g. #FF0000.';
+    if (form.density && (isNaN(parseFloat(form.density)) || parseFloat(form.density) <= 0))
+      next.density = 'Must be a positive number, or leave empty.';
     setErrors(next);
     return Object.keys(next).length === 0;
   }
@@ -127,6 +221,8 @@ export function MaterialAddForm() {
         ...(hexRe.test(form.color1)
           ? { colors: [form.color1.toUpperCase()], colorPattern: form.colorPattern }
           : {}),
+        ...(form.density ? { density: parseFloat(form.density) } : {}),
+        ...(productId ? { productId } : {}),
       };
       const res = await fetch('/api/v1/materials', {
         method: 'POST',
@@ -144,6 +240,8 @@ export function MaterialAddForm() {
       toast.success('Material added to workshop.');
       if (saveAndNew) {
         setForm(EMPTY);
+        setProductId(null);
+        setSearchTerm('');
         setServerError(null);
         setErrors({});
       } else {
@@ -161,8 +259,20 @@ export function MaterialAddForm() {
     mutate(saveAndNew);
   }
 
+  const hits = catalogQ.data?.products ?? [];
+  const showDropdown =
+    !!catalogEndpoint &&
+    dropdownOpen &&
+    (catalogQ.isLoading || catalogQ.isError || hits.length > 0 || debouncedSearch.length >= 2);
+
   return (
-    <div className="rounded-lg border border-hairline bg-surface p-[22px]">
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        handleSubmit(false);
+      }}
+      className="rounded-lg border border-hairline bg-surface p-[22px]"
+    >
       {/* Server error */}
       {serverError && (
         <div
@@ -171,6 +281,111 @@ export function MaterialAddForm() {
           className="mb-4 rounded-sm border border-danger bg-danger-bg px-3 py-2 font-sans text-[12px] text-danger"
         >
           {serverError}
+        </div>
+      )}
+
+      {/* Catalog autocomplete — filaments + resins only */}
+      {catalogEndpoint && (
+        <div className="relative mb-[18px]">
+          <label
+            htmlFor="catalog-search"
+            className="mb-1.5 block font-mono text-[9px] uppercase tracking-[1.4px] text-fg-faint"
+          >
+            Catalog search
+          </label>
+          <input
+            id="catalog-search"
+            type="text"
+            role="combobox"
+            aria-controls="catalog-listbox"
+            aria-expanded={showDropdown}
+            aria-autocomplete="list"
+            value={searchTerm}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setDropdownOpen(true);
+            }}
+            onFocus={() => setDropdownOpen(true)}
+            placeholder={
+              catalogEndpoint === 'filaments'
+                ? 'Search catalog (e.g. Bambu PLA Basic Black)…'
+                : 'Search catalog (e.g. Siraya Tech Tenacious)…'
+            }
+            className={inputCls}
+          />
+          <button
+            type="button"
+            onClick={skipCatalog}
+            className="mt-1 font-mono text-[10px] uppercase tracking-[1px] text-fg-faint hover:text-fg-muted"
+          >
+            Skip catalog · enter manually
+          </button>
+
+          {/* Dropdown */}
+          {showDropdown && (
+            <div className="absolute left-0 right-0 top-full z-10 mt-1 rounded-md border border-hairline bg-surface shadow-lg">
+              {catalogQ.isError && (
+                <div className="p-2">
+                  <EmptyHint>Catalog search failed.</EmptyHint>
+                </div>
+              )}
+              {!catalogQ.isError && catalogQ.isLoading && (
+                <div className="p-2">
+                  <EmptyHint>Searching catalog…</EmptyHint>
+                </div>
+              )}
+              {!catalogQ.isError && !catalogQ.isLoading && hits.length === 0 && (
+                <div className="p-2">
+                  <EmptyHint>No catalog hits — enter manually below.</EmptyHint>
+                </div>
+              )}
+              {!catalogQ.isError && !catalogQ.isLoading && hits.length > 0 && (
+                <ul
+                  id="catalog-listbox"
+                  ref={listboxRef}
+                  role="listbox"
+                  className="max-h-[260px] overflow-y-auto"
+                >
+                  {hits.map((hit) => (
+                    <li
+                      key={hit.id}
+                      role="option"
+                      aria-selected={productId === hit.id}
+                      onClick={() => applyCatalogHit(hit)}
+                      className="flex cursor-pointer items-center gap-2.5 border-b border-dashed border-hairline px-3 py-2 last:border-b-0 hover:bg-surface-2"
+                    >
+                      <span className="flex shrink-0 gap-0.5">
+                        {(hit.colors ?? ['#888888']).slice(0, 4).map((c, i) => (
+                          <span
+                            key={`${hit.id}-${i}`}
+                            className="h-4 w-4 rounded-[3px] border border-hairline"
+                            style={{ background: c }}
+                          />
+                        ))}
+                      </span>
+                      <span className="flex-1 text-[12.5px] text-fg">
+                        <span className="font-sans font-medium">{hit.brand}</span>
+                        <span className="ml-1.5 font-mono text-[10.5px] text-fg-faint">
+                          · {hit.subtype}
+                        </span>
+                        {hit.colorName && (
+                          <span className="ml-1.5 font-serif text-[11.5px] italic text-fg-muted">
+                            {hit.colorName}
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {productId && (
+            <div className="mt-2 font-mono text-[10px] text-accent">
+              · Linked to catalog product {productId.slice(0, 8)}…
+            </div>
+          )}
         </div>
       )}
 
@@ -305,6 +520,22 @@ export function MaterialAddForm() {
             ))}
           </select>
         </FieldWrap>
+
+        {/* Density (optional) */}
+        <FieldWrap label="Density (g/cm³) · optional" htmlFor="mat-density" error={errors.density}>
+          <input
+            id="mat-density"
+            type="number"
+            min={0}
+            step="any"
+            value={form.density}
+            onChange={(e) => set('density', e.target.value)}
+            placeholder="1.24"
+            aria-invalid={!!errors.density}
+            aria-describedby={errors.density ? 'mat-density-error' : undefined}
+            className={inputCls}
+          />
+        </FieldWrap>
       </div>
 
       {/* Actions */}
@@ -318,14 +549,13 @@ export function MaterialAddForm() {
           Save and add another
         </button>
         <button
-          type="button"
-          onClick={() => handleSubmit(false)}
+          type="submit"
           disabled={isPending}
           className="rounded-md bg-accent px-4 py-2 font-sans text-[12.5px] font-semibold text-accent-ink hover:opacity-90 disabled:opacity-50"
         >
           {isPending ? 'Adding…' : 'Add to workshop'}
         </button>
       </div>
-    </div>
+    </form>
   );
 }

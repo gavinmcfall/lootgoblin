@@ -13,18 +13,6 @@ export function kindLabel(kind: string): string {
   }
 }
 
-/** Short kind label for filters / chips. */
-export function kindLabelShort(kind: string): string {
-  switch (kind) {
-    case 'filament_spool': return 'Filament';
-    case 'resin_bottle':   return 'Resin';
-    case 'mix_batch':      return 'Mix';
-    case 'recycled_spool': return 'Recycled';
-    case 'other':          return 'Other';
-    default:               return kind;
-  }
-}
-
 /** Human-readable unit label. */
 export function unitLabel(unit: string): string {
   switch (unit) {

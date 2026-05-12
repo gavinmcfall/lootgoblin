@@ -81,15 +81,30 @@ export function MaterialCard({ material: m, printerName, size = 'sm' }: Material
         unit={m.unit}
       />
 
-      {/* Footer */}
-      <div className="flex justify-between font-mono text-[9.5px] text-fg-faint">
-        <span>{m.kind}</span>
-        <MetaBadge
-          tone={!m.active ? 'neutral' : m.remainingAmount === 0 ? 'running' : 'neutral'}
-        >
-          {!m.active ? 'retired' : m.remainingAmount === 0 ? 'empty' : 'active'}
-        </MetaBadge>
-      </div>
+      {/* Footer — loaded→accent (active emphasis), empty→running (needs action),
+          retired→neutral (passive end-state), active default→neutral (steady). */}
+      {(() => {
+        const tone: 'neutral' | 'accent' | 'running' = !m.active
+          ? 'neutral'
+          : m.loadedInPrinterId
+            ? 'accent'
+            : m.remainingAmount === 0
+              ? 'running'
+              : 'neutral';
+        const label = !m.active
+          ? 'retired'
+          : m.loadedInPrinterId
+            ? 'loaded'
+            : m.remainingAmount === 0
+              ? 'empty'
+              : 'active';
+        return (
+          <div className="flex justify-between font-mono text-[9.5px] text-fg-faint">
+            <span>{m.kind}</span>
+            <MetaBadge tone={tone}>{label}</MetaBadge>
+          </div>
+        );
+      })()}
     </div>
   );
 }

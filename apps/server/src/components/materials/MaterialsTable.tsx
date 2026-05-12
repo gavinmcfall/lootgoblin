@@ -103,6 +103,11 @@ export function MaterialsTable({ materials }: { materials: MaterialDto[] }) {
             </span>
 
             {/* Printer */}
+            {/* TODO(materials-printer-lookup): resolve printer name from
+                loadedInPrinterId via /api/v1/forge/printers query (fetched
+                once at page-level, then threaded as a name-map into the
+                table to avoid N+1). For now we show the literal "loaded"
+                affordance — the detail page resolves the name. */}
             <span
               className={`font-mono text-[11px] ${m.loadedInPrinterId ? 'text-accent' : 'text-fg-faint'}`}
             >

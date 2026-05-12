@@ -22,9 +22,14 @@ interface RetireDialogProps {
   onClose: () => void;
 }
 
+const FOCUSABLE_SELECTOR =
+  'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
 export function RetireDialog({ materialId, materialName, onClose }: RetireDialogProps) {
   const titleId = useId();
+  const noteId = useId();
   const firstInputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
 
   const [selectedReason, setSelectedReason] = useState<string>('OTHER');
@@ -47,10 +52,28 @@ export function RetireDialog({ materialId, materialName, onClose }: RetireDialog
     };
   }, []);
 
-  // Escape key closes without retiring.
+  // Escape closes without retiring; Tab/Shift+Tab is trapped within the dialog.
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key === 'Tab' && containerRef.current) {
+        const focusable = containerRef.current.querySelectorAll<HTMLElement>(
+          FOCUSABLE_SELECTOR,
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0]!;
+        const last = focusable[focusable.length - 1]!;
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     }
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
@@ -91,7 +114,10 @@ export function RetireDialog({ materialId, materialName, onClose }: RetireDialog
       aria-labelledby={titleId}
       className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70 p-6"
     >
-      <div className="w-full max-w-[620px] overflow-hidden rounded-lg border border-hairline bg-surface shadow-lg">
+      <div
+        ref={containerRef}
+        className="w-full max-w-[620px] overflow-hidden rounded-lg border border-hairline bg-surface shadow-lg"
+      >
         {/* Header */}
         <div className="px-[22px] pb-3.5 pt-[18px]">
           <div className="font-mono text-[9.5px] uppercase tracking-[1.6px] text-fg-faint">
@@ -152,10 +178,14 @@ export function RetireDialog({ materialId, materialName, onClose }: RetireDialog
 
         {/* Note textarea */}
         <div className="border-t border-hairline px-[22px] pt-3.5">
-          <div className="mb-1.5 font-mono text-[9px] uppercase tracking-[1.4px] text-fg-faint">
+          <label
+            htmlFor={noteId}
+            className="mb-1.5 block font-mono text-[9px] uppercase tracking-[1.4px] text-fg-faint"
+          >
             Note · Optional
-          </div>
+          </label>
           <textarea
+            id={noteId}
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="Additional details…"

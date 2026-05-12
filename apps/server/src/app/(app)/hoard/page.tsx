@@ -13,7 +13,7 @@ interface Destination {
 }
 
 export default function HoardPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ['destinations'],
     queryFn: async (): Promise<{ destinations: Destination[] }> =>
       (await fetch('/api/v1/hoard')).json(),
@@ -34,8 +34,10 @@ export default function HoardPage() {
       >
         Libraries in the hoard
       </SectionTitle>
-      {isLoading ? (
-        <p className="font-mono text-[11px] uppercase tracking-[1px] text-fg-faint">Loading…</p>
+      {isError ? (
+        <EmptyHint>Failed to load libraries.</EmptyHint>
+      ) : isLoading ? (
+        <EmptyHint>Loading…</EmptyHint>
       ) : libraries.length === 0 ? (
         <EmptyHint>
           The hoard is empty. Start by creating a library — every Loot lives in one.

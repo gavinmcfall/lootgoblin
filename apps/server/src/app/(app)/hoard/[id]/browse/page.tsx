@@ -10,7 +10,7 @@
 //   the variants without schema, or commission a backend schema-tagging plan before
 //   those are added here.
 
-import { use, useCallback } from 'react';
+import { use, useCallback, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
@@ -98,9 +98,10 @@ export default function LibraryBrowsePage({ params }: { params: Promise<{ id: st
     staleTime: 30_000,
   });
 
-  // Loot query — keyed by (id, activeTag) so TanStack tracks filter state
+  // Loot query — keyed by collection only; tag filter is applied client-side
+  // below so we don't want a new cache entry / refetch per tag change.
   const lootQuery = useQuery({
-    queryKey: ['loot', { collectionId: id, tag: activeTag }],
+    queryKey: ['loot', { collectionId: id }],
     queryFn: () => fetchLoot(id),
     staleTime: 5_000,
   });
@@ -148,9 +149,10 @@ export default function LibraryBrowsePage({ params }: { params: Promise<{ id: st
 
   const library = libraryQuery.data;
 
-  // Compute tag cloud from full loot list
+  // Compute tag cloud from full loot list — memoized so parent re-renders
+  // (URL changes, hover state, etc.) don't re-run the O(N×tags) aggregation.
   const allItems = lootQuery.data ?? [];
-  const tagCounts = aggregateTags(allItems);
+  const tagCounts = useMemo(() => aggregateTags(allItems), [allItems]);
 
   // Apply active tag filter in the grid
   const visibleItems = activeTag

@@ -66,6 +66,7 @@ export function LibraryTagCloud({
                 key={tag}
                 type="button"
                 onClick={() => onTagClick(tag)}
+                aria-pressed={isActive}
                 style={{ fontSize }}
                 className={[
                   'rounded-sm border px-1.5 py-0.5 font-mono tracking-[0.3px] transition-colors',

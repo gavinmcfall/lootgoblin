@@ -65,7 +65,7 @@ export const ListQuery = z.object({
     .optional()
     .transform((v) => (v === undefined ? undefined : v === 'true')),
   /** Admin-only: filter by owner. Non-admin callers must be rejected at the route level. */
-  owner_id: z.string().min(1).optional(),
+  owner_id: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
 });

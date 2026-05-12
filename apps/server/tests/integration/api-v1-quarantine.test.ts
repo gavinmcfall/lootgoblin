@@ -207,7 +207,7 @@ describe('GET /api/v1/quarantine', () => {
     const rootA = await seedStashRoot(userA);
     const rootB = await seedStashRoot(userB);
     const itemA = await seedQuarantineItem(rootA);
-    await seedQuarantineItem(rootB);
+    const itemB = await seedQuarantineItem(rootB);
 
     mockAuthenticate.mockResolvedValueOnce(actor(adminId, 'admin'));
     const { GET } = await import('../../src/app/api/v1/quarantine/route');
@@ -216,13 +216,9 @@ describe('GET /api/v1/quarantine', () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { items: Array<{ id: string }> };
-    expect(body.items.map((i) => i.id)).toContain(itemA);
-    for (const item of body.items) {
-      expect(item.id).not.toBe(itemA === item.id ? 'unexpected' : item.id);
-    }
-    // Verify rootB item is excluded
     const ids = body.items.map((i) => i.id);
-    expect(ids.every((id) => id !== (ids.find((x) => x !== itemA) ?? ''))).toBe(true);
+    expect(ids).toContain(itemA);
+    expect(ids).not.toContain(itemB);
   });
 
   it('non-admin passing ?owner_id= gets 403', async () => {
@@ -337,7 +333,10 @@ describe('GET /api/v1/quarantine', () => {
     );
     expect(res2.status).toBe(200);
     const body2 = (await res2.json()) as { items: Array<{ id: string }>; nextCursor?: string };
-    expect(body2.items.map((i) => i.id)).toContain(item1);
+    const page2Ids = body2.items.map((i) => i.id);
+    expect(page2Ids).toContain(item1);
+    expect(page2Ids).not.toContain(item2);
+    expect(page2Ids).not.toContain(item3);
     // No more pages
     expect(body2.nextCursor).toBeUndefined();
   });

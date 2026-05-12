@@ -30,7 +30,7 @@
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
-import { and, desc, eq, isNotNull, isNull, lt, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull, lt, type SQL } from 'drizzle-orm';
 
 import { getServerDb, schema } from '@/db/client';
 import {
@@ -138,7 +138,7 @@ export async function GET(req: NextRequest) {
       eq(schema.quarantineItems.stashRootId, schema.stashRoots.id),
     )
     .where(whereClause)
-    .orderBy(desc(schema.quarantineItems.createdAt))
+    .orderBy(desc(schema.quarantineItems.createdAt), asc(schema.quarantineItems.id))
     .limit(q.limit + 1);
 
   const hasMore = rows.length > q.limit;

@@ -1,0 +1,382 @@
+/**
+ * GET /api/v1/ledger — Ledger HTTP Layer T2
+ *
+ * Read-only list of ledger_events with filter + composite cursor pagination
+ * (DESC by ingestedAt, then DESC by id for same-millisecond stability).
+ *
+ * Auth model
+ * ──────────
+ * authenticateRequest — BetterAuth session OR x-api-key 'programmatic'.
+ *
+ * ACL model (locked 2026-05-12: admin + subject-owner)
+ * ──────────────────────────────────────────────────────
+ * Admin: reads all events.
+ * Non-admin: reads events WHERE the subject resource is owned by the caller,
+ * as determined by resolveAcl({user, resource: {kind, id, ownerId}, action:'read'}).
+ *
+ * Owner resolution is batched per subjectType (one SELECT IN per kind). Supported
+ * kinds with ownership resolution:
+ *   material         — materials.owner_id
+ *   collection       — collections.owner_id
+ *   loot             — loot → collections.owner_id (via join)
+ *   quarantine_item  — quarantine_items → stash_roots.owner_id (via join)
+ *   watchlist_subscription — watchlist_subscriptions.owner_id
+ *   printer          — printers.owner_id (forge)
+ *   slicer           — forge_slicers.owner_id
+ *   dispatch_job     — dispatch_jobs.owner_id
+ *   slicer_profile   — slicer_profiles.owner_id (grimoire)
+ *   print_setting    — print_settings.owner_id (grimoire)
+ *
+ * Unknown subject kinds (e.g. 'system_event', 'bulk-action', 'loot-file',
+ * 'stash_root', 'source_credential', 'mix_batch', or any future kind not listed
+ * above): filtered out for non-admins. This is a safe default — non-admins
+ * cannot see events whose ownership cannot be determined.
+ *
+ * TODO: denormalize ledger_events.subject_owner_id at write-time so reads become
+ * a simple WHERE clause (no per-row owner lookup). Captured as a future optimization
+ * to eliminate the 4x over-fetch + batched owner-resolution pattern.
+ *
+ * Over-fetch
+ * ──────────
+ * Non-admin: fetch (limit+1)*4 rows from DB to absorb post-filter rejection.
+ * Factor 4 is a pragmatic estimate for a ~25% per-user fraction in a 3-household
+ * instance. If pagination feels sparse in practice, tune to 8x or denormalize.
+ *
+ * Cursor codec
+ * ────────────
+ * encodeCursor(ts, id) = base64url(`${ts.getTime()}|${id}`)
+ * decodeCursor(cursor) → {ingestedAt: Date, id: string} | null (null = restart list)
+ * Compound form: OR(lt(ingestedAt, c.ts), AND(eq(ingestedAt, c.ts), lt(id, c.id)))
+ * handles same-millisecond stability correctly.
+ */
+
+import { NextResponse } from 'next/server';
+import { and, desc, eq, gte, lt, inArray, or, type SQL } from 'drizzle-orm';
+
+import { getServerDb, schema } from '@/db/client';
+import {
+  authenticateRequest,
+  INVALID_API_KEY,
+  unauthenticatedResponse,
+} from '@/auth/request-auth';
+import type { AuthenticatedActor } from '@/auth/request-auth';
+import { resolveAcl } from '@/acl/resolver';
+import { ListQuery, toLedgerEventDto } from './_shared';
+
+// ---------------------------------------------------------------------------
+// Cursor codec (exported for testing)
+// ---------------------------------------------------------------------------
+
+export function encodeCursor(ts: Date, id: string): string {
+  return Buffer.from(`${ts.getTime()}|${id}`).toString('base64url');
+}
+
+export function decodeCursor(cursor: string): { ingestedAt: Date; id: string } | null {
+  if (!cursor) return null;
+  try {
+    const raw = Buffer.from(cursor, 'base64url').toString('utf-8');
+    const pipeIdx = raw.indexOf('|');
+    if (pipeIdx === -1) return null;
+    const msStr = raw.slice(0, pipeIdx);
+    const id = raw.slice(pipeIdx + 1);
+    const ms = Number(msStr);
+    if (!Number.isFinite(ms) || ms <= 0 || !id) return null;
+    return { ingestedAt: new Date(ms), id };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Owner resolution helpers
+// ---------------------------------------------------------------------------
+
+type LedgerRow = typeof schema.ledgerEvents.$inferSelect;
+
+/**
+ * For a set of (subjectType, subjectId) pairs, batch-resolve the ownerId
+ * for each known kind via one SELECT per kind.
+ * Returns a Map keyed by `${subjectType}:${subjectId}` → ownerId | null.
+ * Unknown kinds are absent from the map (caller treats as reject).
+ */
+async function batchResolveOwners(
+  rows: LedgerRow[],
+): Promise<Map<string, string | null>> {
+  const db = getServerDb();
+  const result = new Map<string, string | null>();
+
+  // Group row subjectIds by subjectType
+  const byKind = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const ids = byKind.get(row.subjectType) ?? new Set<string>();
+    ids.add(row.subjectId);
+    byKind.set(row.subjectType, ids);
+  }
+
+  for (const [kind, ids] of byKind) {
+    const idList = Array.from(ids);
+    const key = (id: string) => `${kind}:${id}`;
+
+    switch (kind) {
+      case 'material': {
+        const rows2 = await db
+          .select({ id: schema.materials.id, ownerId: schema.materials.ownerId })
+          .from(schema.materials)
+          .where(inArray(schema.materials.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'collection': {
+        const rows2 = await db
+          .select({ id: schema.collections.id, ownerId: schema.collections.ownerId })
+          .from(schema.collections)
+          .where(inArray(schema.collections.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'loot': {
+        // loot has no direct ownerId — inherit from parent collection
+        const rows2 = await db
+          .select({ id: schema.loot.id, ownerId: schema.collections.ownerId })
+          .from(schema.loot)
+          .innerJoin(schema.collections, eq(schema.loot.collectionId, schema.collections.id))
+          .where(inArray(schema.loot.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'quarantine_item': {
+        // quarantine_items → stash_roots.owner_id
+        const rows2 = await db
+          .select({ id: schema.quarantineItems.id, ownerId: schema.stashRoots.ownerId })
+          .from(schema.quarantineItems)
+          .innerJoin(schema.stashRoots, eq(schema.quarantineItems.stashRootId, schema.stashRoots.id))
+          .where(inArray(schema.quarantineItems.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'watchlist_subscription': {
+        const rows2 = await db
+          .select({ id: schema.watchlistSubscriptions.id, ownerId: schema.watchlistSubscriptions.ownerId })
+          .from(schema.watchlistSubscriptions)
+          .where(inArray(schema.watchlistSubscriptions.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'printer': {
+        const rows2 = await db
+          .select({ id: schema.printers.id, ownerId: schema.printers.ownerId })
+          .from(schema.printers)
+          .where(inArray(schema.printers.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'slicer': {
+        const rows2 = await db
+          .select({ id: schema.forgeSlicers.id, ownerId: schema.forgeSlicers.ownerId })
+          .from(schema.forgeSlicers)
+          .where(inArray(schema.forgeSlicers.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'dispatch_job': {
+        const rows2 = await db
+          .select({ id: schema.dispatchJobs.id, ownerId: schema.dispatchJobs.ownerId })
+          .from(schema.dispatchJobs)
+          .where(inArray(schema.dispatchJobs.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'slicer_profile': {
+        const rows2 = await db
+          .select({ id: schema.slicerProfiles.id, ownerId: schema.slicerProfiles.ownerId })
+          .from(schema.slicerProfiles)
+          .where(inArray(schema.slicerProfiles.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      case 'print_setting': {
+        const rows2 = await db
+          .select({ id: schema.printSettings.id, ownerId: schema.printSettings.ownerId })
+          .from(schema.printSettings)
+          .where(inArray(schema.printSettings.id, idList));
+        for (const r of rows2) {
+          result.set(key(r.id), r.ownerId ?? null);
+        }
+        break;
+      }
+
+      default:
+        // Unknown kind — entries absent from result map → will be rejected
+        break;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Filter rows to only those the given non-admin user is allowed to see.
+ * Uses per-row resolveAcl with batched owner resolution.
+ * Unknown subject kinds are rejected (safe default for non-admin).
+ */
+async function filterRowsByOwnership(
+  rows: LedgerRow[],
+  user: AuthenticatedActor,
+): Promise<LedgerRow[]> {
+  if (rows.length === 0) return [];
+
+  const ownerMap = await batchResolveOwners(rows);
+
+  return rows.filter((row) => {
+    const mapKey = `${row.subjectType}:${row.subjectId}`;
+    if (!ownerMap.has(mapKey)) {
+      // Unknown kind or resource not found — reject for non-admin
+      return false;
+    }
+    const ownerId = ownerMap.get(mapKey) ?? undefined;
+
+    // Map subjectType to the ACL resource kind.
+    // Note: the ACL resolver uses different kind names for printer/slicer
+    // versus the ledger subjectType names.
+    let resourceKind: Parameters<typeof resolveAcl>[0]['resource']['kind'];
+    switch (row.subjectType) {
+      case 'material': resourceKind = 'material'; break;
+      case 'collection': resourceKind = 'collection'; break;
+      case 'loot': resourceKind = 'loot'; break;
+      case 'quarantine_item': resourceKind = 'quarantine_item'; break;
+      case 'watchlist_subscription': resourceKind = 'watchlist_subscription'; break;
+      case 'printer': resourceKind = 'printer'; break;
+      case 'slicer': resourceKind = 'slicer'; break;
+      case 'dispatch_job':
+        // dispatch_job has no ACL kind in the resolver — reject for non-admin
+        return false;
+      case 'slicer_profile':
+        // grimoire_entry covers slicer profiles but uses different kind name
+        // The resolver has 'grimoire_entry' but the subjectType is 'slicer_profile'.
+        // Treat as grimoire_entry since it maps to the same ownership model.
+        resourceKind = 'grimoire_entry';
+        break;
+      case 'print_setting':
+        // Same as above
+        resourceKind = 'grimoire_entry';
+        break;
+      default:
+        // Unknown kind — reject
+        return false;
+    }
+
+    const decision = resolveAcl({
+      user,
+      resource: { kind: resourceKind, id: row.subjectId, ownerId } as Parameters<typeof resolveAcl>[0]['resource'],
+      action: 'read',
+    });
+    return decision.allowed;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/ledger
+// ---------------------------------------------------------------------------
+
+export async function GET(req: Request) {
+  // Auth
+  const authResult = await authenticateRequest(req);
+  if (!authResult || authResult === INVALID_API_KEY) {
+    return unauthenticatedResponse(authResult as null | typeof INVALID_API_KEY);
+  }
+  const user = authResult;
+  const isAdmin = user.role === 'admin';
+
+  // Parse query params
+  const url = new URL(req.url);
+  const parsed = ListQuery.safeParse(Object.fromEntries(url.searchParams));
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'invalid-query', issues: parsed.error.issues },
+      { status: 400 },
+    );
+  }
+  const q = parsed.data;
+
+  const db = getServerDb();
+  const conditions: SQL[] = [];
+
+  if (q.subject_type) conditions.push(eq(schema.ledgerEvents.subjectType, q.subject_type));
+  if (q.subject_id) conditions.push(eq(schema.ledgerEvents.subjectId, q.subject_id));
+  if (q.kind) conditions.push(eq(schema.ledgerEvents.kind, q.kind));
+  if (q.actor_user_id) conditions.push(eq(schema.ledgerEvents.actorUserId, q.actor_user_id));
+  if (q.occurred_after) conditions.push(gte(schema.ledgerEvents.occurredAt, new Date(q.occurred_after)));
+  if (q.occurred_before) conditions.push(lt(schema.ledgerEvents.occurredAt, new Date(q.occurred_before)));
+  if (q.ingested_after) conditions.push(gte(schema.ledgerEvents.ingestedAt, new Date(q.ingested_after)));
+  if (q.ingested_before) conditions.push(lt(schema.ledgerEvents.ingestedAt, new Date(q.ingested_before)));
+
+  if (q.cursor) {
+    const c = decodeCursor(q.cursor);
+    if (c) {
+      conditions.push(
+        or(
+          lt(schema.ledgerEvents.ingestedAt, c.ingestedAt),
+          and(
+            eq(schema.ledgerEvents.ingestedAt, c.ingestedAt),
+            lt(schema.ledgerEvents.id, c.id),
+          ),
+        ) as SQL,
+      );
+    }
+    // If cursor is malformed, decodeCursor returns null — list starts fresh (no cursor condition)
+  }
+
+  // Over-fetch by 4x for non-admin to absorb post-filter rejection.
+  // TODO: denormalize ledger_events.subject_owner_id at write-time so this becomes
+  // a simple WHERE clause. Captured as future-optimization.
+  const fetchLimit = isAdmin ? q.limit + 1 : (q.limit + 1) * 4;
+
+  const rows = await db
+    .select()
+    .from(schema.ledgerEvents)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(schema.ledgerEvents.ingestedAt), desc(schema.ledgerEvents.id))
+    .limit(fetchLimit);
+
+  const visible = isAdmin
+    ? rows
+    : await filterRowsByOwnership(rows, user);
+
+  const hasMore = visible.length > q.limit;
+  const page = hasMore ? visible.slice(0, q.limit) : visible;
+  const items = page.map(toLedgerEventDto);
+  const tail = items[items.length - 1];
+  const nextCursor =
+    hasMore && tail
+      ? encodeCursor(new Date(tail.ingestedAt), tail.id)
+      : null;
+
+  return NextResponse.json({ items, nextCursor });
+}

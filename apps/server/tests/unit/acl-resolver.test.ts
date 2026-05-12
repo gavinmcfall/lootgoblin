@@ -57,6 +57,9 @@ function apiKey(ownerId?: string): AclResource {
 function ledgerEvent(): AclResource {
   return { kind: 'ledger_event' };
 }
+function quarantineItem(ownerId?: string): AclResource {
+  return { kind: 'quarantine_item', ownerId, id: ownerId ? `qi-${ownerId}` : undefined };
+}
 
 type TestRow = [
   description: string,
@@ -91,6 +94,7 @@ describe('unauthenticated user (null) → always Deny(unauthenticated)', () => {
     ['instance_config read',   null, instanceConfig(),       'read',   false, 'unauthenticated'],
     ['api_key read',           null, apiKey('user-a'),       'read',   false, 'unauthenticated'],
     ['ledger_event read',      null, ledgerEvent(),          'read',   false, 'unauthenticated'],
+    ['quarantine_item read',   null, quarantineItem('user-a'), 'read', false, 'unauthenticated'],
   ];
 
   it.each(cases)('%s', (_desc, user, resource, action, expectedAllowed, expectedReason) => {
@@ -421,6 +425,38 @@ describe('ledger_event', () => {
     ['push ledger_event wrong-action',     USER_A, ledgerEvent(), 'push',   false, 'wrong-action'],
     ['admin update ledger_event wrong',    ADMIN,  ledgerEvent(), 'update', false, 'wrong-action'],
     ['admin delete ledger_event wrong',    ADMIN,  ledgerEvent(), 'delete', false, 'wrong-action'],
+  ];
+
+  it.each(cases)('%s', (_desc, user, resource, action, expectedAllowed, expectedReason) => {
+    const result = resolveAcl({ user, resource, action });
+    expect(result.allowed).toBe(expectedAllowed);
+    if (!result.allowed && expectedReason) {
+      expect(result.reason).toBe(expectedReason);
+    }
+  });
+});
+
+// ── quarantine_item ───────────────────────────────────────────────────────────
+
+describe('quarantine_item', () => {
+  const cases: TestRow[] = [
+    // read: owner or admin allowed
+    ['owner reads own quarantine item',        USER_A, quarantineItem('user-a'), 'read',   true],
+    ['admin reads cross-owner quarantine item',ADMIN,  quarantineItem('user-a'), 'read',   true],
+    ['user reads other quarantine item',       USER_A, quarantineItem('user-b'), 'read',   false, 'not-owner'],
+
+    // update: owner-only; admin is NOT exempt (write cross-owner → not-owner)
+    ['owner updates own quarantine item',      USER_A, quarantineItem('user-a'), 'update', true],
+    ['admin updates cross-owner item',         ADMIN,  quarantineItem('user-a'), 'update', false, 'not-owner'],
+    ['user updates other quarantine item',     USER_A, quarantineItem('user-b'), 'update', false, 'not-owner'],
+
+    // delete: same owner-only policy as update
+    ['owner deletes own quarantine item',      USER_A, quarantineItem('user-a'), 'delete', true],
+    ['admin deletes cross-owner item',         ADMIN,  quarantineItem('user-a'), 'delete', false, 'not-owner'],
+
+    // create / push: wrong-action (pipeline creates, no direct API)
+    ['create quarantine item is wrong-action', USER_A, quarantineItem('user-a'), 'create', false, 'wrong-action'],
+    ['push quarantine item is wrong-action',   USER_A, quarantineItem('user-a'), 'push',   false, 'wrong-action'],
   ];
 
   it.each(cases)('%s', (_desc, user, resource, action, expectedAllowed, expectedReason) => {

@@ -41,10 +41,10 @@ function uid() {
   return crypto.randomUUID();
 }
 
-async function seedUser(id = uid(), role: 'admin' | 'user' = 'user') {
+async function seedUser(id = uid()) {
   await db().insert(user).values({
     id,
-    name: role === 'admin' ? 'Admin User' : 'Regular User',
+    name: 'Test User',
     email: `${id}@example.com`,
     emailVerified: false,
     createdAt: new Date(),
@@ -123,7 +123,7 @@ describe('resolveQuarantineAcl — owner can write', () => {
 describe('resolveQuarantineAcl — admin read cross-owner', () => {
   it('returns allowed:true for admin reading another user\'s quarantine item', async () => {
     const ownerId = await seedUser();
-    const adminId = await seedUser(uid(), 'admin');
+    const adminId = await seedUser(uid());
     const rootId = await seedStashRoot(ownerId);
     const itemId = await seedQuarantineItem(rootId);
 
@@ -141,7 +141,7 @@ describe('resolveQuarantineAcl — admin read cross-owner', () => {
 describe('resolveQuarantineAcl — admin write cross-owner is denied', () => {
   it('returns allowed:false with reason not-found when admin writes to another user\'s item', async () => {
     const ownerId = await seedUser();
-    const adminId = await seedUser(uid(), 'admin');
+    const adminId = await seedUser(uid());
     const rootId = await seedStashRoot(ownerId);
     const itemId = await seedQuarantineItem(rootId);
 

@@ -18,6 +18,7 @@ import { FleetCard } from '@/components/forge/FleetCard';
 import { FleetPowerRow } from '@/components/forge/FleetPowerRow';
 import { PrinterDot } from '@/components/forge/PrinterDot';
 import { printerKindLabel, type PrinterState } from '@/components/forge/forge-labels';
+import { ForgeTabs } from '@/components/forge/ForgeTabs';
 
 // ── DTO types (mirrors route.ts responses) ─────────────────────────────────
 
@@ -166,6 +167,7 @@ export default function ForgeFleetPage() {
   if (vms.length === 0) {
     return (
       <div className="flex flex-col gap-5">
+        <ForgeTabs />
         <SectionTitle meta="fleet">Your Fleet</SectionTitle>
         <EmptyHint>No printers registered yet.</EmptyHint>
       </div>
@@ -174,6 +176,9 @@ export default function ForgeFleetPage() {
 
   return (
     <div className="flex flex-col gap-5">
+      {/* Forge sub-nav */}
+      <ForgeTabs />
+
       {/* Header */}
       <div className="flex items-end justify-between gap-4">
         <div>

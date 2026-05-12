@@ -11,8 +11,13 @@
  * ACL model (locked 2026-05-12: admin + subject-owner)
  * ──────────────────────────────────────────────────────
  * Admin: reads all events.
- * Non-admin: reads events WHERE the subject resource is owned by the caller,
- * as determined by resolveAcl({user, resource: {kind, id, ownerId}, action:'read'}).
+ * Non-admin: reads events WHERE the subject resource is DIRECTLY OWNED by the caller.
+ *
+ * Non-admin Receipts policy: ownership-only. Even for kinds that are fleet-readable
+ * via resolveAcl (loot, collection, printer, slicer), the Receipts surface filters by
+ * direct ownership. This matches the *arr History pattern and the multi-household
+ * privacy model — your housemate's actions on shared fleet resources don't appear in
+ * your receipts.
  *
  * Owner resolution is batched per subjectType (one SELECT IN per kind). Supported
  * kinds with ownership resolution:
@@ -23,9 +28,11 @@
  *   watchlist_subscription — watchlist_subscriptions.owner_id
  *   printer          — printers.owner_id (forge)
  *   slicer           — forge_slicers.owner_id
- *   dispatch_job     — dispatch_jobs.owner_id
  *   slicer_profile   — slicer_profiles.owner_id (grimoire)
  *   print_setting    — print_settings.owner_id (grimoire)
+ *
+ * Kinds rejected for non-admin (no ownership path):
+ *   dispatch_job     — no ACL kind in resolver yet; see project_acl_resolver_gaps memory
  *
  * Unknown subject kinds (e.g. 'system_event', 'bulk-action', 'loot-file',
  * 'stash_root', 'source_credential', 'mix_batch', or any future kind not listed
@@ -33,14 +40,22 @@
  * cannot see events whose ownership cannot be determined.
  *
  * TODO: denormalize ledger_events.subject_owner_id at write-time so reads become
- * a simple WHERE clause (no per-row owner lookup). Captured as a future optimization
- * to eliminate the 4x over-fetch + batched owner-resolution pattern.
+ * a simple WHERE clause (no per-row owner lookup). This is required for true
+ * pagination correctness — the current over-fetch is a best-effort heuristic.
  *
- * Over-fetch
- * ──────────
- * Non-admin: fetch (limit+1)*4 rows from DB to absorb post-filter rejection.
- * Factor 4 is a pragmatic estimate for a ~25% per-user fraction in a 3-household
- * instance. If pagination feels sparse in practice, tune to 8x or denormalize.
+ * Over-fetch — PREMATURE TERMINATION POSSIBLE
+ * ─────────────────────────────────────────────
+ * Non-admin: fetch (limit+1)*OWNER_FILTER_OVERFETCH rows from DB to absorb
+ * post-filter rejection. Factor OWNER_FILTER_OVERFETCH (currently 4) is a pragmatic
+ * estimate for a ~25% per-user fraction in a 3-household instance.
+ *
+ * WARNING: This heuristic can prematurely terminate pagination. If a non-admin owns
+ * very few resources and the over-fetched window is entirely cross-owner, nextCursor
+ * will be null even though more owned events exist further back in the timeline. For
+ * true correctness, denormalize subject_owner_id at write-time.
+ *
+ * If pagination feels sparse in practice, tune OWNER_FILTER_OVERFETCH to 8 or
+ * denormalize.
  *
  * Cursor codec
  * ────────────
@@ -60,8 +75,17 @@ import {
   unauthenticatedResponse,
 } from '@/auth/request-auth';
 import type { AuthenticatedActor } from '@/auth/request-auth';
-import { resolveAcl } from '@/acl/resolver';
 import { ListQuery, toLedgerEventDto } from './_shared';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Over-fetch multiplier for non-admin pagination.
+ * See header docstring for the PREMATURE TERMINATION caveat.
+ */
+const OWNER_FILTER_OVERFETCH = 4;
 
 // ---------------------------------------------------------------------------
 // Cursor codec (exported for testing)
@@ -95,9 +119,10 @@ type LedgerRow = typeof schema.ledgerEvents.$inferSelect;
 
 /**
  * For a set of (subjectType, subjectId) pairs, batch-resolve the ownerId
- * for each known kind via one SELECT per kind.
- * Returns a Map keyed by `${subjectType}:${subjectId}` → ownerId | null.
- * Unknown kinds are absent from the map (caller treats as reject).
+ * for each supported kind via one SELECT per kind.
+ * Returns a Map keyed by `${subjectType}:${subjectId}` → ownerId.
+ * Unsupported kinds (e.g. dispatch_job, system_event) are absent from the map
+ * — filterRowsByOwnership treats absence as reject.
  */
 async function batchResolveOwners(
   rows: LedgerRow[],
@@ -199,17 +224,6 @@ async function batchResolveOwners(
         break;
       }
 
-      case 'dispatch_job': {
-        const rows2 = await db
-          .select({ id: schema.dispatchJobs.id, ownerId: schema.dispatchJobs.ownerId })
-          .from(schema.dispatchJobs)
-          .where(inArray(schema.dispatchJobs.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
       case 'slicer_profile': {
         const rows2 = await db
           .select({ id: schema.slicerProfiles.id, ownerId: schema.slicerProfiles.ownerId })
@@ -242,9 +256,14 @@ async function batchResolveOwners(
 }
 
 /**
- * Filter rows to only those the given non-admin user is allowed to see.
- * Uses per-row resolveAcl with batched owner resolution.
- * Unknown subject kinds are rejected (safe default for non-admin).
+ * Filter rows to only those the given non-admin user directly owns.
+ *
+ * Non-admin Receipts policy: ownership-only. We do NOT delegate to resolveAcl
+ * because resolveAcl returns ALLOW for fleet-readable kinds (loot, collection,
+ * printer, slicer) for any authenticated user — but Receipts must show only
+ * the caller's own events even on those shared kinds.
+ *
+ * Unknown subject kinds and resources not found in ownerByKey are rejected.
  */
 async function filterRowsByOwnership(
   rows: LedgerRow[],
@@ -252,52 +271,20 @@ async function filterRowsByOwnership(
 ): Promise<LedgerRow[]> {
   if (rows.length === 0) return [];
 
-  const ownerMap = await batchResolveOwners(rows);
+  const ownerByKey = await batchResolveOwners(rows);
 
   return rows.filter((row) => {
-    const mapKey = `${row.subjectType}:${row.subjectId}`;
-    if (!ownerMap.has(mapKey)) {
-      // Unknown kind or resource not found — reject for non-admin
-      return false;
-    }
-    const ownerId = ownerMap.get(mapKey) ?? undefined;
-
-    // Map subjectType to the ACL resource kind.
-    // Note: the ACL resolver uses different kind names for printer/slicer
-    // versus the ledger subjectType names.
-    let resourceKind: Parameters<typeof resolveAcl>[0]['resource']['kind'];
     switch (row.subjectType) {
-      case 'material': resourceKind = 'material'; break;
-      case 'collection': resourceKind = 'collection'; break;
-      case 'loot': resourceKind = 'loot'; break;
-      case 'quarantine_item': resourceKind = 'quarantine_item'; break;
-      case 'watchlist_subscription': resourceKind = 'watchlist_subscription'; break;
-      case 'printer': resourceKind = 'printer'; break;
-      case 'slicer': resourceKind = 'slicer'; break;
       case 'dispatch_job':
-        // dispatch_job has no ACL kind in the resolver — reject for non-admin
+        // Rejected for non-admin: resolveAcl has no 'dispatch_job' kind yet (see project_acl_resolver_gaps memory).
+        // When the resolver is extended, also add dispatch_job back to batchResolveOwners.
         return false;
-      case 'slicer_profile':
-        // grimoire_entry covers slicer profiles but uses different kind name
-        // The resolver has 'grimoire_entry' but the subjectType is 'slicer_profile'.
-        // Treat as grimoire_entry since it maps to the same ownership model.
-        resourceKind = 'grimoire_entry';
-        break;
-      case 'print_setting':
-        // Same as above
-        resourceKind = 'grimoire_entry';
-        break;
-      default:
-        // Unknown kind — reject
-        return false;
+      default: {
+        const ownerId = ownerByKey.get(`${row.subjectType}:${row.subjectId}`);
+        if (!ownerId) return false; // unknown subjectType or resource not found → reject
+        return ownerId === user.id;  // owner-only, ignoring resolveAcl's fleet-visible read policy
+      }
     }
-
-    const decision = resolveAcl({
-      user,
-      resource: { kind: resourceKind, id: row.subjectId, ownerId } as Parameters<typeof resolveAcl>[0]['resource'],
-      action: 'read',
-    });
-    return decision.allowed;
   });
 }
 
@@ -353,10 +340,11 @@ export async function GET(req: Request) {
     // If cursor is malformed, decodeCursor returns null — list starts fresh (no cursor condition)
   }
 
-  // Over-fetch by 4x for non-admin to absorb post-filter rejection.
+  // Over-fetch by OWNER_FILTER_OVERFETCH for non-admin to absorb post-filter rejection.
+  // See header docstring for the PREMATURE TERMINATION caveat.
   // TODO: denormalize ledger_events.subject_owner_id at write-time so this becomes
   // a simple WHERE clause. Captured as future-optimization.
-  const fetchLimit = isAdmin ? q.limit + 1 : (q.limit + 1) * 4;
+  const fetchLimit = isAdmin ? q.limit + 1 : (q.limit + 1) * OWNER_FILTER_OVERFETCH;
 
   const rows = await db
     .select()

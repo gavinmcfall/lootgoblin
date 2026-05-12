@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 const TABS = [
   { href: '/forge/printers', label: 'Printers' },
   { href: '/forge/dispatch', label: 'Dispatch' },
+  { href: '/forge/inboxes', label: 'Inboxes' },
 ] as const;
 
 /** Sub-nav tab strip rendered at the top of each /forge/* page. */

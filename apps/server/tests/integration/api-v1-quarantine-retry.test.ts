@@ -4,17 +4,18 @@
  * Real SQLite. Auth mocked via the request-auth shim.
  *
  * Coverage:
- *   - 200 owner retry on unresolved item: new ingest_job inserted, quarantine resolved,
- *         ledger event recorded with related_resources
+ *   - 200 owner retry on unresolved item: new ingest_job inserted (clone of original),
+ *         quarantine resolved, ledger event recorded with related_resources + originalIngestJobId
  *   - 200 idempotent re-retry on already-retried item: same ingestJobId, no new ingest_job,
  *         no second ledger event
- *   - 409 retry on already-dismissed item: error: 'already-dismissed'
+ *   - 409 retry on already-dismissed item (via real DELETE flow): error: 'already-dismissed'
+ *   - 422 retry on orphaned quarantine item (no original ingest_job): no-source-job
  *   - 401 unauthenticated
  *   - 404 non-owner POST (existence hidden)
  *   - 404 unknown id
  *   - 404 admin cross-owner POST (admin may read, not write cross-tenant)
  *   - 200 empty body accepted (RetryBodySchema all-optional)
- *   - 200 body with override_classifier_hint accepted
+ *   - 200 body with override_classifier_hint accepted + hint lands in ledger payload
  */
 
 import { describe, it, expect, beforeAll, vi } from 'vitest';
@@ -104,6 +105,20 @@ async function seedStashRoot(ownerId: string): Promise<string> {
   return id;
 }
 
+async function seedCollection(ownerId: string, stashRootId: string): Promise<string> {
+  const id = uid();
+  await db().insert(schema.collections).values({
+    id,
+    ownerId,
+    stashRootId,
+    name: `Retry Test Collection ${id}`,
+    pathTemplate: '{creator|slug}/{title|slug}',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+  return id;
+}
+
 async function seedQuarantineItem(
   stashRootId: string,
   overrides: {
@@ -126,6 +141,43 @@ async function seedQuarantineItem(
   return id;
 }
 
+/**
+ * Seed a realistic original ingest_job that caused a quarantine item to exist.
+ *
+ * Uses 'cults3d' as sourceId (a real registered adapter). targetKind is 'url'
+ * and targetPayload contains a real Cults3D URL. collectionId is optional —
+ * pass the id of a seeded collection to exercise the FK carry-through.
+ */
+async function seedOriginalIngestJob(
+  ownerId: string,
+  quarantineItemId: string,
+  collectionId: string | null = null,
+): Promise<string> {
+  const id = uid();
+  await db().insert(schema.ingestJobs).values({
+    id,
+    ownerId,
+    sourceId: 'cults3d',
+    targetKind: 'url',
+    targetPayload: JSON.stringify({
+      kind: 'url',
+      url: 'https://cults3d.com/en/3d-model/test',
+    }),
+    collectionId,
+    status: 'quarantined',
+    lootId: null,
+    quarantineItemId,
+    failureReason: 'integrity-failed',
+    failureDetails: null,
+    attempt: 1,
+    idempotencyKey: null,
+    parentSubscriptionId: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+  return id;
+}
+
 // ---------------------------------------------------------------------------
 // Request builder
 // ---------------------------------------------------------------------------
@@ -136,6 +188,10 @@ function makePost(url: string, body: unknown = {}): Request {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+function makeDelete(url: string): Request {
+  return new Request(url, { method: 'DELETE' });
 }
 
 // ---------------------------------------------------------------------------
@@ -260,14 +316,17 @@ describe('POST /api/v1/quarantine/[id]/retry', () => {
     expect(res.status).toBe(404);
   });
 
-  it('owner retry on unresolved item: 200, new ingest_job inserted, quarantine resolved, ledger event recorded', async () => {
+  it('owner retry on unresolved item: 200, clones original ingest_job, quarantine resolved, ledger event recorded', async () => {
     const userId = await seedUser();
     const root = await seedStashRoot(userId);
+    const collectionId = await seedCollection(userId, root);
     const itemPath = `/tmp/quarantine/retry-owner-test-${uid()}.stl`;
     const itemId = await seedQuarantineItem(root, {
       reason: 'needs-user-input',
       path: itemPath,
     });
+    // Seed the original job that quarantined this item.
+    const originalJobId = await seedOriginalIngestJob(userId, itemId, collectionId);
 
     const beforeRetry = new Date();
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
@@ -284,6 +343,8 @@ describe('POST /api/v1/quarantine/[id]/retry', () => {
     expect(body.ok).toBe(true);
     expect(typeof body.ingestJobId).toBe('string');
     expect(body.ingestJobId.length).toBeGreaterThan(0);
+    // Must be a NEW job — not the original.
+    expect(body.ingestJobId).not.toBe(originalJobId);
 
     // Quarantine item must be resolved.
     const row = await getQuarantineRow(itemId);
@@ -291,15 +352,22 @@ describe('POST /api/v1/quarantine/[id]/retry', () => {
     expect(row!.resolvedAt).not.toBeNull();
     expect(row!.resolvedAt!.getTime()).toBeGreaterThanOrEqual(beforeRetry.getTime());
 
-    // New ingest_job must exist with correct fields.
+    // New ingest_job must be a clone of the original.
     const job = await getIngestJob(body.ingestJobId);
     expect(job).not.toBeNull();
     expect(job!.ownerId).toBe(userId);
     expect(job!.status).toBe('queued');
-    // targetPayload must include the file:// URL derived from the quarantined path.
+    // Clone must carry original sourceId, targetKind, targetPayload, collectionId.
+    expect(job!.sourceId).toBe('cults3d');
+    expect(job!.targetKind).toBe('url');
     const parsed = JSON.parse(job!.targetPayload) as { kind: string; url: string };
     expect(parsed.kind).toBe('url');
-    expect(parsed.url).toBe(`file://${itemPath}`);
+    expect(parsed.url).toBe('https://cults3d.com/en/3d-model/test');
+    expect(job!.collectionId).toBe(collectionId);
+    // idempotencyKey must NOT be copied.
+    expect(job!.idempotencyKey).toBeNull();
+    // quarantineItemId must be null on the new job.
+    expect(job!.quarantineItemId).toBeNull();
 
     // Ledger event must be recorded.
     const ev = await getLedgerEvent(itemId, 'quarantine.retried');
@@ -309,27 +377,38 @@ describe('POST /api/v1/quarantine/[id]/retry', () => {
     expect(ev!.subjectId).toBe(itemId);
     expect(ev!.actorUserId).toBe(userId);
 
-    // relatedResources must include the new ingest_job.
+    // relatedResources must include both the new job and the original.
     const related = ev!.relatedResources as Array<{
       kind: string;
       id: string;
       role: string;
     }>;
     expect(Array.isArray(related)).toBe(true);
-    const jobRef = related.find((r) => r.kind === 'ingest_job');
-    expect(jobRef).toBeDefined();
-    expect(jobRef!.id).toBe(body.ingestJobId);
-    expect(jobRef!.role).toBe('retry-of');
+    const retryRef = related.find((r) => r.kind === 'ingest_job' && r.role === 'retry-of');
+    expect(retryRef).toBeDefined();
+    expect(retryRef!.id).toBe(body.ingestJobId);
+    const originalRef = related.find((r) => r.kind === 'ingest_job' && r.role === 'original');
+    expect(originalRef).toBeDefined();
+    expect(originalRef!.id).toBe(originalJobId);
+
+    // Payload must carry originalIngestJobId.
+    const payload = JSON.parse(ev!.payload!) as {
+      stashRootId: string;
+      newIngestJobId: string;
+      originalIngestJobId: string;
+    };
+    expect(payload.newIngestJobId).toBe(body.ingestJobId);
+    expect(payload.originalIngestJobId).toBe(originalJobId);
   });
 
   it('idempotent re-retry: same ingestJobId returned, no new ingest_job, no second ledger event', async () => {
     const userId = await seedUser();
     const root = await seedStashRoot(userId);
-    const itemPath = `/tmp/quarantine/retry-idem-${uid()}.stl`;
     const itemId = await seedQuarantineItem(root, {
       reason: 'integrity-failed',
-      path: itemPath,
     });
+    // Seed original job.
+    await seedOriginalIngestJob(userId, itemId);
 
     const { POST } = await import(
       '../../src/app/api/v1/quarantine/[id]/retry/route'
@@ -371,14 +450,27 @@ describe('POST /api/v1/quarantine/[id]/retry', () => {
     expect(ledgerCountAfterSecond).toBe(1);
   });
 
-  it('returns 409 with error: already-dismissed when item was dismissed, not retried', async () => {
+  it('returns 409 with error: already-dismissed when item was dismissed via DELETE (not retried)', async () => {
+    // Seed resolvedAt via DELETE (real dismiss flow) — exercises
+    // "no quarantine.retried event in ledger → was dismissed" path.
     const userId = await seedUser();
     const root = await seedStashRoot(userId);
     const itemId = await seedQuarantineItem(root, {
       reason: 'template-incompatible',
-      resolvedAt: new Date(), // pre-dismissed
     });
+    // Seed original job so the item is in a realistic state.
+    await seedOriginalIngestJob(userId, itemId);
 
+    // Use the real DELETE endpoint to dismiss — writes a quarantine.dismissed
+    // ledger event but NOT a quarantine.retried event.
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { DELETE } = await import('../../src/app/api/v1/quarantine/[id]/route');
+    const dismissRes = await DELETE(makeDelete(`http://local/api/v1/quarantine/${itemId}`), {
+      params: Promise.resolve({ id: itemId }),
+    });
+    expect(dismissRes.status).toBe(200);
+
+    // Now attempt retry — must get 409 because no quarantine.retried event exists.
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { POST } = await import(
       '../../src/app/api/v1/quarantine/[id]/retry/route'
@@ -392,12 +484,35 @@ describe('POST /api/v1/quarantine/[id]/retry', () => {
     expect(body.error).toBe('already-dismissed');
   });
 
+  it('returns 422 with error: no-source-job when quarantine item has no original ingest_job', async () => {
+    const userId = await seedUser();
+    const root = await seedStashRoot(userId);
+    // Orphaned item — no original ingest_job seeded.
+    const itemId = await seedQuarantineItem(root, {
+      reason: 'integrity-failed',
+    });
+
+    mockAuthenticate.mockResolvedValueOnce(actor(userId));
+    const { POST } = await import(
+      '../../src/app/api/v1/quarantine/[id]/retry/route'
+    );
+    const res = await POST(
+      makePost(`http://local/api/v1/quarantine/${itemId}/retry`),
+      { params: Promise.resolve({ id: itemId }) },
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe('no-source-job');
+    expect(typeof body.message).toBe('string');
+  });
+
   it('accepts an empty body (all fields optional)', async () => {
     const userId = await seedUser();
     const root = await seedStashRoot(userId);
     const itemId = await seedQuarantineItem(root, {
       path: `/tmp/quarantine/retry-empty-body-${uid()}.stl`,
     });
+    await seedOriginalIngestJob(userId, itemId);
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { POST } = await import(
@@ -412,12 +527,13 @@ describe('POST /api/v1/quarantine/[id]/retry', () => {
     expect(body.ok).toBe(true);
   });
 
-  it('accepts body with override_classifier_hint', async () => {
+  it('accepts body with override_classifier_hint and hint lands in ledger payload', async () => {
     const userId = await seedUser();
     const root = await seedStashRoot(userId);
     const itemId = await seedQuarantineItem(root, {
       path: `/tmp/quarantine/retry-hint-${uid()}.stl`,
     });
+    await seedOriginalIngestJob(userId, itemId);
 
     mockAuthenticate.mockResolvedValueOnce(actor(userId));
     const { POST } = await import(
@@ -432,6 +548,12 @@ describe('POST /api/v1/quarantine/[id]/retry', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; ingestJobId: string };
     expect(body.ok).toBe(true);
+
+    // Verify hint is recorded in the ledger payload.
+    const ev = await getLedgerEvent(itemId, 'quarantine.retried');
+    expect(ev).not.toBeNull();
+    const payload = JSON.parse(ev!.payload!) as { overrideClassifierHint?: string };
+    expect(payload.overrideClassifierHint).toBe('filament-model');
   });
 
   it('rejects body with unknown keys (z.strict())', async () => {

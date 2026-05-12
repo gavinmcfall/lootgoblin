@@ -1,9 +1,27 @@
 /**
  * POST /api/v1/quarantine/[id]/retry — Quarantine HTTP Layer T5
  *
- * Re-enqueues the underlying ingest_job by inserting a fresh ingest_jobs row
- * derived from the quarantined file path, then marks the quarantine item as
+ * Re-enqueues the underlying ingest_job by cloning the original ingest_jobs row
+ * that caused this item to be quarantined, then marks the quarantine item as
  * resolved.
+ *
+ * Clone strategy
+ * ──────────────
+ * The original ingest_job that quarantined the item is the source of truth for
+ * sourceId, targetKind, targetPayload, collectionId, and ownerId. A fresh row
+ * is inserted carrying those values verbatim. Fields NOT copied:
+ *   - idempotencyKey  (caller-supplied; not retried)
+ *   - failureReason / failureDetails  (cleared for the fresh attempt)
+ *   - lootId  (not yet placed)
+ *   - parentSubscriptionId  (original lineage stays with the original job)
+ *   - quarantineItemId  (null on the new job — it's not quarantined yet)
+ *
+ * Orphaned quarantine items
+ * ─────────────────────────
+ * If no original ingest_job is found (quarantineItemId FK was SET NULL before
+ * the retry, or the item was created outside the normal pipeline), the route
+ * returns 422 {error: 'no-source-job'}. The caller must create a new ingest
+ * job from scratch via POST /api/v1/ingest.
  *
  * Auth model
  * ──────────
@@ -24,18 +42,9 @@
  *   409 {error: 'already-dismissed'}.  Dismissal is a terminal user intent;
  *   409 signals that the caller needs to make an explicit choice (e.g. create a
  *   new ingest job from scratch), unlike 200 which implies "safe to repeat".
- *
- * source_url derivation
- * ─────────────────────
- * quarantine_items.path is an absolute filesystem path.  The ingest pipeline
- * accepts a `FetchTarget` of kind 'url' where the url carries a file:// scheme.
- * targetPayload is stored as JSON: '{"kind":"url","url":"file:///abs/path.stl"}'.
- * sourceId is set to 'quarantine-retry' — a synthetic source marker that the
- * pipeline can detect downstream if it needs to handle retried quarantine items
- * differently from fresh URL submissions.
  */
 
-import { eq } from 'drizzle-orm';
+import { eq, desc, and } from 'drizzle-orm';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
@@ -108,32 +117,52 @@ export async function POST(
 
   // Idempotency: item already resolved — determine if it was retried or dismissed.
   if (item.resolvedAt !== null) {
-    return handleAlreadyResolved(id, actor.id);
+    return handleAlreadyResolved(id);
+  }
+
+  // Look up the original ingest_job that quarantined this item.
+  const db = getServerDb();
+  const originalJobs = await db
+    .select()
+    .from(schema.ingestJobs)
+    .where(eq(schema.ingestJobs.quarantineItemId, id))
+    .orderBy(desc(schema.ingestJobs.createdAt))
+    .limit(1);
+
+  const originalJob = originalJobs[0] ?? null;
+
+  if (!originalJob) {
+    // Orphaned quarantine item — no original ingest_job found. This happens
+    // when the FK was SET NULL (original job deleted) before retry, or the
+    // item was created outside the normal pipeline. Caller must use
+    // POST /api/v1/ingest to create a new job from scratch.
+    return NextResponse.json(
+      {
+        error: 'no-source-job',
+        message: 'cannot retry — original ingest job not found',
+      },
+      { status: 422 },
+    );
   }
 
   // Happy path — atomic transaction.
   const newJobId = randomUUID();
   const now = new Date();
-  const db = getServerDb();
-
-  // Derive the file:// URL from the absolute path stored on the quarantine item.
-  const fileUrl = `file://${item.path}`;
-  const targetPayload = JSON.stringify({ kind: 'url', url: fileUrl });
 
   try {
-    (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction(
+    const result = (db as unknown as { transaction: <T>(fn: (tx: unknown) => T) => T }).transaction(
       (tx) => {
         const t = tx as ReturnType<typeof getServerDb>;
 
-        // 1. Insert fresh ingest_jobs row.
+        // 1. Insert fresh ingest_jobs row cloned from the original.
         t.insert(schema.ingestJobs)
           .values({
             id: newJobId,
-            ownerId: actor.id,
-            sourceId: 'quarantine-retry',
-            targetKind: 'url',
-            targetPayload,
-            collectionId: null,
+            ownerId: originalJob.ownerId,
+            sourceId: originalJob.sourceId,
+            targetKind: originalJob.targetKind,
+            targetPayload: originalJob.targetPayload,
+            collectionId: originalJob.collectionId ?? null,
             status: 'queued',
             lootId: null,
             quarantineItemId: null,
@@ -159,12 +188,16 @@ export async function POST(
           actorUserId: actor.id,
           subjectType: 'quarantine_item',
           subjectId: id,
-          relatedResources: [{ kind: 'ingest_job', id: newJobId, role: 'retry-of' }],
+          relatedResources: [
+            { kind: 'ingest_job', id: newJobId, role: 'retry-of' },
+            { kind: 'ingest_job', id: originalJob.id, role: 'original' },
+          ],
           payload: {
             stashRootId: item.stashRootId,
             reason: item.reason,
             path: item.path,
             newIngestJobId: newJobId,
+            originalIngestJobId: originalJob.id,
             ...(body.override_classifier_hint !== undefined && {
               overrideClassifierHint: body.override_classifier_hint,
             }),
@@ -173,10 +206,12 @@ export async function POST(
           occurredAt: now,
           ingestedAt: now,
         });
+
+        return newJobId;
       },
     );
 
-    return NextResponse.json({ ok: true, ingestJobId: newJobId });
+    return NextResponse.json({ ok: true, ingestJobId: result });
   } catch (err) {
     if (err instanceof LedgerValidationError) {
       return NextResponse.json(
@@ -199,24 +234,24 @@ export async function POST(
  * Re-retry  → 200 with the existing ingestJobId (safe-to-repeat semantics).
  * Dismissed → 409 (the caller made a different terminal choice; signal it).
  */
-async function handleAlreadyResolved(
-  itemId: string,
-  actorUserId: string,
-): Promise<Response> {
-  void actorUserId; // not needed for the query but kept for future audit use
-
+async function handleAlreadyResolved(itemId: string): Promise<Response> {
   const db = getServerDb();
 
   // Look for a prior quarantine.retried ledger event for this item.
-  const priorEvents = await db
+  // Filter by kind + subjectType + subjectId to avoid an in-memory scan.
+  const retriedEvents = await db
     .select()
     .from(schema.ledgerEvents)
     .where(
-      eq(schema.ledgerEvents.subjectId, itemId),
+      and(
+        eq(schema.ledgerEvents.subjectId, itemId),
+        eq(schema.ledgerEvents.kind, 'quarantine.retried'),
+        eq(schema.ledgerEvents.subjectType, 'quarantine_item'),
+      ),
     )
-    .all();
+    .limit(1);
 
-  const retriedEvent = priorEvents.find((ev) => ev.kind === 'quarantine.retried');
+  const retriedEvent = retriedEvents[0] ?? null;
 
   if (retriedEvent) {
     // Was retried before — extract the ingestJobId from relatedResources.
@@ -225,7 +260,7 @@ async function handleAlreadyResolved(
       id: string;
       role: string;
     }> | null;
-    const jobRef = related?.find((r) => r.kind === 'ingest_job');
+    const jobRef = related?.find((r) => r.kind === 'ingest_job' && r.role === 'retry-of');
     return NextResponse.json({
       ok: true,
       ingestJobId: jobRef?.id ?? null,

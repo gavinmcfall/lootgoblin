@@ -66,7 +66,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { and, desc, eq, gte, lt, inArray, or, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, lt, or, type SQL } from 'drizzle-orm';
 
 import { getServerDb, schema } from '@/db/client';
 import {
@@ -76,6 +76,8 @@ import {
 } from '@/auth/request-auth';
 import type { AuthenticatedActor } from '@/auth/request-auth';
 import { ListQuery, toLedgerEventDto } from './_shared';
+import { batchResolveOwners } from './_owner-resolver';
+import type { LedgerRow } from './_owner-resolver';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -109,150 +111,6 @@ export function decodeCursor(cursor: string): { ingestedAt: Date; id: string } |
   } catch {
     return null;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Owner resolution helpers
-// ---------------------------------------------------------------------------
-
-type LedgerRow = typeof schema.ledgerEvents.$inferSelect;
-
-/**
- * For a set of (subjectType, subjectId) pairs, batch-resolve the ownerId
- * for each supported kind via one SELECT per kind.
- * Returns a Map keyed by `${subjectType}:${subjectId}` → ownerId.
- * Unsupported kinds (e.g. dispatch_job, system_event) are absent from the map
- * — filterRowsByOwnership treats absence as reject.
- */
-async function batchResolveOwners(
-  rows: LedgerRow[],
-): Promise<Map<string, string | null>> {
-  const db = getServerDb();
-  const result = new Map<string, string | null>();
-
-  // Group row subjectIds by subjectType
-  const byKind = new Map<string, Set<string>>();
-  for (const row of rows) {
-    const ids = byKind.get(row.subjectType) ?? new Set<string>();
-    ids.add(row.subjectId);
-    byKind.set(row.subjectType, ids);
-  }
-
-  for (const [kind, ids] of byKind) {
-    const idList = Array.from(ids);
-    const key = (id: string) => `${kind}:${id}`;
-
-    switch (kind) {
-      case 'material': {
-        const rows2 = await db
-          .select({ id: schema.materials.id, ownerId: schema.materials.ownerId })
-          .from(schema.materials)
-          .where(inArray(schema.materials.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      case 'collection': {
-        const rows2 = await db
-          .select({ id: schema.collections.id, ownerId: schema.collections.ownerId })
-          .from(schema.collections)
-          .where(inArray(schema.collections.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      case 'loot': {
-        // loot has no direct ownerId — inherit from parent collection
-        const rows2 = await db
-          .select({ id: schema.loot.id, ownerId: schema.collections.ownerId })
-          .from(schema.loot)
-          .innerJoin(schema.collections, eq(schema.loot.collectionId, schema.collections.id))
-          .where(inArray(schema.loot.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      case 'quarantine_item': {
-        // quarantine_items → stash_roots.owner_id
-        const rows2 = await db
-          .select({ id: schema.quarantineItems.id, ownerId: schema.stashRoots.ownerId })
-          .from(schema.quarantineItems)
-          .innerJoin(schema.stashRoots, eq(schema.quarantineItems.stashRootId, schema.stashRoots.id))
-          .where(inArray(schema.quarantineItems.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      case 'watchlist_subscription': {
-        const rows2 = await db
-          .select({ id: schema.watchlistSubscriptions.id, ownerId: schema.watchlistSubscriptions.ownerId })
-          .from(schema.watchlistSubscriptions)
-          .where(inArray(schema.watchlistSubscriptions.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      case 'printer': {
-        const rows2 = await db
-          .select({ id: schema.printers.id, ownerId: schema.printers.ownerId })
-          .from(schema.printers)
-          .where(inArray(schema.printers.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      case 'slicer': {
-        const rows2 = await db
-          .select({ id: schema.forgeSlicers.id, ownerId: schema.forgeSlicers.ownerId })
-          .from(schema.forgeSlicers)
-          .where(inArray(schema.forgeSlicers.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      case 'slicer_profile': {
-        const rows2 = await db
-          .select({ id: schema.slicerProfiles.id, ownerId: schema.slicerProfiles.ownerId })
-          .from(schema.slicerProfiles)
-          .where(inArray(schema.slicerProfiles.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      case 'print_setting': {
-        const rows2 = await db
-          .select({ id: schema.printSettings.id, ownerId: schema.printSettings.ownerId })
-          .from(schema.printSettings)
-          .where(inArray(schema.printSettings.id, idList));
-        for (const r of rows2) {
-          result.set(key(r.id), r.ownerId ?? null);
-        }
-        break;
-      }
-
-      default:
-        // Unknown kind — entries absent from result map → will be rejected
-        break;
-    }
-  }
-
-  return result;
 }
 
 /**

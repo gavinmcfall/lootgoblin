@@ -52,7 +52,18 @@ export type AclResource =
   | { kind: 'user'; id?: string }
   | { kind: 'instance_config' }
   | { kind: 'api_key'; ownerId?: string; id?: string }
-  | { kind: 'ledger_event' };
+  | { kind: 'ledger_event' }
+  /**
+   * quarantine_item — use resolveQuarantineAcl() from acl/quarantine.ts for
+   * the async DB-lookup path. This entry lets the discriminated union remain
+   * exhaustive for callers that already have ownerId resolved (e.g. from
+   * resolveQuarantineAcl) and want to re-use the resolveAcl decision table.
+   *
+   * Policy: owner read+write allowed; admin read allowed (cross-owner triage);
+   * admin write cross-owner → not-owner (callers should surface this as 404
+   * to hide item existence per the Forge pattern).
+   */
+  | { kind: 'quarantine_item'; ownerId?: string; id?: string };
 
 export type AclAction = 'read' | 'create' | 'update' | 'delete' | 'push';
 
@@ -251,6 +262,24 @@ export function resolveAcl(args: {
         return user.role === 'admin' ? ALLOW : deny('admin-required');
       }
       // create / update / delete / push are structurally invalid.
+      return deny('wrong-action');
+    }
+
+    // ── quarantine_item ───────────────────────────────────────────────────
+    // For the async DB-lookup path, callers should use resolveQuarantineAcl()
+    // from acl/quarantine.ts. This synchronous case handles callers that have
+    // already resolved ownerId (e.g. after calling resolveQuarantineAcl).
+    case 'quarantine_item': {
+      if (action === 'read') {
+        // Owner or admin may read.
+        if (user.role === 'admin') return ALLOW;
+        return isOwner(user, resource) ? ALLOW : deny('not-owner');
+      }
+      if (action === 'update' || action === 'delete') {
+        // Write: owner-only. Admin write → not-owner (routes should return 404).
+        return isOwner(user, resource) ? ALLOW : deny('not-owner');
+      }
+      // create / push not meaningful for quarantine items (created by pipeline).
       return deny('wrong-action');
     }
 

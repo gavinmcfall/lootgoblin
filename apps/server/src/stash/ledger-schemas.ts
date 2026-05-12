@@ -202,6 +202,38 @@ const MaterialConsumedPayload = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Quarantine schemas (quarantine HTTP layer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emitted by DELETE /api/v1/quarantine/[id] when an operator dismisses a
+ * quarantine item. Carries the audit context (stashRootId, reason, path) so
+ * ledger readers can describe the dismissal without re-joining.
+ */
+const QuarantineDismissedPayload = z.object({
+  stashRootId: z.string().uuid(),
+  reason: z.string().min(1),
+  path: z.string().min(1),
+});
+
+/**
+ * Emitted by POST /api/v1/quarantine/[id]/retry when an operator re-enqueues
+ * a quarantined file. The newIngestJobId mirrors the relatedResources entry so
+ * readers can locate the retry job without parsing the JSON relatedResources
+ * array. originalIngestJobId mirrors the 'original' relatedResources entry so
+ * readers can trace back to the source job without array parsing.
+ * overrideClassifierHint is stored when the caller supplies one.
+ */
+const QuarantineRetriedPayload = z.object({
+  stashRootId: z.string().uuid(),
+  reason: z.string().min(1),
+  path: z.string().min(1),
+  newIngestJobId: z.string().uuid(),
+  originalIngestJobId: z.string().uuid(),
+  overrideClassifierHint: z.string().optional(),
+});
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -220,6 +252,9 @@ const ledgerEventSchemas = new Map<string, z.ZodTypeAny>([
   ['material.mix_created', MaterialMixCreatedPayload],
   ['material.recycled', MaterialRecycledPayload],
   ['material.consumed', MaterialConsumedPayload],
+  // Quarantine
+  ['quarantine.dismissed', QuarantineDismissedPayload],
+  ['quarantine.retried', QuarantineRetriedPayload],
 ]);
 
 /**

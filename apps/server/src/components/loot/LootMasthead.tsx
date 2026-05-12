@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { MetaBadge, KV } from '@/components/shell/atoms';
 import { relativeAge } from '@/lib/time';
+import { formatBytes } from './loot-utils';
 
 interface LootFile {
   id: string;
@@ -27,12 +28,6 @@ interface LootMastheadProps {
   fileMissing: boolean;
   parentLootId: string | null;
   files: LootFile[];
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function LootMasthead({

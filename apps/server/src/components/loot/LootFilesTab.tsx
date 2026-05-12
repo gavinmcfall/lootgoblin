@@ -4,6 +4,7 @@
 
 import { EmptyHint, SectionTitle } from '@/components/shell/atoms';
 import { InboxKindIcon } from '@/components/forge/InboxKindIcon';
+import { formatBytes } from './loot-utils';
 
 interface LootFile {
   id: string;
@@ -17,12 +18,6 @@ interface LootFile {
 interface LootFilesTabProps {
   lootId: string;
   files: LootFile[];
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** Short basename from a relative path. */

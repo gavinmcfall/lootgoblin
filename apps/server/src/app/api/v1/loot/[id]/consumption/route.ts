@@ -9,7 +9,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { getDb, schema } from '@/db/client';
 import { authenticateRequest, unauthenticatedResponse } from '@/auth/request-auth';
@@ -52,14 +52,21 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
   if (lootRows.length === 0)
     return NextResponse.json({ error: 'not-found' }, { status: 404 });
 
-  // Pull dispatch jobs for this loot that have materials_used populated.
+  // Pull completed dispatch jobs for this loot. Status filter mirrors the
+  // doc-comment contract — partial-write rows where materialsUsed was
+  // populated before the worker flipped status to 'completed' are excluded.
   const jobs = await db
     .select({
       materialsUsed: schema.dispatchJobs.materialsUsed,
       completedAt: schema.dispatchJobs.completedAt,
     })
     .from(schema.dispatchJobs)
-    .where(eq(schema.dispatchJobs.lootId, id));
+    .where(
+      and(
+        eq(schema.dispatchJobs.lootId, id),
+        eq(schema.dispatchJobs.status, 'completed'),
+      ),
+    );
 
   const completedJobs = jobs.filter((j: { materialsUsed: unknown; completedAt: unknown }) => j.materialsUsed !== null);
 

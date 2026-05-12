@@ -97,6 +97,8 @@ export function LootGrimoireTab({ lootId }: LootGrimoireTabProps) {
                       {a.slicerProfileId ? 'slicer profile' : 'print setting'}
                     </MetaBadge>
                     <span className="font-mono text-[10px] text-fg-faint">
+                      {/* 8-char UUID prefix for display — long enough to distinguish, short
+                          enough to fit the chip width. */}
                       {(a.slicerProfileId ?? a.printSettingId ?? '').slice(0, 8)}…
                     </span>
                     <span className="ml-auto font-serif text-[12px] italic text-fg-faint">

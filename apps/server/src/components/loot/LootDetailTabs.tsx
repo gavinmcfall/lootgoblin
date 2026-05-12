@@ -19,14 +19,17 @@ interface LootDetailTabsProps {
 
 export function LootDetailTabs({ active, onTab }: LootDetailTabsProps) {
   return (
-    <nav className="-mt-2 mb-5 flex gap-1 border-b border-hairline">
+    <nav
+      role="tablist"
+      aria-label="Loot detail sections"
+      className="-mt-2 mb-5 flex gap-1 border-b border-hairline"
+    >
       {TABS.map((t) => (
         <button
           key={t.key}
           type="button"
           role="tab"
           aria-selected={active === t.key}
-          aria-current={active === t.key ? 'page' : undefined}
           onClick={() => onTab(t.key)}
           className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
             active === t.key

@@ -1,5 +1,8 @@
 // KanbanQueuedCard — card for a job in the Queued column.
 // Shows position in queue + loot identifier + status badge.
+//
+// Cards use <article> not <Tile> — Tile is for generic framing; <article>
+// is the semantically correct element for a self-contained job card.
 
 import { MetaBadge } from '@/components/shell/atoms';
 import { dispatchStatusLabel, dispatchStatusTone, relativeAge } from './dispatch-labels';

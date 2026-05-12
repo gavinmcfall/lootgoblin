@@ -167,6 +167,7 @@ export default function ForgeFleetPage() {
   if (vms.length === 0) {
     return (
       <div className="flex flex-col gap-5">
+        <ForgeTabs />
         <SectionTitle meta="fleet">Your Fleet</SectionTitle>
         <EmptyHint>No printers registered yet.</EmptyHint>
       </div>

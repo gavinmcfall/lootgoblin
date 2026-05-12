@@ -1,6 +1,9 @@
 // KanbanLiveCard — card for a job in the Running column.
 // Shows progress bar, ETA, and basic metadata.
 // Progress is polled from GET /api/v1/forge/dispatch/:id/status every 5s.
+//
+// Cards use <article> not <Tile> — Tile is for generic framing; <article>
+// is the semantically correct element for a self-contained job card.
 
 import { useQuery } from '@tanstack/react-query';
 import { MetaBadge } from '@/components/shell/atoms';
@@ -41,6 +44,22 @@ export function KanbanLiveCard({ job }: KanbanLiveCardProps) {
     refetchInterval: 5_000,
     staleTime: 1_000,
   });
+
+  // Per-job status fetch failure — render a card-shaped error placeholder so
+  // the column layout doesn't jump. Inline fg-faint mono text keeps the card
+  // width consistent with non-error cards.
+  if (statusQ.isError) {
+    return (
+      <article className="rounded-md border border-hairline bg-surface-2 p-3">
+        <div className="font-mono text-[10px] uppercase tracking-[1px] text-fg-faint">
+          Status unavailable
+        </div>
+        <div className="font-mono text-[11px] text-fg-muted mt-1 truncate">
+          Nº {job.lootId.slice(0, 8)}
+        </div>
+      </article>
+    );
+  }
 
   const tone = dispatchStatusTone(job.status);
   const label = dispatchStatusLabel(job.status);

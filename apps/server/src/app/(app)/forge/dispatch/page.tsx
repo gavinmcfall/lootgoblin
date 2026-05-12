@@ -95,11 +95,14 @@ export default function ForgeDispatchPage() {
     staleTime: 5_000,
   });
 
+  // Running LIST is the freshest data — short staleTime so column-membership
+  // changes (queued→running, running→done) are picked up fast. The per-job
+  // KanbanLiveCard polls its own status separately for progress updates.
   const runningQ = useQuery({
     queryKey: ['forge', 'dispatch', 'running'],
     queryFn: () => fetchDispatchByStatus('running'),
     refetchInterval: 5_000,
-    staleTime: 5_000,
+    staleTime: 1_000,
   });
 
   const doneQ = useQuery({

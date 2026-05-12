@@ -1,4 +1,5 @@
 'use client';
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { CredentialList } from '@/components/scouts/CredentialList';
 import { SectionTitle, EmptyHint, MetaBadge } from '@/components/shell/atoms';
@@ -27,6 +28,16 @@ export default function ScoutsPage() {
 
   return (
     <div className="space-y-8">
+      {/* Watchlist discovery link — sits under Scouts (breadcrumb: Scouts › Watchlist) */}
+      <div className="flex items-baseline gap-3">
+        <span className="font-mono text-[10px] uppercase tracking-[1.8px] text-fg-faint">Watchlist</span>
+        <Link
+          href="/scouts/watchlist"
+          className="font-mono text-[10px] uppercase tracking-[0.6px] text-accent hover:underline"
+        >
+          Watchlist →
+        </Link>
+      </div>
       <SectionTitle meta={`${sources.length} adapters`}>Scout adapters &amp; credentials</SectionTitle>
       <p className="max-w-2xl font-serif text-[14px] italic text-fg-faint">
         These are the sources the goblin can scout. Each adapter holds its credentials below;

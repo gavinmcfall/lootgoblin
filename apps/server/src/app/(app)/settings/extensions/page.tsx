@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { SectionTitle, Tile, MetaBadge, EmptyHint } from '@/components/shell/atoms';
@@ -12,13 +12,28 @@ interface Pending {
   browserFingerprint?: string;
 }
 
+// 1.8s — let the user see the connected state before closing the flow
+const AUTO_DISMISS_MS = 1_800;
+
 export default function ExtensionsPage() {
   const qc = useQueryClient();
   const [showPairingFlow, setShowPairingFlow] = useState(false);
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear any pending dismiss timer on unmount to avoid setState-after-unmount.
+  useEffect(() => {
+    return () => {
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+    };
+  }, []);
 
   // ── Queries ──────────────────────────────────────────────────────────────────
 
-  const { data: pendingData, isError: pendingIsError } = useQuery({
+  const {
+    data: pendingData,
+    isError: pendingIsError,
+    isLoading: pendingIsLoading,
+  } = useQuery({
     queryKey: ['pair', 'pending'],
     queryFn: async (): Promise<{ pending: Pending[] }> =>
       (await fetch('/api/v1/pair/pending')).json(),
@@ -26,7 +41,11 @@ export default function ExtensionsPage() {
     staleTime: 3_000,
   });
 
-  const { data: keysData, isError: keysIsError } = useQuery({
+  const {
+    data: keysData,
+    isError: keysIsError,
+    isLoading: keysIsLoading,
+  } = useQuery({
     queryKey: ['api-keys'],
     queryFn: async (): Promise<{ keys: ApiKey[] }> =>
       (await fetch('/api/v1/api-keys')).json(),
@@ -76,13 +95,19 @@ export default function ExtensionsPage() {
     }
   }
 
-  function handleConnected(apiKey: ApiKey) {
-    toast.success(`"${apiKey.name}" paired successfully`);
-    qc.invalidateQueries({ queryKey: ['api-keys'] });
-    qc.invalidateQueries({ queryKey: ['pair', 'pending'] });
-    // Brief delay so the user sees the connected state, then dismiss flow
-    setTimeout(() => setShowPairingFlow(false), 1800);
-  }
+  const handleConnected = useCallback(
+    (apiKey: ApiKey) => {
+      toast.success(`"${apiKey.name}" paired successfully`);
+      qc.invalidateQueries({ queryKey: ['api-keys'] });
+      qc.invalidateQueries({ queryKey: ['pair', 'pending'] });
+      // Brief delay so the user sees the connected state, then dismiss flow.
+      dismissTimerRef.current = setTimeout(
+        () => setShowPairingFlow(false),
+        AUTO_DISMISS_MS,
+      );
+    },
+    [qc],
+  );
 
   // ── Derived data ─────────────────────────────────────────────────────────────
 
@@ -117,6 +142,8 @@ export default function ExtensionsPage() {
           <div className="mt-2">
             {pendingIsError ? (
               <EmptyHint>Failed to load pending pairings.</EmptyHint>
+            ) : pendingIsLoading ? (
+              <EmptyHint>Loading…</EmptyHint>
             ) : pending.length === 0 ? (
               <EmptyHint>
                 No pending pairings. Click "+ Pair new extension" above to get started.
@@ -160,6 +187,8 @@ export default function ExtensionsPage() {
         <div className="mt-2">
           {keysIsError ? (
             <EmptyHint>Failed to load paired extensions.</EmptyHint>
+          ) : keysIsLoading ? (
+            <EmptyHint>Loading…</EmptyHint>
           ) : activeKeys.length === 0 ? (
             <EmptyHint>No active pairings.</EmptyHint>
           ) : (

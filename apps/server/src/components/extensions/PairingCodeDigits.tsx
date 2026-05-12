@@ -30,14 +30,19 @@ export function PairingCodeDigits({ code, size = 'lg', pulse = false }: PairingC
   });
 
   return (
-    <div className="flex" style={{ gap: s.gap }}>
+    <div
+      role="group"
+      aria-label="Pairing code"
+      className="flex"
+      style={{ gap: s.gap }}
+    >
       {items.map(({ char, afterGroup }, i) => (
         <div key={i} className="flex" style={{ gap: s.gap }}>
           <div
             className={[
               'flex items-center justify-center rounded-md border font-mono text-fg',
               'border-accent-edge bg-surface-2',
-              pulse ? 'animate-[lgPulse_1.5s_ease-in-out_infinite]' : '',
+              pulse ? 'motion-safe:animate-[lgPulse_1.5s_ease-in-out_infinite]' : '',
             ]
               .filter(Boolean)
               .join(' ')}

@@ -17,7 +17,7 @@ export interface ApiKey {
   createdAt: string;
 }
 
-type PairingState = 'waiting' | 'connecting' | 'connected';
+type PairingState = 'waiting' | 'connected';
 
 interface ChallengeData {
   challengeId: string;
@@ -95,7 +95,7 @@ function GoblinSigil({ size = 72, pulse = false }: { size?: number; pulse?: bool
     <div
       className={[
         'flex items-center justify-center rounded-full',
-        pulse ? 'animate-[sigilPulse_1.8s_ease-in-out_infinite]' : '',
+        pulse ? 'motion-safe:animate-[sigilPulse_1.8s_ease-in-out_infinite]' : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -142,10 +142,10 @@ export function PairingFlow({ onConnected, onCancel }: PairingFlowProps) {
   const [challenge, setChallenge] = useState<ChallengeData | null>(null);
   const [isStarting, setIsStarting] = useState(false);
 
-  // Poll status during 'waiting' (code minted but not yet approved) and 'connecting'
+  // Poll status while a challenge is live (until 'connected').
   const pollEnabled = pairingState !== 'connected' && challenge !== null;
 
-  const { data: statusData } = useQuery<StatusData>({
+  const { data: statusData, isError: statusIsError } = useQuery<StatusData>({
     queryKey: ['pair', 'status', challenge?.challengeId],
     queryFn: async () => {
       const res = await fetch(`/api/v1/pair/status?challengeId=${challenge!.challengeId}`);
@@ -156,22 +156,19 @@ export function PairingFlow({ onConnected, onCancel }: PairingFlowProps) {
     staleTime: 0,
   });
 
-  // React to status updates
+  // React to status updates.
   useEffect(() => {
     if (!statusData) return;
     if (statusData.status === 'approved' && statusData.key) {
       setPairingState('connected');
       onConnected(statusData.key);
     } else if (statusData.status === 'expired' || statusData.status === 'unknown') {
-      // Code expired — reset so the user can try again
+      // Code expired — reset so the user can try again.
       setChallenge(null);
       setPairingState('waiting');
-    } else if (statusData.status === 'pending' && pairingState === 'waiting') {
-      // Extension has picked it up when it transitions to connecting; we detect this
-      // by the fact that the extension calls /pair/approve before we see 'approved'.
-      // For now, stay in 'waiting' until approved.
     }
-  }, [statusData]);
+    // 'pending' is the steady state — keep showing the code; no action needed.
+  }, [statusData, onConnected]);
 
   async function startPairing() {
     setIsStarting(true);
@@ -305,7 +302,7 @@ export function PairingFlow({ onConnected, onCancel }: PairingFlowProps) {
         {/* Right column — the code card */}
         <div className="flex flex-1 flex-col items-center justify-center gap-5 border-l border-hairline bg-surface p-10">
           {/* Goblin sigil */}
-          <GoblinSigil size={64} pulse={pairingState === 'connecting'} />
+          <GoblinSigil size={64} />
 
           {/* One-time code label */}
           <div className="font-mono text-[9.5px] uppercase tracking-[2px] text-fg-faint">
@@ -313,22 +310,17 @@ export function PairingFlow({ onConnected, onCancel }: PairingFlowProps) {
           </div>
 
           {/* Big digit grid */}
-          <PairingCodeDigits
-            code={challenge.code}
-            size="lg"
-            pulse={pairingState === 'connecting'}
-          />
+          <PairingCodeDigits code={challenge.code} size="lg" />
 
-          {/* State caption */}
-          {pairingState === 'waiting' && (
-            <p className="font-serif text-[13px] italic text-fg-muted">
-              waiting for the extension…
-            </p>
-          )}
-          {pairingState === 'connecting' && (
-            <div className="flex items-center gap-2.5">
-              <MetaBadge tone="running">Approving…</MetaBadge>
-              <span className="font-mono text-[11px] text-fg-muted">extension checking in…</span>
+          {/* Waiting caption */}
+          <p className="font-serif text-[13px] italic text-fg-muted">
+            waiting for the extension…
+          </p>
+
+          {/* Status-poll error — transient inline mono caption */}
+          {statusIsError && (
+            <div className="font-mono text-[10px] uppercase tracking-[1px] text-danger">
+              Status check failed. Retrying…
             </div>
           )}
         </div>

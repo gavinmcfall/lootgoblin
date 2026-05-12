@@ -37,7 +37,11 @@ export function PairingCountdown({ expiresAt }: PairingCountdownProps) {
         : 'text-accent';
 
   return (
-    <span className={`font-mono text-[11px] tracking-[1px] ${colorClass}`}>
+    <span
+      aria-live="polite"
+      aria-atomic="true"
+      className={`font-mono text-[11px] tracking-[1px] ${colorClass}`}
+    >
       {formatCountdown(secs)}
     </span>
   );

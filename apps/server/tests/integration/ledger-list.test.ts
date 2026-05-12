@@ -517,8 +517,8 @@ describe('GET /api/v1/ledger — cursor pagination', () => {
 
 describe('GET /api/v1/ledger — cursor codec', () => {
   it('encodeCursor / decodeCursor round-trip', async () => {
-    // Import the codec helpers directly from the route module
-    const { encodeCursor, decodeCursor } = await import('../../src/app/api/v1/ledger/route');
+    // Import the codec helpers from the extracted _cursor module
+    const { encodeCursor, decodeCursor } = await import('../../src/app/api/v1/ledger/_cursor');
 
     const ts = new Date('2025-06-01T12:00:00.000Z');
     const id = 'abc-def-123';
@@ -532,7 +532,7 @@ describe('GET /api/v1/ledger — cursor codec', () => {
   });
 
   it('decodeCursor returns null for garbage input', async () => {
-    const { decodeCursor } = await import('../../src/app/api/v1/ledger/route');
+    const { decodeCursor } = await import('../../src/app/api/v1/ledger/_cursor');
 
     expect(decodeCursor('not-base64!!!!')).toBeNull();
     expect(decodeCursor('dGhpcyBoYXMgbm8gcGlwZQ==')).toBeNull(); // 'this has no pipe'

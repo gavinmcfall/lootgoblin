@@ -78,6 +78,7 @@ import type { AuthenticatedActor } from '@/auth/request-auth';
 import { ListQuery, toLedgerEventDto } from './_shared';
 import { batchResolveOwners } from './_owner-resolver';
 import type { LedgerRow } from './_owner-resolver';
+import { encodeCursor, decodeCursor } from './_cursor';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -88,30 +89,6 @@ import type { LedgerRow } from './_owner-resolver';
  * See header docstring for the PREMATURE TERMINATION caveat.
  */
 const OWNER_FILTER_OVERFETCH = 4;
-
-// ---------------------------------------------------------------------------
-// Cursor codec (exported for testing)
-// ---------------------------------------------------------------------------
-
-export function encodeCursor(ts: Date, id: string): string {
-  return Buffer.from(`${ts.getTime()}|${id}`).toString('base64url');
-}
-
-export function decodeCursor(cursor: string): { ingestedAt: Date; id: string } | null {
-  if (!cursor) return null;
-  try {
-    const raw = Buffer.from(cursor, 'base64url').toString('utf-8');
-    const pipeIdx = raw.indexOf('|');
-    if (pipeIdx === -1) return null;
-    const msStr = raw.slice(0, pipeIdx);
-    const id = raw.slice(pipeIdx + 1);
-    const ms = Number(msStr);
-    if (!Number.isFinite(ms) || ms <= 0 || !id) return null;
-    return { ingestedAt: new Date(ms), id };
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Filter rows to only those the given non-admin user directly owns.

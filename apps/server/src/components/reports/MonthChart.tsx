@@ -3,6 +3,8 @@
 // Canvas ref: MonthChart (page-consumption.jsx line 159–195).
 // Measured (solid) + estimated (running, 0.45 opacity) stacked bars.
 
+import { EmptyHint } from '@/components/shell/atoms';
+
 interface MonthDatum {
   /** 3-letter month abbreviation e.g. "Jan" */
   m: string;
@@ -19,7 +21,7 @@ interface Props {
 }
 
 export function MonthChart({ data, h = 200 }: Props) {
-  if (data.length === 0) return null;
+  if (data.length === 0) return <EmptyHint>No monthly data available.</EmptyHint>;
 
   const max = Math.max(...data.map((d) => d.mass), 0.01);
   const w = 660;

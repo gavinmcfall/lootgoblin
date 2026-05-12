@@ -32,7 +32,7 @@ export function provenanceClassShortLabel(cls: ProvenanceClass): string {
 export function provenanceClassColorClass(cls: ProvenanceClass): string {
   switch (cls) {
     case 'measured':  return 'bg-success';
-    case 'entered':   return 'bg-fg-tone';
+    case 'entered':   return 'bg-fg';
     case 'estimated': return 'bg-running';
     case 'derived':   return 'bg-running';
     case 'computed':  return 'bg-running';
@@ -44,7 +44,7 @@ export function provenanceClassColorClass(cls: ProvenanceClass): string {
 export function provenanceClassCssVar(cls: ProvenanceClass): string {
   switch (cls) {
     case 'measured':  return 'var(--success)';
-    case 'entered':   return 'var(--fg-muted)';
+    case 'entered':   return 'var(--fg)';
     case 'estimated': return 'var(--running)';
     case 'derived':   return 'var(--running)';
     case 'computed':  return 'var(--running)';

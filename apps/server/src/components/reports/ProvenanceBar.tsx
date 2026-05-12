@@ -6,6 +6,7 @@
 import type { ProvenanceBreakdown } from '@/materials/reports';
 import {
   provenanceClassLabel,
+  provenanceClassShortLabel,
   provenanceClassCssVar,
   type ProvenanceClass,
 } from './reports-labels';
@@ -28,8 +29,19 @@ export function ProvenanceBar({ provenance }: Props) {
     label: provenanceClassLabel(cls),
   })).filter((s) => s.v > 0);
 
+  const ariaLabel =
+    segs.length === 0
+      ? 'Provenance breakdown: no data'
+      : `Provenance breakdown: ${segs
+          .map((s) => `${Math.round(s.v * 100)}% ${provenanceClassShortLabel(s.cls)}`)
+          .join(', ')}`;
+
   return (
-    <div className="flex items-center gap-4 rounded-md border border-hairline bg-surface px-4 py-3">
+    <div
+      className="flex items-center gap-4 rounded-md border border-hairline bg-surface px-4 py-3"
+      role="img"
+      aria-label={ariaLabel}
+    >
       <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-[1.6px] text-fg-faint">
         Provenance
       </span>

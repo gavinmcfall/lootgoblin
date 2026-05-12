@@ -4,6 +4,8 @@
 // Exported here; canvas-port #9 (Loot detail) imports and uses it.
 // NOT wired to any route in this PR.
 
+import { provenanceClassCssVar } from './reports-labels';
+
 interface LootConsumptionRow {
   date: string;       // display string e.g. "Apr 18"
   material: string;   // material name e.g. "Iron Grey PLA Matte"
@@ -54,12 +56,7 @@ export function ConsumptionLootEmbed({ totalKg, printCount, avgGrams, rows }: Pr
             <span className="text-right font-mono text-[11px] text-fg">{r.massG}g</span>
             <span
               className="text-right font-mono text-[9px] uppercase tracking-[0.4px]"
-              style={{
-                color:
-                  r.provenance === 'measured'
-                    ? 'var(--success)'
-                    : 'var(--running)',
-              }}
+              style={{ color: provenanceClassCssVar(r.provenance) }}
             >
               {r.provenance}
             </span>

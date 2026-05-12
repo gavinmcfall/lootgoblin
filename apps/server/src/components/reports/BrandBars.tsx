@@ -16,7 +16,11 @@ interface Props {
 export function BrandBars({ data }: Props) {
   const max = Math.max(...data.map((d) => d.mass), 0.01);
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      className="flex flex-col gap-2"
+      role="img"
+      aria-label={`Mass by brand, top ${data.length} brand${data.length === 1 ? '' : 's'}`}
+    >
       {data.map((b) => (
         <div
           key={b.name}

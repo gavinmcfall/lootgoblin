@@ -28,8 +28,15 @@ export function ProvenanceStack({ provenance }: Props) {
     label: provenanceClassShortLabel(cls),
   })).filter((s) => s.v > 0);
 
+  const ariaLabel =
+    segs.length === 0
+      ? 'Provenance breakdown: no data'
+      : `Provenance breakdown: ${segs
+          .map((s) => `${Math.round(s.v * 100)}% ${s.label}`)
+          .join(', ')}`;
+
   return (
-    <div>
+    <div role="img" aria-label={ariaLabel}>
       <div className="flex h-[10px] overflow-hidden rounded">
         {segs.map((s) => (
           <div

@@ -18,7 +18,11 @@ interface Props {
 export function ColorBubbles({ data }: Props) {
   const max = Math.max(...data.map((d) => d.mass), 0.01);
   return (
-    <div className="flex min-h-[180px] flex-wrap items-end gap-4">
+    <div
+      className="flex min-h-[180px] flex-wrap items-end gap-4"
+      role="img"
+      aria-label={`Colour distribution across ${data.length} colour${data.length === 1 ? '' : 's'}, bubble size proportional to mass`}
+    >
       {data.map((c) => {
         const size = 50 + (c.mass / max) * 70;
         return (

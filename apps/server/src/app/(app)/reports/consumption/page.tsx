@@ -4,9 +4,9 @@
 // Canvas ref: ConsumptionDashAnalyst (line 59) + ConsumptionDashStory (line 265).
 // View mode is toggled inline — no separate route.
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQueries, useQuery } from '@tanstack/react-query';
-import { EmptyHint, MetaBadge, SectionTitle, Tile } from '@/components/shell/atoms';
+import { EmptyHint, MetaBadge, SectionTitle, Tile, type Tone } from '@/components/shell/atoms';
 import { ConsumptionRangePicker } from '@/components/reports/ConsumptionRangePicker';
 import { ProvenanceBar } from '@/components/reports/ProvenanceBar';
 import { ProvenanceStack } from '@/components/reports/ProvenanceStack';
@@ -90,7 +90,7 @@ export default function ConsumptionPage() {
   const [range, setRange] = useState<RangePreset>('30d');
   const [view, setView] = useState<ViewMode>('analyst');
 
-  const { since, until } = rangeWindow(range);
+  const { since, until } = useMemo(() => rangeWindow(range), [range]);
 
   // ── Dimension queries ──────────────────────────────────────────────────────
 
@@ -145,7 +145,7 @@ export default function ConsumptionPage() {
   const provenance = totalRow.provenance;
   const eventCount = totalRow.eventCount;
   const estFrac = estimatedFraction(provenance);
-  const provTone = estFrac < 0.3 ? 'success' : 'running';
+  const provTone: Tone = estFrac < 0.3 ? 'success' : 'running';
 
   const brandRows = (brandQ.data?.rows ?? [])
     .filter((r) => r.totalAmount > 0)

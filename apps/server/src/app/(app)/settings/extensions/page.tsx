@@ -1,7 +1,9 @@
 'use client';
+import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { SectionTitle, Tile, MetaBadge, EmptyHint } from '@/components/shell/atoms';
+import { PairingFlow, type ApiKey } from '@/components/extensions/PairingFlow';
 
 interface Pending {
   challengeId: string;
@@ -10,27 +12,27 @@ interface Pending {
   browserFingerprint?: string;
 }
 
-interface ApiKey {
-  id: string;
-  name: string;
-  scopes: string;
-  lastUsedAt: string | null;
-  createdAt: string;
-}
-
 export default function ExtensionsPage() {
   const qc = useQueryClient();
+  const [showPairingFlow, setShowPairingFlow] = useState(false);
+
+  // ── Queries ──────────────────────────────────────────────────────────────────
 
   const { data: pendingData, isError: pendingIsError } = useQuery({
-    queryKey: ['pair-pending'],
-    queryFn: async (): Promise<{ pending: Pending[] }> => (await fetch('/api/v1/pair/pending')).json(),
+    queryKey: ['pair', 'pending'],
+    queryFn: async (): Promise<{ pending: Pending[] }> =>
+      (await fetch('/api/v1/pair/pending')).json(),
     refetchInterval: 3000,
+    staleTime: 3_000,
   });
 
   const { data: keysData, isError: keysIsError } = useQuery({
     queryKey: ['api-keys'],
-    queryFn: async (): Promise<{ keys: ApiKey[] }> => (await fetch('/api/v1/api-keys')).json(),
+    queryFn: async (): Promise<{ keys: ApiKey[] }> =>
+      (await fetch('/api/v1/api-keys')).json(),
   });
+
+  // ── Handlers ─────────────────────────────────────────────────────────────────
 
   async function approve(challengeId: string) {
     const res = await fetch('/api/v1/pair/approve', {
@@ -40,7 +42,7 @@ export default function ExtensionsPage() {
     });
     if (res.ok) {
       toast.success('Approved');
-      qc.invalidateQueries({ queryKey: ['pair-pending'] });
+      qc.invalidateQueries({ queryKey: ['pair', 'pending'] });
       qc.invalidateQueries({ queryKey: ['api-keys'] });
     } else {
       toast.error('Approve failed');
@@ -74,52 +76,85 @@ export default function ExtensionsPage() {
     }
   }
 
+  function handleConnected(apiKey: ApiKey) {
+    toast.success(`"${apiKey.name}" paired successfully`);
+    qc.invalidateQueries({ queryKey: ['api-keys'] });
+    qc.invalidateQueries({ queryKey: ['pair', 'pending'] });
+    // Brief delay so the user sees the connected state, then dismiss flow
+    setTimeout(() => setShowPairingFlow(false), 1800);
+  }
+
+  // ── Derived data ─────────────────────────────────────────────────────────────
+
   const pending = pendingData?.pending ?? [];
-  // Extension pairings are api_keys whose name includes 'extension' (default from pair approval).
-  // User-renamed keys may have custom names — include those too by default, but filter out keys
-  // that clearly belong to CLIs/webhooks etc. For v1 simplicity, show ALL active keys here;
-  // /settings/api-keys is the page for raw-key-style tokens.
   const activeKeys = keysData?.keys ?? [];
 
   return (
     <div className="space-y-8">
       <SectionTitle meta={`${activeKeys.length} paired`}>Browser Extensions</SectionTitle>
 
-      {/* Pending pair requests */}
+      {/* ── Pairing flow ─────────────────────────────────────────────────────── */}
       <section>
-        <SectionTitle as="h3">Pair a new extension</SectionTitle>
-        <div className="mt-2">
-          {pendingIsError ? (
-            <EmptyHint>Failed to load pending pairings.</EmptyHint>
-          ) : pending.length === 0 ? (
-            <EmptyHint>None pending. Start pairing from an extension.</EmptyHint>
-          ) : (
-            <div className="space-y-2">
-              {pending.map((p) => (
-                <div key={p.challengeId} className="rounded-md border border-running bg-running-bg p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-mono text-[16px] tracking-[3px] text-running">{p.code}</div>
-                      <div className="font-mono text-[10px] text-fg-faint">
-                        {p.browserFingerprint ? `${p.browserFingerprint} · ` : ''}
-                        expires {new Date(p.expiresAt).toLocaleTimeString()}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => approve(p.challengeId)}
-                      className="rounded-md bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-accent-ink hover:opacity-90"
-                    >
-                      Approve
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
+        <div className="mb-3.5 flex items-baseline justify-between">
+          <SectionTitle as="h3">Pair a new extension</SectionTitle>
+          {!showPairingFlow && (
+            <button
+              type="button"
+              onClick={() => setShowPairingFlow(true)}
+              className="shrink-0 rounded-md bg-accent px-3.5 py-1.5 font-sans text-[12.5px] font-semibold text-accent-ink hover:opacity-90"
+            >
+              + Pair new extension
+            </button>
           )}
         </div>
+
+        {showPairingFlow ? (
+          <PairingFlow
+            onConnected={handleConnected}
+            onCancel={() => setShowPairingFlow(false)}
+          />
+        ) : (
+          <div className="mt-2">
+            {pendingIsError ? (
+              <EmptyHint>Failed to load pending pairings.</EmptyHint>
+            ) : pending.length === 0 ? (
+              <EmptyHint>
+                No pending pairings. Click "+ Pair new extension" above to get started.
+              </EmptyHint>
+            ) : (
+              <div className="space-y-2">
+                {pending.map((p) => (
+                  <div
+                    key={p.challengeId}
+                    className="rounded-md border border-running bg-running-bg p-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-mono text-[16px] tracking-[3px] text-running">
+                          {p.code}
+                        </div>
+                        <div className="font-mono text-[10px] text-fg-faint">
+                          {p.browserFingerprint ? `${p.browserFingerprint} · ` : ''}
+                          expires {new Date(p.expiresAt).toLocaleTimeString()}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => approve(p.challengeId)}
+                        className="rounded-md bg-accent px-3.5 py-1.5 font-sans text-[12.5px] font-semibold text-accent-ink hover:opacity-90"
+                      >
+                        Approve
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
-      {/* Active extension pairings (api keys) */}
+      {/* ── Active pairings ──────────────────────────────────────────────────── */}
       <section>
         <SectionTitle as="h3">Active pairings</SectionTitle>
         <div className="mt-2">
@@ -138,17 +173,22 @@ export default function ExtensionsPage() {
                         <MetaBadge tone="neutral">{k.scopes}</MetaBadge>
                       </div>
                       <div className="mt-0.5 font-mono text-[10px] text-fg-faint">
-                        {k.lastUsedAt ? `last used ${new Date(k.lastUsedAt).toLocaleString()}` : 'never used'} · paired {new Date(k.createdAt).toLocaleDateString()}
+                        {k.lastUsedAt
+                          ? `last used ${new Date(k.lastUsedAt).toLocaleString()}`
+                          : 'never used'}{' '}
+                        · paired {new Date(k.createdAt).toLocaleDateString()}
                       </div>
                     </div>
                     <div className="flex shrink-0 gap-2">
                       <button
+                        type="button"
                         onClick={() => rename(k)}
                         className="rounded-md border border-hairline px-2 py-1 font-mono text-[10px] uppercase tracking-[0.6px] text-fg-muted hover:text-fg"
                       >
                         Rename
                       </button>
                       <button
+                        type="button"
                         onClick={() => revoke(k)}
                         className="font-mono text-[10px] uppercase tracking-[0.6px] text-fg-faint hover:text-danger"
                       >

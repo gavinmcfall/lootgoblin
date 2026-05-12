@@ -19,10 +19,12 @@
  *   12. Unknown key rejected by strict()
  *   13. Malformed ISO datetime for occurred_after → validation error
  *   14. limit coerced from string to number
+ *   15. limit=0 rejected by min(1)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { toLedgerEventDto, ListQuery } from '../../src/app/api/v1/ledger/_shared';
+import { schema } from '../../src/db/client';
 
 // ---------------------------------------------------------------------------
 // Logger mock — spy on warn calls without hitting real pino
@@ -41,18 +43,7 @@ import { logger } from '../../src/logger';
 // Helper: build a minimal ledgerEvents row matching $inferSelect shape
 // ---------------------------------------------------------------------------
 
-type LedgerRow = {
-  id: string;
-  kind: string;
-  actorUserId: string | null;
-  subjectType: string;
-  subjectId: string;
-  relatedResources: Array<{ kind: string; id: string; role: string }> | null | undefined;
-  payload: string | null;
-  provenanceClass: string | null;
-  occurredAt: Date | null;
-  ingestedAt: Date;
-};
+type LedgerRow = typeof schema.ledgerEvents.$inferSelect;
 
 function makeRow(overrides: Partial<LedgerRow> = {}): LedgerRow {
   return {
@@ -77,7 +68,7 @@ function makeRow(overrides: Partial<LedgerRow> = {}): LedgerRow {
 describe('toLedgerEventDto — happy path all fields', () => {
   it('maps all populated fields correctly with ISO timestamps', () => {
     const row = makeRow();
-    const dto = toLedgerEventDto(row as any);
+    const dto = toLedgerEventDto(row);
 
     expect(dto.id).toBe('evt-001');
     expect(dto.kind).toBe('ingest.placed');
@@ -94,35 +85,35 @@ describe('toLedgerEventDto — happy path all fields', () => {
 
 describe('toLedgerEventDto — null actorUserId', () => {
   it('returns null actorUserId in the DTO', () => {
-    const dto = toLedgerEventDto(makeRow({ actorUserId: null }) as any);
+    const dto = toLedgerEventDto(makeRow({ actorUserId: null }));
     expect(dto.actorUserId).toBeNull();
   });
 });
 
 describe('toLedgerEventDto — null occurredAt', () => {
   it('returns null occurredAt in the DTO', () => {
-    const dto = toLedgerEventDto(makeRow({ occurredAt: null }) as any);
+    const dto = toLedgerEventDto(makeRow({ occurredAt: null }));
     expect(dto.occurredAt).toBeNull();
   });
 });
 
 describe('toLedgerEventDto — null payload', () => {
   it('returns null payload in the DTO', () => {
-    const dto = toLedgerEventDto(makeRow({ payload: null }) as any);
+    const dto = toLedgerEventDto(makeRow({ payload: null }));
     expect(dto.payload).toBeNull();
   });
 });
 
 describe('toLedgerEventDto — null relatedResources', () => {
   it('returns null relatedResources in the DTO', () => {
-    const dto = toLedgerEventDto(makeRow({ relatedResources: null }) as any);
+    const dto = toLedgerEventDto(makeRow({ relatedResources: null }));
     expect(dto.relatedResources).toBeNull();
   });
 });
 
 describe('toLedgerEventDto — null provenanceClass', () => {
   it('returns null provenanceClass in the DTO', () => {
-    const dto = toLedgerEventDto(makeRow({ provenanceClass: null }) as any);
+    const dto = toLedgerEventDto(makeRow({ provenanceClass: null }));
     expect(dto.provenanceClass).toBeNull();
   });
 });
@@ -130,7 +121,7 @@ describe('toLedgerEventDto — null provenanceClass', () => {
 describe('toLedgerEventDto — valid JSON payload', () => {
   it('parses valid JSON payload string to an object', () => {
     const payload = { action: 'retire', reason: 'empty spool' };
-    const dto = toLedgerEventDto(makeRow({ payload: JSON.stringify(payload) }) as any);
+    const dto = toLedgerEventDto(makeRow({ payload: JSON.stringify(payload) }));
     expect(dto.payload).toEqual(payload);
   });
 });
@@ -144,15 +135,10 @@ describe('toLedgerEventDto — corrupt payload fallback', () => {
     vi.clearAllMocks();
   });
 
-  it('returns the raw string when payload is not valid JSON', () => {
+  it('returns the raw string and fires logger.warn when payload is not valid JSON', () => {
     const corruptPayload = 'not-json-{';
-    const dto = toLedgerEventDto(makeRow({ payload: corruptPayload }) as any);
+    const dto = toLedgerEventDto(makeRow({ id: 'evt-bad', payload: corruptPayload }));
     expect(dto.payload).toBe(corruptPayload);
-  });
-
-  it('fires logger.warn when payload fails JSON.parse', () => {
-    const corruptPayload = 'not-json-{';
-    toLedgerEventDto(makeRow({ id: 'evt-bad', payload: corruptPayload }) as any);
     expect(logger.warn).toHaveBeenCalledOnce();
     // The warn call should include the event id for traceability
     const warnArg = (logger.warn as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -226,5 +212,12 @@ describe('ListQuery — limit coerced from string', () => {
     if (result.success) {
       expect(result.data.limit).toBe(25);
     }
+  });
+});
+
+describe('ListQuery — limit=0 rejected by min(1)', () => {
+  it('rejects limit values of 0', () => {
+    const result = ListQuery.safeParse({ limit: '0' });
+    expect(result.success).toBe(false);
   });
 });

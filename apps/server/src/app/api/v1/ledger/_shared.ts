@@ -9,8 +9,8 @@
  */
 
 import { z } from 'zod';
-import type { schema } from '../../../../db/client';
-import { logger } from '../../../../logger';
+import type { schema } from '@/db/client';
+import { logger } from '@/logger';
 
 // ---------------------------------------------------------------------------
 // DTOs
@@ -23,7 +23,7 @@ export interface LedgerEventDto {
   subjectType: string;
   subjectId: string;
   relatedResources: Array<{ kind: string; id: string; role: string }> | null;
-  payload: unknown | null;        // JSON.parse'd if non-null
+  payload: unknown;               // JSON.parse'd if non-null; null when row.payload is null
   provenanceClass: string | null;
   occurredAt: string | null;      // ISO 8601
   ingestedAt: string;             // ISO 8601

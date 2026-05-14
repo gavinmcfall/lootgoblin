@@ -17,10 +17,8 @@
  *      cached, filtered candidates. (We do NOT use `engine.apply`: that path
  *      re-walks the filesystem, which would discard the cache and ignore the
  *      `selectedCandidateIds` selection.)
- *   6. Recover the created `collectionId` — the AdoptionReport does not carry
- *      it, but the applier creates the Collection with `createdAt` equal to
- *      `report.appliedAt` and `stashRootId` equal to the plan's. We query for
- *      that exact row.
+ *   6. Read the created `collectionId` straight off `report.collectionId` —
+ *      the applier generates it internally and surfaces it on the report.
  *   7. Emit the `adoption.applied` ledger event via `persistLedgerEvent` (the
  *      fire-and-continue async variant). The applier already committed the
  *      Loot + Collection rows; a ledger-emit failure is a non-fatal audit gap,
@@ -41,7 +39,7 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 import { getServerDb, schema } from '@/db/client';
 import { authenticateRequest, unauthenticatedResponse } from '@/auth/request-auth';
@@ -49,7 +47,7 @@ import { resolveAcl } from '@/acl/resolver';
 import { logger } from '@/logger';
 
 import { applyAdoptionPlan } from '@/stash/adoption/applier';
-import type { AdoptionPlan } from '@/stash/adoption';
+import type { AdoptionPlan, AdoptionReport } from '@/stash/adoption';
 import { getProposal, deleteProposal } from '@/stash/adoption/proposal-cache';
 import { persistLedgerEvent } from '@/stash/ledger';
 
@@ -158,7 +156,7 @@ export async function POST(
   };
 
   // Run the applier directly with the cached, filtered candidates.
-  let report;
+  let report: AdoptionReport;
   try {
     report = await applyAdoptionPlan(plan, filteredCandidates, root.path, root.ownerId);
   } catch (err) {
@@ -168,34 +166,10 @@ export async function POST(
     return NextResponse.json({ error: 'apply-failed', reason: message }, { status: 500 });
   }
 
-  // Recover the created collectionId. The applier creates exactly one
-  // Collection per run, with createdAt === report.appliedAt and the plan's
-  // stashRootId. That pair uniquely identifies the row.
-  const collectionRows = await db
-    .select()
-    .from(schema.collections)
-    .where(
-      and(
-        eq(schema.collections.stashRootId, id),
-        eq(schema.collections.createdAt, report.appliedAt),
-      ),
-    )
-    .limit(1);
-
-  if (collectionRows.length === 0) {
-    // The applier reported success-shaped data but we can't find the row.
-    // This should not happen — surface it rather than returning a bogus DTO.
-    logger.error(
-      { proposalId, stashRootId: id, appliedAt: report.appliedAt },
-      'adoption apply: could not recover created collection row',
-    );
-    return NextResponse.json(
-      { error: 'apply-failed', reason: 'created collection could not be located' },
-      { status: 500 },
-    );
-  }
-
-  const collectionId = collectionRows[0]!.id;
+  // The applier always creates exactly one Collection before it can return a
+  // report (it throws on creation failure), so report.collectionId is the
+  // authoritative id of the row that was just committed.
+  const collectionId = report.collectionId;
 
   // Emit the ledger event. persistLedgerEvent is fire-and-continue — it never
   // throws. The Loot + Collection rows are already committed; a failed audit

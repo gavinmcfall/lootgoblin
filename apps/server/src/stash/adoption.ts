@@ -123,6 +123,13 @@ export type AdoptionReport = {
   appliedAt: Date;
   mode: 'in-place' | 'copy-then-cleanup';
   chosenTemplate: string;
+  /**
+   * The Collection created by this adoption run. `applyAdoptionPlan` always
+   * creates exactly one Collection before returning a report (it throws if
+   * creation fails), so this is always populated. For `applySingleCandidate`
+   * it is the caller-supplied existing Collection.
+   */
+  collectionId: string;
   lootsCreated: number;
   lootFilesCreated: number;
   skippedCandidates: Array<{ candidateId: string; reason: string }>;

@@ -232,22 +232,35 @@ describe('POST /api/v1/stash-roots/[id]/adoption/preview', () => {
     const { POST } = await import(
       '../../src/app/api/v1/stash-roots/[id]/adoption/preview/route'
     );
-    const res = await POST(
+
+    // Full set: all 3 candidates, each with a distinct title → all resolve cleanly.
+    const fullRes = await POST(
+      makePostRequest({ proposalId, templates: ['{title|slug}'] }),
+      { params: Promise.resolve({ id: rootId }) },
+    );
+    expect(fullRes.status).toBe(200);
+    const fullBody = await fullRes.json();
+
+    // Subset: only c1 → the route must operate on exactly 1 candidate.
+    const subsetRes = await POST(
       makePostRequest({
         proposalId,
         templates: ['{title|slug}'],
-        selectedCandidateIds: [c1.id], // only c1
+        selectedCandidateIds: [c1.id],
       }),
       { params: Promise.resolve({ id: rootId }) },
     );
+    expect(subsetRes.status).toBe(200);
+    const subsetBody = await subsetRes.json();
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-
-    // With only c1, predictedLootCount + incompatibleCount totals should be 1
-    for (const opt of body.options) {
-      expect(opt.predictedLootCount + opt.incompatibleCount + opt.collisionCount).toBeLessThanOrEqual(1);
-    }
+    // The fixture candidates all have distinct titles, so each resolves to a
+    // unique path without collisions or incompatibles. Asserting exact counts
+    // (not arithmetic) proves selectedCandidateIds actually reduces the working set.
+    expect(fullBody.options[0].predictedLootCount).toBe(3);
+    expect(subsetBody.options[0].predictedLootCount).toBe(1);
+    expect(subsetBody.options[0].predictedLootCount).toBeLessThan(
+      fullBody.options[0].predictedLootCount,
+    );
   }, 15_000);
 
   it('3. selectedCandidateIds omitted → all candidates considered', async () => {
@@ -273,10 +286,20 @@ describe('POST /api/v1/stash-roots/[id]/adoption/preview', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
 
-    // All 3 candidates should be accounted for across loot + incompatible + collision
+    // The fixture uses three candidates with distinct slugified titles
+    // (alpha-model, beta-model, gamma-model), so every candidate resolves to a
+    // unique path. No collisions, no incompatibles — all three land in
+    // predictedLootCount.
+    //
+    // NOTE: collisionCount is the count of *collision paths* (paths shared by
+    // >1 candidate), not a per-candidate count. Adding predictedLootCount +
+    // incompatibleCount + collisionCount does NOT equal total candidate count
+    // when collisions exist. We assert predictedLootCount directly to avoid
+    // that fragile arithmetic.
     for (const opt of body.options) {
-      const total = opt.predictedLootCount + opt.incompatibleCount + opt.collisionCount;
-      expect(total).toBe(3);
+      expect(opt.predictedLootCount).toBe(3);
+      expect(opt.incompatibleCount).toBe(0);
+      expect(opt.collisionCount).toBe(0);
     }
   }, 15_000);
 
@@ -377,19 +400,16 @@ describe('POST /api/v1/stash-roots/[id]/adoption/preview', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
 
-    // buildTemplateOptions may either skip malformed templates OR return all candidates
-    // as incompatible. Either way the route must return 200.
-    //
-    // For a valid but unresolvable template (field not present on any candidate),
-    // all candidates land in incompatible[].
-    // For a completely unparseable template, buildTemplateOptions skips it (continue),
-    // so options[] may be empty — that's still a valid 200.
-    expect(Array.isArray(body.options)).toBe(true);
-    if (body.options.length > 0) {
-      const opt = body.options[0];
-      expect(opt.incompatibleCount).toBe(candidates.length);
-      expect(opt.predictedLootCount).toBe(0);
-    }
+    // '{nonexistent_field}' is syntactically valid — parseTemplate succeeds.
+    // At resolution time, 'nonexistent_field' is absent from every candidate's
+    // metadata record, so resolveTemplate returns { ok: false, reason: 'missing-field' }
+    // for all candidates. buildTemplateOptions does NOT skip the template (the
+    // `continue` only fires on parse errors, not resolution failures). It produces
+    // exactly one TemplateOptionDto with all candidates in incompatible[].
+    expect(body.options).toHaveLength(1);
+    expect(body.options[0].incompatibleCount).toBe(candidates.length);
+    expect(body.options[0].predictedLootCount).toBe(0);
+    expect(body.options[0].collisionCount).toBe(0);
   }, 15_000);
 
   it('8a. invalid body: missing proposalId → 400', async () => {

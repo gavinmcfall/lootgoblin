@@ -55,7 +55,7 @@ export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
 export const PROPOSAL_MAX_PER_USER = 4;
 
 /** Sweeper interval in ms (5 minutes). */
-const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+export const PROPOSAL_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Module-level singleton state
@@ -136,7 +136,7 @@ function sweep(): void {
 /** Starts the sweeper lazily (called on first put). */
 function ensureSweeper(): void {
   if (sweepTimer !== null) return;
-  sweepTimer = setInterval(sweep, SWEEP_INTERVAL_MS);
+  sweepTimer = setInterval(sweep, PROPOSAL_SWEEP_INTERVAL_MS);
   sweepTimer.unref();
 }
 

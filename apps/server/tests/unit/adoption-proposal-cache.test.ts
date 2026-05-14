@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type AdoptionProposal as CacheProposal,
   PROPOSAL_MAX_PER_USER,
+  PROPOSAL_SWEEP_INTERVAL_MS,
   PROPOSAL_TTL_MS,
   __resetProposalCacheForTests,
   deleteProposal,
@@ -98,8 +99,8 @@ describe('getProposal updates lastAccessedAt', () => {
     const p = makeProposal({ lastAccessedAt: initialTime });
     putProposal(p);
 
-    // Advance time by 5 minutes.
-    vi.advanceTimersByTime(5 * 60 * 1000);
+    // Advance time by one sweep interval.
+    vi.advanceTimersByTime(PROPOSAL_SWEEP_INTERVAL_MS);
 
     const result = getProposal(p.id, p.userId, p.stashRootId);
     expect(result).not.toBeNull();
@@ -114,8 +115,8 @@ describe('getProposal updates lastAccessedAt', () => {
     const p = makeProposal({ lastAccessedAt: initialTime });
     putProposal(p);
 
-    // Advance 5 minutes, then attempt a failed lookup (wrong userId).
-    vi.advanceTimersByTime(5 * 60 * 1000);
+    // Advance one sweep interval, then attempt a failed lookup (wrong userId).
+    vi.advanceTimersByTime(PROPOSAL_SWEEP_INTERVAL_MS);
     const failedResult = getProposal(p.id, 'wrong-user', p.stashRootId);
     expect(failedResult).toBeNull();
 
@@ -276,8 +277,8 @@ describe('TTL sweeper', () => {
     const p = makeProposal();
     putProposal(p);
 
-    // Advance past TTL + one sweep interval (5 min = 300_000 ms).
-    await vi.advanceTimersByTimeAsync(PROPOSAL_TTL_MS + 5 * 60 * 1000 + 1);
+    // Advance past TTL + one sweep interval.
+    await vi.advanceTimersByTimeAsync(PROPOSAL_TTL_MS + PROPOSAL_SWEEP_INTERVAL_MS + 1);
 
     expect(getProposal(p.id, p.userId, p.stashRootId)).toBeNull();
   });
@@ -294,11 +295,18 @@ describe('TTL sweeper', () => {
   });
 
   it('does not start the sweeper interval before first putProposal', () => {
-    // No put — interval should not exist.
-    // We can't directly inspect if setInterval was called without a spy, but
-    // we can confirm that advancing timers past the sweep window with no entry
-    // produces no error, and the sweeper logic simply has nothing to sweep.
-    expect(() => vi.advanceTimersByTime(10 * 60 * 1000)).not.toThrow();
+    // __resetProposalCacheForTests in beforeEach already cleared any prior
+    // interval handle, so the spy count starts clean.
+    const spy = vi.spyOn(globalThis, 'setInterval');
+
+    // No put yet — setInterval must not have been called.
+    expect(spy).not.toHaveBeenCalled();
+
+    // Do a put — this should lazily start the sweeper (exactly once).
+    putProposal(makeProposal());
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    spy.mockRestore();
   });
 
   it('starts the sweeper on first put and sweeps stale entries', async () => {
@@ -314,8 +322,8 @@ describe('TTL sweeper', () => {
     const fresh = makeProposal({ id: crypto.randomUUID() });
     putProposal(fresh);
 
-    // Fire the sweep (5 min interval).
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    // Fire the sweep (one sweep interval).
+    await vi.advanceTimersByTimeAsync(PROPOSAL_SWEEP_INTERVAL_MS);
 
     // Stale should be gone, fresh should remain.
     expect(getProposal(stale.id, stale.userId, stale.stashRootId)).toBeNull();

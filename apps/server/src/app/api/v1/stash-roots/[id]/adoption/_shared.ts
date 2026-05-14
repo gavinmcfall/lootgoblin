@@ -10,7 +10,7 @@
  *   Both are imported here under distinct aliases to avoid name collisions.
  */
 
-import type { AdoptionCandidate } from '@/stash/adoption';
+import type { AdoptionCandidate, TemplateOption } from '@/stash/adoption';
 import type { AdoptionProposal as CacheProposal } from '@/stash/adoption/proposal-cache';
 import { PROPOSAL_TTL_MS } from '@/stash/adoption/proposal-cache';
 
@@ -106,5 +106,55 @@ export function toScanResponseDto(
     candidates: candidates.map(toCandidateDto),
     derivedTemplates,
     expiresAt: new Date(Date.now() + PROPOSAL_TTL_MS).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Preview DTOs
+// ---------------------------------------------------------------------------
+
+export interface TemplateOptionDto {
+  template: string;
+  predictedLootCount: number;
+  collisionCount: number;
+  incompatibleCount: number;
+  examples: Array<{ candidateId: string; resolvedPath: string }>;
+}
+
+export interface PreviewResponseDto {
+  options: TemplateOptionDto[];
+}
+
+// ---------------------------------------------------------------------------
+// Preview mapper
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps a `TemplateOption` (internal shape) to `TemplateOptionDto` (client payload).
+ *
+ * Field projection:
+ *   - collisionCount  = collisions.length
+ *   - incompatibleCount = incompatible.length
+ *   - examples        = up to 5 items; `proposedPath` field renamed to `resolvedPath`
+ */
+export function toTemplateOptionDto(option: TemplateOption): TemplateOptionDto {
+  return {
+    template: option.template,
+    predictedLootCount: option.predictedLootCount,
+    collisionCount: option.collisions.length,
+    incompatibleCount: option.incompatible.length,
+    examples: option.examples.map((ex) => ({
+      candidateId: ex.candidateId,
+      resolvedPath: ex.proposedPath,
+    })),
+  };
+}
+
+/**
+ * Builds the full `PreviewResponseDto` from a `TemplateOption[]`.
+ */
+export function toPreviewResponseDto(options: TemplateOption[]): PreviewResponseDto {
+  return {
+    options: options.map(toTemplateOptionDto),
   };
 }

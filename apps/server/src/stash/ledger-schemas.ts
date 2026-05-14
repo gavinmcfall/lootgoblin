@@ -234,6 +234,24 @@ const QuarantineRetriedPayload = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Adoption schemas (adoption HTTP layer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emitted by POST /api/v1/stash-roots/[id]/adoption/apply when an operator
+ * commits an AdoptionPlan. Carries the run summary (counts + chosen mode +
+ * template) so ledger readers can describe the adoption without re-joining
+ * the loot / collection rows.
+ */
+const AdoptionAppliedPayload = z.object({
+  adoptedCount: z.number().int().nonnegative(),
+  skippedCount: z.number().int().nonnegative(),
+  errorCount: z.number().int().nonnegative(),
+  mode: z.enum(['in-place', 'copy-then-cleanup']),
+  template: z.string().min(1),
+});
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -255,6 +273,8 @@ const ledgerEventSchemas = new Map<string, z.ZodTypeAny>([
   // Quarantine
   ['quarantine.dismissed', QuarantineDismissedPayload],
   ['quarantine.retried', QuarantineRetriedPayload],
+  // Adoption
+  ['adoption.applied', AdoptionAppliedPayload],
 ]);
 
 /**

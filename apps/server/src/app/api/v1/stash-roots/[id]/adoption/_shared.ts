@@ -10,7 +10,7 @@
  *   Both are imported here under distinct aliases to avoid name collisions.
  */
 
-import type { AdoptionCandidate, TemplateOption } from '@/stash/adoption';
+import type { AdoptionCandidate, TemplateOption, AdoptionReport } from '@/stash/adoption';
 import type { AdoptionProposal as CacheProposal } from '@/stash/adoption/proposal-cache';
 import { PROPOSAL_TTL_MS } from '@/stash/adoption/proposal-cache';
 
@@ -156,5 +156,49 @@ export function toTemplateOptionDto(option: TemplateOption): TemplateOptionDto {
 export function toPreviewResponseDto(options: TemplateOption[]): PreviewResponseDto {
   return {
     options: options.map(toTemplateOptionDto),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Apply DTOs
+// ---------------------------------------------------------------------------
+
+export interface ApplyReportDto {
+  collectionId: string;
+  adoptedCount: number;
+  skippedCount: number;
+  errors: Array<{ candidateId: string; reason: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// Apply mapper
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps an `AdoptionReport` (orchestrator shape) + the recovered `collectionId`
+ * to `ApplyReportDto` (client payload).
+ *
+ * Field projection:
+ *   - collectionId   = recovered separately (the report does NOT carry it —
+ *                      the applier creates the Collection internally).
+ *   - adoptedCount   = report.lootsCreated
+ *   - skippedCount   = report.skippedCandidates.length
+ *   - errors         = report.errors mapped { candidateId, error } → { candidateId, reason }.
+ *                      Skipped candidates are counted in skippedCount but are
+ *                      NOT errors — they are expected outcomes (missing fields,
+ *                      collisions). Only report.errors are real failures.
+ */
+export function toApplyReportDto(
+  report: AdoptionReport,
+  collectionId: string,
+): ApplyReportDto {
+  return {
+    collectionId,
+    adoptedCount: report.lootsCreated,
+    skippedCount: report.skippedCandidates.length,
+    errors: report.errors.map((e) => ({
+      candidateId: e.candidateId,
+      reason: e.error,
+    })),
   };
 }

@@ -56,11 +56,17 @@ export async function applyAdoptionPlan(
   const db = getDb(dbUrl) as ReturnType<typeof import('drizzle-orm/better-sqlite3').drizzle>;
   const appliedAt = new Date();
 
+  // ── 1. Create Collection ───────────────────────────────────────────────────
+  // The collectionId is generated up-front so it can be embedded in the report
+  // (consumers — notably the apply route — need it without a recovery query).
+  const collectionId = crypto.randomUUID();
+
   const report: AdoptionReport = {
     stashRootId: plan.stashRootId,
     appliedAt,
     mode: plan.mode,
     chosenTemplate: plan.chosenTemplate,
+    collectionId,
     lootsCreated: 0,
     lootFilesCreated: 0,
     skippedCandidates: [],
@@ -80,8 +86,6 @@ export async function applyAdoptionPlan(
     candidates.map((c) => [c.id, c]),
   );
 
-  // ── 1. Create Collection ───────────────────────────────────────────────────
-  const collectionId = crypto.randomUUID();
   const collectionName =
     plan.collectionName ??
     `Adopted: ${path.basename(stashRootPath)} — ${appliedAt.toISOString()}`;
@@ -522,11 +526,14 @@ export async function applySingleCandidate(args: {
   const now = new Date();
 
   // Build a mini AdoptionReport to reuse the existing per-candidate helpers.
+  // collectionId is the caller-supplied existing Collection — applySingleCandidate
+  // never creates one.
   const miniReport: AdoptionReport = {
     stashRootId: '',
     appliedAt: now,
     mode,
     chosenTemplate: pathTemplate,
+    collectionId,
     lootsCreated: 0,
     lootFilesCreated: 0,
     skippedCandidates: [],

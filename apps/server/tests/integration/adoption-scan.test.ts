@@ -27,6 +27,7 @@ import {
   getProposal,
   __resetProposalCacheForTests,
 } from '../../src/stash/adoption/proposal-cache';
+import * as proposalCache from '../../src/stash/adoption/proposal-cache';
 
 // ---------------------------------------------------------------------------
 // Next.js shim
@@ -93,7 +94,7 @@ afterEach(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function seedUser(role: 'admin' | 'user' = 'user'): Promise<string> {
+async function seedUser(): Promise<string> {
   const id = uid();
   await db().insert(schema.user).values({
     id,
@@ -301,6 +302,9 @@ describe('POST /api/v1/stash-roots/[id]/adoption/scan', () => {
 
     mockAuthenticate.mockResolvedValue(makeActor(userId));
 
+    // Spy on putProposal to verify it is never called on the error path.
+    const putSpy = vi.spyOn(proposalCache, 'putProposal');
+
     const { POST } = await import(
       '../../src/app/api/v1/stash-roots/[id]/adoption/scan/route'
     );
@@ -315,15 +319,15 @@ describe('POST /api/v1/stash-roots/[id]/adoption/scan', () => {
     // No proposalId should be present (no proposal was cached)
     expect(body.proposalId).toBeUndefined();
 
-    // A fabricated proposalId should not find anything in the cache
-    const notCached = getProposal(uid(), userId, rootId);
-    expect(notCached).toBeNull();
+    // Contract: putProposal must never be invoked when the scan fails.
+    expect(putSpy).not.toHaveBeenCalled();
+    putSpy.mockRestore();
   }, 15_000);
 
   it('8. admin can scan another user stash root → 200', async () => {
     const scratch = await makeScratchDir();
     const ownerId = await seedUser();
-    const adminId = await seedUser('admin');
+    const adminId = await seedUser();
     await writeFile(path.join(scratch, 'AdminTarget', 'file.stl'));
     const rootId = await seedStashRoot(ownerId, scratch);
 

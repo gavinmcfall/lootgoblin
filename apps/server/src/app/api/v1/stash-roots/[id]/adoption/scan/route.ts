@@ -22,7 +22,7 @@ import * as crypto from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import { eq } from 'drizzle-orm';
 
-import { getDb, schema } from '@/db/client';
+import { getServerDb, schema } from '@/db/client';
 import { authenticateRequest, unauthenticatedResponse } from '@/auth/request-auth';
 import { resolveAcl } from '@/acl/resolver';
 import { logger } from '@/logger';
@@ -53,7 +53,7 @@ export async function POST(
   const { id } = await ctx.params;
 
   // Look up the stash root.
-  const db = getDb() as any;
+  const db = getServerDb();
   const rows = await db
     .select()
     .from(schema.stashRoots)
@@ -64,7 +64,7 @@ export async function POST(
     return NextResponse.json({ error: 'not-found' }, { status: 404 });
   }
 
-  const root = rows[0];
+  const root = rows[0]!; // length guard above proves rows[0] exists
 
   // ACL — same kind:'collection' workaround as stash-roots/[id]/route.ts.
   // The ACL resolver has no stash_root kind; collection's update policy
@@ -94,6 +94,7 @@ export async function POST(
   let scanResult: ScanResult;
   try {
     const engine = createAdoptionEngine();
+    // Note: engine.scan re-fetches the stash root row; accepted as a minor redundant read (idempotent).
     scanResult = await engine.scan(id);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

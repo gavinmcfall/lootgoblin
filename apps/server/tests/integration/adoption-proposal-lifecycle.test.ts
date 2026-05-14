@@ -17,6 +17,8 @@
  *  10.  DELETE non-owner → 403
  *  11.  DELETE then DELETE again → second is 404
  *  12.  DELETE unauthenticated → 401
+ *  13.  DELETE proposalId belonging to a different user → 404, proposal not side-effected
+ *  14.  DELETE proposalId belonging to a different stash root (right user, wrong [id]) → 404, proposal not side-effected
  */
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
@@ -266,9 +268,10 @@ describe('GET /api/v1/stash-roots/[id]/adoption/proposals/[proposalId]', () => {
     const { GET } = await import(
       '../../src/app/api/v1/stash-roots/[id]/adoption/proposals/[proposalId]/route'
     );
+    const unknownId = uid();
     const res = await GET(
-      makeGetRequest(rootId, uid()),
-      { params: Promise.resolve({ id: rootId, proposalId: uid() }) },
+      makeGetRequest(rootId, unknownId),
+      { params: Promise.resolve({ id: rootId, proposalId: unknownId }) },
     );
 
     expect(res.status).toBe(404);
@@ -355,9 +358,10 @@ describe('GET /api/v1/stash-roots/[id]/adoption/proposals/[proposalId]', () => {
     const { GET } = await import(
       '../../src/app/api/v1/stash-roots/[id]/adoption/proposals/[proposalId]/route'
     );
+    const unknownId = uid();
     const res = await GET(
-      makeGetRequest(rootId, uid()),
-      { params: Promise.resolve({ id: rootId, proposalId: uid() }) },
+      makeGetRequest(rootId, unknownId),
+      { params: Promise.resolve({ id: rootId, proposalId: unknownId }) },
     );
 
     expect(res.status).toBe(401);
@@ -475,11 +479,67 @@ describe('DELETE /api/v1/stash-roots/[id]/adoption/proposals/[proposalId]', () =
     const { DELETE } = await import(
       '../../src/app/api/v1/stash-roots/[id]/adoption/proposals/[proposalId]/route'
     );
+    const unknownId = uid();
     const res = await DELETE(
-      makeDeleteRequest(rootId, uid()),
-      { params: Promise.resolve({ id: rootId, proposalId: uid() }) },
+      makeDeleteRequest(rootId, unknownId),
+      { params: Promise.resolve({ id: rootId, proposalId: unknownId }) },
     );
 
     expect(res.status).toBe(401);
+  }, 15_000);
+
+  it('13. DELETE proposalId belonging to a different user → 404, proposal not side-effected', async () => {
+    // callerUserId owns the stash root (ACL passes), but proposal was seeded for proposalSeederId.
+    const callerUserId = await seedUser();
+    const proposalSeederId = await seedUser();
+    const rootId = await seedStashRoot(callerUserId);
+    const c = makeCandidate(uid(), 'OtherUserModel', 'Other User Model');
+    const proposalId = seedProposal(proposalSeederId, rootId, [c]);
+
+    mockAuthenticate.mockResolvedValue(makeActor(callerUserId));
+
+    const { DELETE } = await import(
+      '../../src/app/api/v1/stash-roots/[id]/adoption/proposals/[proposalId]/route'
+    );
+    const res = await DELETE(
+      makeDeleteRequest(rootId, proposalId),
+      { params: Promise.resolve({ id: rootId, proposalId }) },
+    );
+
+    // ACL passes (caller owns root), but getProposal userId mismatch → 404
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('not-found');
+
+    // Proposal must still exist under its correct owner keys
+    const stillThere = getProposal(proposalId, proposalSeederId, rootId);
+    expect(stillThere).not.toBeNull();
+  }, 15_000);
+
+  it('14. DELETE proposalId belonging to different stash root (right user, wrong [id]) → 404, proposal not side-effected', async () => {
+    const userId = await seedUser();
+    const rootId = await seedStashRoot(userId);
+    const otherRootId = await seedStashRoot(userId);
+    const c = makeCandidate(uid(), 'WrongRootModel', 'Wrong Root Model');
+    // Proposal is for rootId, but we DELETE via otherRootId in the path
+    const proposalId = seedProposal(userId, rootId, [c]);
+
+    mockAuthenticate.mockResolvedValue(makeActor(userId));
+
+    const { DELETE } = await import(
+      '../../src/app/api/v1/stash-roots/[id]/adoption/proposals/[proposalId]/route'
+    );
+    const res = await DELETE(
+      makeDeleteRequest(otherRootId, proposalId),
+      { params: Promise.resolve({ id: otherRootId, proposalId }) },
+    );
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe('not-found');
+
+    // Proposal must still exist under its correct stash root key
+    const stillThere = getProposal(proposalId, userId, rootId);
+    expect(stillThere).not.toBeNull();
   }, 15_000);
 });

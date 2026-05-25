@@ -274,6 +274,94 @@ describe('createMixRecipe — validation rejections', () => {
   });
 });
 
+describe('createMixRecipe — tolerance field', () => {
+  it('T1. happy path WITH tolerance: components[0].tolerance persists', async () => {
+    const ownerId = await seedUser();
+    const r = await createMixRecipe(
+      {
+        ownerId,
+        name: 'tolerance-recipe',
+        components: [
+          { materialProductRef: 'a', ratioOrGrams: 80, tolerance: 2 },
+          { materialProductRef: 'b', ratioOrGrams: 20, tolerance: 1 },
+        ],
+      },
+      { dbUrl: DB_URL },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const rows = await db()
+      .select()
+      .from(schema.mixRecipes)
+      .where(eq(schema.mixRecipes.id, r.recipeId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.components[0]!.tolerance).toBe(2);
+    expect(rows[0]!.components[1]!.tolerance).toBe(1);
+  });
+
+  it('T2. backward-compat: components WITHOUT tolerance succeed and re-read with tolerance === undefined', async () => {
+    const ownerId = await seedUser();
+    const r = await createMixRecipe(
+      {
+        ownerId,
+        name: 'no-tolerance-recipe',
+        components: [
+          { materialProductRef: 'a', ratioOrGrams: 50 },
+          { materialProductRef: 'b', ratioOrGrams: 50 },
+        ],
+      },
+      { dbUrl: DB_URL },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const rows = await db()
+      .select()
+      .from(schema.mixRecipes)
+      .where(eq(schema.mixRecipes.id, r.recipeId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.components[0]!.tolerance).toBeUndefined();
+    expect(rows[0]!.components[1]!.tolerance).toBeUndefined();
+  });
+
+  it('T3a. tolerance=0 → component-malformed', async () => {
+    const ownerId = await seedUser();
+    const r = await createMixRecipe(
+      {
+        ownerId,
+        name: 'bad-tolerance-zero',
+        components: [
+          { materialProductRef: 'a', ratioOrGrams: 50, tolerance: 0 },
+          { materialProductRef: 'b', ratioOrGrams: 50 },
+        ],
+      },
+      { dbUrl: DB_URL },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe('component-malformed');
+  });
+
+  it('T3b. tolerance=-1 → component-malformed', async () => {
+    const ownerId = await seedUser();
+    const r = await createMixRecipe(
+      {
+        ownerId,
+        name: 'bad-tolerance-neg',
+        components: [
+          { materialProductRef: 'a', ratioOrGrams: 50, tolerance: -1 },
+          { materialProductRef: 'b', ratioOrGrams: 50 },
+        ],
+      },
+      { dbUrl: DB_URL },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe('component-malformed');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // applyMixBatch — validation rejections
 // ---------------------------------------------------------------------------

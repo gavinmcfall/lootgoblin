@@ -569,7 +569,7 @@ export const mixRecipes = sqliteTable(
       .references(() => user.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     components: text('components', { mode: 'json' })
-      .$type<Array<{ materialProductRef: string; ratioOrGrams: number }>>()
+      .$type<Array<{ materialProductRef: string; ratioOrGrams: number; tolerance?: number }>>()
       .notNull(),
     notes: text('notes'),
     /** Idempotency-Key on POST /api/v1/materials/mix-recipes (V2-007a-T14). */

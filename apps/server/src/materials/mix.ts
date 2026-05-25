@@ -65,7 +65,7 @@ type ProvenanceClass = (typeof PROVENANCE_CLASSES)[number];
 export interface CreateMixRecipeInput {
   ownerId: string;
   name: string;
-  components: Array<{ materialProductRef: string; ratioOrGrams: number }>;
+  components: Array<{ materialProductRef: string; ratioOrGrams: number; tolerance?: number }>;
   notes?: string;
 }
 
@@ -138,6 +138,12 @@ export async function createMixRecipe(
       (c as { ratioOrGrams: number }).ratioOrGrams <= 0
     ) {
       return { ok: false, reason: 'component-malformed' };
+    }
+    const tol = (c as { tolerance?: unknown }).tolerance;
+    if (tol !== undefined) {
+      if (typeof tol !== 'number' || !Number.isFinite(tol) || tol <= 0) {
+        return { ok: false, reason: 'component-malformed' };
+      }
     }
   }
 

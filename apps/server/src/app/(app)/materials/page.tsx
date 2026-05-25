@@ -70,6 +70,12 @@ export default function MaterialsPage() {
           </p>
         </div>
         <Link
+          href="/materials/mix"
+          className="rounded-md border border-hairline px-3.5 py-2 font-sans text-[12.5px] text-fg-muted hover:text-fg"
+        >
+          Guided mix
+        </Link>
+        <Link
           href="/materials/new"
           className="rounded-md bg-accent px-3.5 py-2 font-sans text-[12.5px] font-semibold text-accent-ink"
         >

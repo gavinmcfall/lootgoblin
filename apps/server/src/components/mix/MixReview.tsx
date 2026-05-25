@@ -8,22 +8,9 @@
 // plus the colour-name field.
 
 import type { MixRecipeDto, ScaledComponent } from './types';
-import { scaleComponents } from './types';
+import { rampColor, scaleComponents } from './types';
 import { DeviationPill, DeviationOnly, ProvenanceTag } from './bits';
 import type { ComponentDraw } from './draws';
-
-const RAMP = [
-  '#8d8c8a',
-  '#5a5957',
-  '#b4b2af',
-  '#3a3937',
-  '#d0cdc9',
-  '#6f6e6c',
-  '#9e9c99',
-  '#4a4947',
-  '#c2bfbb',
-  '#7e7d7a',
-];
 
 export function MixReview({
   recipe,
@@ -93,7 +80,7 @@ export function MixReview({
               >
                 <div
                   className="h-3.5 w-3.5 rounded border border-hairline"
-                  style={{ background: RAMP[c.index % RAMP.length] }}
+                  style={{ background: rampColor(c.index) }}
                 />
                 <div>
                   <div className="font-sans text-[13px] font-medium text-fg">

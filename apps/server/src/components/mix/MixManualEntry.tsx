@@ -7,21 +7,9 @@
 // provenance is `entered`. Advance enabled when all components have a number.
 
 import type { MaterialDto, MixRecipeDto, ScaledComponent } from './types';
-import { materialLabel, scaleComponents } from './types';
+import { materialLabel, rampColor, scaleComponents } from './types';
+import { parseWeight } from './draws';
 import { ToleranceBand, DeviationPill, DeviationOnly, ProvenanceTag } from './bits';
-
-const RAMP = [
-  '#8d8c8a',
-  '#5a5957',
-  '#b4b2af',
-  '#3a3937',
-  '#d0cdc9',
-  '#6f6e6c',
-  '#9e9c99',
-  '#4a4947',
-  '#c2bfbb',
-  '#7e7d7a',
-];
 
 export function MixManualEntry({
   recipe,
@@ -44,12 +32,9 @@ export function MixManualEntry({
 }) {
   const { scaled } = scaleComponents(recipe.components, batchSize);
 
-  const numeric = (idx: number): number | null => {
-    const raw = weights[idx];
-    if (raw == null || raw.trim() === '') return null;
-    const v = parseFloat(raw);
-    return Number.isFinite(v) ? v : null;
-  };
+  // A blank, non-finite, or NEGATIVE entry counts as "not yet filled" — so the
+  // Review button stays disabled rather than submitting a bad value.
+  const numeric = (idx: number): number | null => parseWeight(weights[idx]);
 
   const totalTarget = scaled.reduce((s, c) => s + c.target, 0);
   const totalEntered = scaled.reduce((s, c) => s + (numeric(c.index) ?? 0), 0);
@@ -97,7 +82,7 @@ export function MixManualEntry({
             >
               <div
                 className="h-3.5 w-3.5 rounded border border-hairline"
-                style={{ background: RAMP[c.index % RAMP.length] }}
+                style={{ background: rampColor(c.index) }}
               />
               <div>
                 <div className="font-sans text-[13.5px] font-medium text-fg">
@@ -195,7 +180,7 @@ export function MixManualEntry({
                   className={`h-1.5 flex-1 rounded-[3px] border border-hairline ${
                     done ? '' : 'bg-surface-2 opacity-50'
                   }`}
-                  style={done ? { background: RAMP[c.index % RAMP.length] } : undefined}
+                  style={done ? { background: rampColor(c.index) } : undefined}
                 />
               );
             })}
@@ -218,7 +203,7 @@ export function MixManualEntry({
               >
                 <span
                   className="h-2.5 w-2.5 rounded-sm"
-                  style={{ background: RAMP[c.index % RAMP.length] }}
+                  style={{ background: rampColor(c.index) }}
                 />
                 <span className="truncate font-sans text-[11.5px] text-fg-muted">{c.ref}</span>
                 <span

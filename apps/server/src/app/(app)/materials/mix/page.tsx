@@ -9,7 +9,7 @@
 // components are presentational. See backend contract in
 // apps/server/src/materials/mix.ts (applyMixBatch).
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -138,6 +138,22 @@ export default function MixPage() {
     },
   });
 
+  // Cross-step focus handoff (a11y). Step components swap in place, so without
+  // this focus falls to <body> on each transition. Move focus to the step
+  // region (tabIndex={-1}) whenever `step` changes. Individual controls are
+  // already labelled — this is only the per-step handoff.
+  const stepRegionRef = useRef<HTMLDivElement>(null);
+  const didMountRef = useRef(false);
+  useEffect(() => {
+    // Skip the initial mount — only move focus on actual step transitions, so
+    // we don't yank focus to the region on first page load.
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    stepRegionRef.current?.focus();
+  }, [step]);
+
   return (
     <div>
       {/* Breadcrumb */}
@@ -155,6 +171,7 @@ export default function MixPage() {
         <span className="flex-1 border-b border-hairline" />
       </div>
 
+      <div ref={stepRegionRef} tabIndex={-1} className="outline-none">
       {step === 0 ? (
         <>
           <h1 className="m-0 mb-1.5 font-serif text-[44px] font-normal leading-[1.02] tracking-[-1.1px] text-fg">
@@ -241,6 +258,7 @@ export default function MixPage() {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

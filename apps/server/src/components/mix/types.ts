@@ -98,6 +98,49 @@ export function synthesizeHex(
   );
 }
 
+// Deterministic neutral-grey ramp for the abstract ingredient bar / row
+// swatches. Recipe components are abstract refs with no stored hex, so we key
+// a stable grey off the component index rather than invent brand colours.
+export const RAMP = [
+  '#8d8c8a',
+  '#5a5957',
+  '#b4b2af',
+  '#3a3937',
+  '#d0cdc9',
+  '#6f6e6c',
+  '#9e9c99',
+  '#4a4947',
+  '#c2bfbb',
+  '#7e7d7a',
+] as const;
+
+export function rampColor(i: number): string {
+  return RAMP[i % RAMP.length]!;
+}
+
+/**
+ * Fetch every page of `GET /api/v1/materials?kind=...` by following
+ * `nextCursor` until exhausted. The route caps each page at limit=50, so a
+ * user with more than 50 active bottles of a kind would otherwise be silently
+ * truncated. Accumulates all materials across pages.
+ */
+export async function fetchAllMaterials(kind: string): Promise<MaterialDto[]> {
+  const all: MaterialDto[] = [];
+  let cursor: string | undefined;
+  // Bound the loop defensively; 50/page × 200 pages = 10k materials.
+  for (let page = 0; page < 200; page += 1) {
+    const params = new URLSearchParams({ kind });
+    if (cursor) params.set('cursor', cursor);
+    const res = await fetch(`/api/v1/materials?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as { materials?: MaterialDto[]; nextCursor?: string };
+    all.push(...(body.materials ?? []));
+    if (!body.nextCursor) break;
+    cursor = body.nextCursor;
+  }
+  return all;
+}
+
 /** Friendly one-line label for an inventory material. */
 export function materialLabel(m: MaterialDto): string {
   const parts = [m.brand, m.subtype, m.colorName].filter(Boolean);

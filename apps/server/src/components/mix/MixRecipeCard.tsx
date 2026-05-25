@@ -7,25 +7,7 @@
 // as a composition without inventing brand colours.
 
 import type { MixRecipeDto, ScaledComponent } from './types';
-import { scaleComponents } from './types';
-
-// Deterministic grey ramp for the abstract ingredient bar (darkest first).
-const RAMP = [
-  '#8d8c8a',
-  '#5a5957',
-  '#b4b2af',
-  '#3a3937',
-  '#d0cdc9',
-  '#6f6e6c',
-  '#9e9c99',
-  '#4a4947',
-  '#c2bfbb',
-  '#7e7d7a',
-];
-
-function rampColor(i: number): string {
-  return RAMP[i % RAMP.length]!;
-}
+import { rampColor, scaleComponents } from './types';
 
 export function MixRecipeCard({
   recipe,

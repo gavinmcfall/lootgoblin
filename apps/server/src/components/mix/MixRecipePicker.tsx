@@ -14,8 +14,11 @@ export function MixRecipePicker({
 }) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['mix-recipes'],
-    queryFn: async (): Promise<{ recipes: MixRecipeDto[] }> =>
-      (await fetch('/api/v1/materials/mix-recipes')).json(),
+    queryFn: async (): Promise<{ recipes: MixRecipeDto[] }> => {
+      const res = await fetch('/api/v1/materials/mix-recipes');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
   });
 
   if (isError) return <EmptyHint>Failed to load mix recipes.</EmptyHint>;

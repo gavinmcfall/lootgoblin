@@ -9,21 +9,9 @@
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import type { MaterialDto, MixRecipeDto } from './types';
+import { rampColor } from './types';
 import type { ComponentDraw } from './draws';
 import { ProvenanceTag } from './bits';
-
-const RAMP = [
-  '#8d8c8a',
-  '#5a5957',
-  '#b4b2af',
-  '#3a3937',
-  '#d0cdc9',
-  '#6f6e6c',
-  '#9e9c99',
-  '#4a4947',
-  '#c2bfbb',
-  '#7e7d7a',
-];
 
 export function MixComplete({
   recipe,
@@ -102,7 +90,7 @@ export function MixComplete({
           >
             <div
               className="h-3 w-3 rounded-[3px] border border-hairline"
-              style={{ background: RAMP[i % RAMP.length] }}
+              style={{ background: rampColor(i) }}
             />
             <span className="font-sans text-[12.5px] text-fg">{d.sourceLabel}</span>
             <span className="min-w-[56px] text-right font-serif text-[17px] italic text-fg">
@@ -133,13 +121,19 @@ export function MixComplete({
               const pct = m.initialAmount > 0 ? m.remainingAmount / m.initialAmount : 1;
               const low = pct < 0.2;
               const label = [m.brand, m.subtype, m.colorName].filter(Boolean).join(' ') || id.slice(0, 8);
+              // Low stock is steady-state, not a transition — emphasize the
+              // number on the muted base and keep the "low" annotation muted
+              // (semantic-tone discipline; `running` is for transitions only,
+              // `danger` is wrong since restocking is self-service).
               return (
                 <div key={id} className="font-sans text-[12px] text-fg-muted">
                   → <span className="text-fg">{label}</span> now{' '}
-                  <span className={low ? 'text-running' : 'text-fg'}>
+                  <span className="text-fg">
                     {m.remainingAmount} {m.unit}
                   </span>
-                  {low && <span className="text-running"> — low ({Math.round(pct * 100)}%)</span>}
+                  {low && (
+                    <span className="text-fg-muted"> — low ({Math.round(pct * 100)}%)</span>
+                  )}
                 </div>
               );
             })}

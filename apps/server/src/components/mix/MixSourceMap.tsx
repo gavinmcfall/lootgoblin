@@ -9,20 +9,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { EmptyHint } from '@/components/shell/atoms';
 import type { MaterialDto, MixRecipeDto, ScaledComponent } from './types';
-import { materialLabel, scaleComponents } from './types';
-
-const RAMP = [
-  '#8d8c8a',
-  '#5a5957',
-  '#b4b2af',
-  '#3a3937',
-  '#d0cdc9',
-  '#6f6e6c',
-  '#9e9c99',
-  '#4a4947',
-  '#c2bfbb',
-  '#7e7d7a',
-];
+import { fetchAllMaterials, materialLabel, rampColor, scaleComponents } from './types';
 
 export function MixSourceMap({
   recipe,
@@ -41,22 +28,19 @@ export function MixSourceMap({
 }) {
   // Fetch resins + filaments separately, then merge. Both are valid mix
   // sources; we group them so the picker shows everything the user owns.
+  // Each fetch pages through nextCursor until exhausted so a user with >50
+  // active bottles of a kind isn't silently truncated.
   const resinQ = useQuery({
-    queryKey: ['materials', 'resin'],
-    queryFn: async (): Promise<{ materials: MaterialDto[] }> =>
-      (await fetch('/api/v1/materials?kind=resin')).json(),
+    queryKey: ['materials', 'resin', 'all'],
+    queryFn: () => fetchAllMaterials('resin'),
   });
   const filamentQ = useQuery({
-    queryKey: ['materials', 'filament'],
-    queryFn: async (): Promise<{ materials: MaterialDto[] }> =>
-      (await fetch('/api/v1/materials?kind=filament')).json(),
+    queryKey: ['materials', 'filament', 'all'],
+    queryFn: () => fetchAllMaterials('filament'),
   });
 
   const owned = useMemo<MaterialDto[]>(() => {
-    const all = [
-      ...(resinQ.data?.materials ?? []),
-      ...(filamentQ.data?.materials ?? []),
-    ];
+    const all = [...(resinQ.data ?? []), ...(filamentQ.data ?? [])];
     // Only active materials can be drawn from.
     return all.filter((m) => m.active);
   }, [resinQ.data, filamentQ.data]);
@@ -111,7 +95,7 @@ export function MixSourceMap({
               >
                 <div
                   className="h-3.5 w-3.5 rounded border border-hairline"
-                  style={{ background: RAMP[c.index % RAMP.length] }}
+                  style={{ background: rampColor(c.index) }}
                 />
                 <div>
                   <div className="font-sans text-[13px] font-medium text-fg">{c.ref}</div>
@@ -141,13 +125,14 @@ export function MixSourceMap({
                 </div>
                 <div className="min-w-[110px] text-right">
                   {selected ? (
-                    <span
-                      className={`font-mono text-[11px] ${
-                        insufficient ? 'text-running' : 'text-fg-muted'
-                      }`}
-                    >
-                      {selected.remainingAmount} {selected.unit} left
-                      {insufficient && ' · low'}
+                    // Low/insufficient stock is steady-state, not a transition:
+                    // emphasize the number on the muted base rather than using
+                    // the `running` transition tone (semantic-tone discipline).
+                    <span className="font-mono text-[11px] text-fg-muted">
+                      <span className={insufficient ? 'text-fg' : undefined}>
+                        {selected.remainingAmount} {selected.unit}
+                      </span>{' '}
+                      left{insufficient && ' · low'}
                     </span>
                   ) : (
                     <span className="font-mono text-[11px] text-fg-ghost">unmapped</span>

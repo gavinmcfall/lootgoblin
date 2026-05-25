@@ -241,7 +241,7 @@ export interface MixRecipeDto {
   id: string;
   ownerId: string;
   name: string;
-  components: Array<{ materialProductRef: string; ratioOrGrams: number }>;
+  components: Array<{ materialProductRef: string; ratioOrGrams: number; tolerance?: number }>;
   notes: string | null;
   createdAt: string;
 }

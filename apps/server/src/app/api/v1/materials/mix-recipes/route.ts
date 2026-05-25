@@ -32,6 +32,7 @@ import {
 const ComponentSchema = z.object({
   materialProductRef: z.string().min(1).max(200),
   ratioOrGrams: z.number().positive().finite(),
+  tolerance: z.number().positive().finite().optional(),
 });
 
 const CreateBodySchema = z.object({

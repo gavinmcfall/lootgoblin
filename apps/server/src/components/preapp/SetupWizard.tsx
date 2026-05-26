@@ -11,9 +11,9 @@
 // Degradations vs the design mock are documented inline at each site.
 
 import { useState } from 'react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { FirstRunState } from '@/setup/first-run';
-import { Field, PrimaryButton, GhostButton } from '@/components/preapp/primitives';
+import { Field, PrimaryButton } from '@/components/preapp/primitives';
 
 // ── per-key copy ───────────────────────────────────────────────────────────
 // Only STASH_ROOTS is a real WIZARD_DEFERRABLE_KEY today. Unknown future keys
@@ -114,10 +114,13 @@ export function SetupWizard({ initialState }: { initialState: FirstRunState }) {
   const [adminEmail, setAdminEmail] = useState<string | null>(null);
   const [stashRoot, setStashRoot] = useState<string | null>(null);
 
-  // Total wizard steps = admin step (1) + one per pending key.
-  const wizardKeys =
-    phase.kind === 'complete' ? [] : phase.pendingKeys;
-  const totalSteps = 1 + (initialState.needsSetup ? initialState.pendingKeys.length : 0);
+  // Count of wizard keys already saved this session. This is the single source
+  // of truth for the stepper position: the admin step is index 0, so the
+  // current wizard key sits at index (1 + completedWizardKeys). Total is
+  // derived from the same count plus the keys still live, so the stepper stays
+  // correct even if the server's pending set grows mid-wizard (e.g. a second
+  // deferrable key appears on a later resolve()).
+  const [completedWizardKeys, setCompletedWizardKeys] = useState(0);
 
   if (phase.kind === 'no-admin') {
     return (
@@ -130,18 +133,22 @@ export function SetupWizard({ initialState }: { initialState: FirstRunState }) {
     );
   }
 
-  if (phase.kind === 'wizard' && wizardKeys.length > 0) {
-    const key = wizardKeys[0]!;
-    // The admin step occupies index 0; this is the first wizard key after it.
-    const stepIndex = totalSteps - wizardKeys.length;
+  if (phase.kind === 'wizard' && phase.pendingKeys.length > 0) {
+    const key = phase.pendingKeys[0]!;
+    const total = 1 + completedWizardKeys + phase.pendingKeys.length;
+    const stepIndex = 1 + completedWizardKeys;
     return (
+      // key={key} gives each distinct pending key a fresh instance, so its
+      // internal value/error/submitting state never leaks from a previous key.
       <WizardKeyStep
+        key={key}
         fieldKey={key}
         step={stepIndex}
-        total={totalSteps}
+        total={total}
         completedLabels={['Admin account']}
         onSaved={(value, next) => {
           if (key === 'STASH_ROOTS') setStashRoot(value);
+          setCompletedWizardKeys((n) => n + 1);
           setPhase(phaseFromState(next));
         }}
       />
@@ -170,6 +177,9 @@ function CreateAdminStep({
     setSubmitting(true);
     try {
       // The setup route reads req.formData() — submit form-encoded, NOT JSON.
+      // Note: /api/setup intentionally does NOT establish a session — it
+      // discards the signUpEmail result and only creates the user — so the
+      // admin must sign in at /login afterward. Don't "fix" this as a bug.
       const form = new FormData();
       form.set('name', name);
       form.set('email', email);
@@ -181,8 +191,14 @@ function CreateAdminStep({
         setSubmitting(false);
         return;
       }
-      // Re-read state to learn the next phase.
+      // Re-read state to learn the next phase. Guard res.ok so a 500/HTML
+      // response doesn't silently land the user on the completion screen.
       const statusRes = await fetch('/api/v1/setup/status');
+      if (!statusRes.ok) {
+        setError('Account created, but could not load the next step. Reload to continue.');
+        setSubmitting(false);
+        return;
+      }
       const next = (await statusRes.json()) as FirstRunState;
       onCreated(email, next);
     } catch {
@@ -365,17 +381,10 @@ function WizardKeyStep({
           inputMode={meta.kind === 'path' ? 'text' : undefined}
         />
 
+        {/* No "← Back": the admin step is not re-enterable (the account is
+            already created), and STASH_ROOTS is the only real wizard key.
+            Real phase-rewind belongs with any future multi-key work. */}
         <div className="mt-1 flex items-center gap-2.5">
-          {/* "← Back" only when a prior step exists. The admin step is not
-              re-enterable (the account is already created), so back is hidden
-              while there is a single real wizard key. */}
-          {step > 1 && (
-            <GhostButton
-              full={false}
-              label="← Back"
-              onClick={() => window.history.back()}
-            />
-          )}
           <div className="flex-1" />
           <PrimaryButton
             full={false}
@@ -400,6 +409,7 @@ function CompleteStep({
   // After a reload neither is known — omit rather than fake (DEGRADED: the
   // mock's instance.public_url / libraries.first / integrations.manyfold lines
   // are dropped entirely as they are not real wizard keys).
+  const router = useRouter();
   const receipt: { k: string; v: string }[] = [];
   if (adminEmail) receipt.push({ k: 'admin', v: adminEmail });
   if (stashRoot) receipt.push({ k: 'STASH_ROOTS', v: stashRoot });
@@ -453,9 +463,7 @@ function CompleteStep({
       )}
 
       <div className="w-full">
-        <Link href="/login" className="block">
-          <PrimaryButton type="button" label="Sign in →" />
-        </Link>
+        <PrimaryButton type="button" label="Sign in →" onClick={() => router.push('/login')} />
       </div>
 
       <div className="font-sans text-[11px] leading-[1.5] text-fg-faint">

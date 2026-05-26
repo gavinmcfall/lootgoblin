@@ -24,12 +24,20 @@ export default function HoardPage() {
       <SectionTitle
         meta={`${libraries.length} librar${libraries.length === 1 ? 'y' : 'ies'}`}
         right={
-          <Link
-            href="/hoard/new"
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink shadow-sm hover:opacity-90"
-          >
-            <Plus className="h-3.5 w-3.5" strokeWidth={2} /> New library
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/hoard/adopt"
+              className="rounded-md border border-hairline px-3 py-1.5 text-[12.5px] text-fg-muted hover:text-fg"
+            >
+              Adopt existing folder
+            </Link>
+            <Link
+              href="/hoard/new"
+              className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink shadow-sm hover:opacity-90"
+            >
+              <Plus className="h-3.5 w-3.5" strokeWidth={2} /> New library
+            </Link>
+          </div>
         }
       >
         Libraries in the hoard

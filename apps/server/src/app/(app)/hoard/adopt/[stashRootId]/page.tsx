@@ -51,6 +51,11 @@ async function parseError(res: Response): Promise<string> {
   return adoptionErrorMessage(body.error, body.reason);
 }
 
+/** Defensive read of a `useMutation` error (typed `unknown`). */
+function mutationErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : 'Something went wrong.';
+}
+
 export default function AdoptWizardPage({
   params,
 }: {
@@ -114,9 +119,18 @@ export default function AdoptWizardPage({
   });
 
   // ── Preview mutation ────────────────────────────────────────────────────────
+  // Latest-wins guard: each preview request is stamped with a monotonic id.
+  // useMutation does not serialize/cancel, so rapid selection toggles can fire
+  // overlapping requests whose responses arrive out of order. We ignore any
+  // payload whose stamp is not the most recent one issued, so the displayed
+  // counts always match the selection that triggered the latest request.
+  const previewRequestSeq = useRef(0);
+  const latestPreviewRequest = useRef(0);
   const previewMutation = useMutation({
-    mutationFn: async (): Promise<PreviewResponseDto> => {
+    mutationFn: async (): Promise<{ requestId: number; payload: PreviewResponseDto }> => {
       if (!proposalId) throw new Error('No proposal. Rescan to continue.');
+      const requestId = ++previewRequestSeq.current;
+      latestPreviewRequest.current = requestId;
       const res = await fetch(`/api/v1/stash-roots/${stashRootId}/adoption/preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -127,13 +141,16 @@ export default function AdoptWizardPage({
         }),
       });
       if (!res.ok) throw new Error(await parseError(res));
-      return res.json();
+      const payload = (await res.json()) as PreviewResponseDto;
+      return { requestId, payload };
     },
-    onSuccess: (data) => {
-      setPreviewOptions(data.options);
+    onSuccess: ({ requestId, payload }) => {
+      // Drop stale responses — only the most recently issued request wins.
+      if (requestId !== latestPreviewRequest.current) return;
+      setPreviewOptions(payload.options);
       // Reconcile the chosen template if the new option set no longer has it.
       setChosenTemplate((prev) =>
-        prev && data.options.some((o) => o.template === prev) ? prev : null,
+        prev && payload.options.some((o) => o.template === prev) ? prev : null,
       );
     },
     onError: (err: Error) => toast.error(err.message),
@@ -251,7 +268,7 @@ export default function AdoptWizardPage({
             rootName={root.name}
             onScan={() => scanMutation.mutate()}
             isScanning={scanMutation.isPending}
-            error={scanMutation.isError ? (scanMutation.error as Error).message : null}
+            error={scanMutation.isError ? mutationErrorMessage(scanMutation.error) : null}
           />
         )}
 
@@ -271,7 +288,7 @@ export default function AdoptWizardPage({
             options={previewOptions}
             patternDetected={derivedTemplates.patternDetected}
             isLoading={previewMutation.isPending}
-            error={previewMutation.isError ? (previewMutation.error as Error).message : null}
+            error={previewMutation.isError ? mutationErrorMessage(previewMutation.error) : null}
             chosenTemplate={chosenTemplate}
             onChoose={setChosenTemplate}
             onBack={() => setStep(1)}
@@ -289,7 +306,7 @@ export default function AdoptWizardPage({
             onMode={setMode}
             onApply={() => applyMutation.mutate()}
             isApplying={applyMutation.isPending}
-            error={applyMutation.isError ? (applyMutation.error as Error).message : null}
+            error={applyMutation.isError ? mutationErrorMessage(applyMutation.error) : null}
             report={report}
             onBack={() => setStep(2)}
           />

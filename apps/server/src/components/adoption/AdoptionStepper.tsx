@@ -43,6 +43,7 @@ export function AdoptionStepper({
           return (
             <li
               key={s.id}
+              aria-current={on ? 'step' : undefined}
               className={`flex items-start gap-2.5 rounded-md border p-2 ${
                 on ? 'border-accent-edge bg-accent-soft' : 'border-transparent'
               }`}

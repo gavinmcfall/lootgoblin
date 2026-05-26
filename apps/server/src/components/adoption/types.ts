@@ -63,7 +63,7 @@ export type AdoptionMode = 'in-place' | 'copy-then-cleanup';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Human-readable byte size. Binary units (KiB-style steps, decimal labels). */
+/** Human-readable byte size. 1024-byte steps with decimal KB/MB/GB labels. */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];

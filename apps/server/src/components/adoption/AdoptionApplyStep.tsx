@@ -148,7 +148,7 @@ export function AdoptionApplyStep({
               href="/stash"
               className="rounded-md bg-accent px-4 py-2 font-sans text-[12.5px] font-semibold text-accent-ink shadow-sm hover:opacity-90"
             >
-              Open in Hoard →
+              Open the Stash →
             </Link>
             <Link
               href="/hoard"

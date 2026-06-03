@@ -42,18 +42,23 @@ export function LedgerFilters({ value, onChange, onClear }: Props) {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Field label="subject type">
-          <select
+          {/* Combobox: native <datalist> suggests the known kinds for discoverability,
+              but accepts arbitrary text so users can filter on kinds outside the
+              registry (mix_batch, stash_root, dispatch_job, source_credential,
+              loot_file, bulk_action, system_event, or any future kind). */}
+          <input
+            type="text"
+            list="ledger-subject-types"
             value={value.subject_type}
             onChange={(e) => set('subject_type', e.target.value)}
-            className="w-full rounded-sm border border-hairline bg-surface-2 px-2 py-1.5 font-mono text-[12px] text-fg focus:border-accent focus:outline-none"
-          >
-            <option value="">any</option>
+            placeholder="any"
+            className="w-full rounded-sm border border-hairline bg-surface-2 px-2 py-1.5 font-mono text-[12px] text-fg placeholder:text-fg-ghost focus:border-accent focus:outline-none"
+          />
+          <datalist id="ledger-subject-types">
             {KNOWN_SUBJECT_TYPES.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
+              <option key={k} value={k} />
             ))}
-          </select>
+          </datalist>
         </Field>
 
         <Field label="kind">

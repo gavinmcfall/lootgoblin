@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, Beaker, BookOpen, Boxes, Factory, FolderTree, History, Radar, Settings, Timer, FileText, HeartPulse } from 'lucide-react';
+import { Activity, BarChart3, Beaker, BookOpen, Boxes, Factory, FolderTree, History, Radar, ScrollText, Settings, Timer, FileText, HeartPulse } from 'lucide-react';
 import { GoblinMark } from '@/components/icons/GoblinMark';
 
 // Routes + labels follow the design-system vocabulary (Activity / Stash / Hoard /
@@ -17,6 +17,7 @@ const NAV = [
   { href: '/reports', label: 'Reports', icon: BarChart3, meta: null },
   { href: '/forge', label: 'Forge', icon: Factory, meta: null },
   { href: '/history', label: 'History', icon: History, meta: null },
+  { href: '/ledger', label: 'Ledger', icon: ScrollText, meta: null },
   { href: '/scouts', label: 'Scouts', icon: Radar, meta: null },
   { href: '/settings', label: 'Settings', icon: Settings, meta: null },
 ] as const;

@@ -147,9 +147,11 @@ export default function LedgerDetailPage({ params }: { params: Promise<{ id: str
           <h1 className="m-0 font-serif text-[36px] font-normal leading-[1.05] tracking-[-0.9px] text-fg">
             <span className="italic">{data.kind}</span>
           </h1>
-          {/* Tone is signalled by colour alone; aria-label gives the same
-              cue to AT without leaking the internal enum into the visible UI. */}
-          <span aria-label={`event tone ${tone}`}>
+          {/* The visible badge shows the verb-phrase; the tone enum is colour-
+              only for sighted users. The wrapper's aria-label REPLACES the inner
+              text for AT, so it has to carry both signals — verb first, then
+              tone qualifier. */}
+          <span aria-label={`${kindVerb(data.kind)} — ${tone}`}>
             <MetaBadge tone={tone}>{kindVerb(data.kind)}</MetaBadge>
           </span>
         </div>

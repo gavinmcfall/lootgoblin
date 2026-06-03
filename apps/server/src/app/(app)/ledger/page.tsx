@@ -22,6 +22,9 @@ import {
   type LedgerListResponseDto,
 } from '@/components/ledger/types';
 
+/** Page size sent to GET /api/v1/ledger (server max is 200; 50 is the default). */
+const PAGE_LIMIT = 50;
+
 /**
  * Build the query string the server expects. Date inputs (YYYY-MM-DD) are
  * widened to ISO Z timestamps at day boundaries; everything else is passed
@@ -47,7 +50,7 @@ function buildQuery(filters: LedgerFilterState, cursor?: string): string {
       params.set('occurred_before', d.toISOString());
     }
   }
-  params.set('limit', '50');
+  params.set('limit', String(PAGE_LIMIT));
   if (cursor) params.set('cursor', cursor);
   return params.toString();
 }
@@ -96,7 +99,9 @@ export default function LedgerPage() {
   );
 
   const hasMore = Boolean(query.hasNextPage);
-  const filtersActive = Object.values(debouncedFilters).some((v) => v !== '');
+  // Drive the empty-state copy off the LIVE filter state — otherwise clearing
+  // briefly keeps showing "filters active" copy until the 250ms debounce settles.
+  const filtersActive = Object.values(filters).some((v) => v !== '');
 
   return (
     <div className="flex flex-col gap-7">
@@ -140,7 +145,11 @@ export default function LedgerPage() {
         <>
           <LedgerTable events={events} />
 
-          <div className="flex items-center justify-center pt-2">
+          <div
+            className="flex items-center justify-center pt-2"
+            aria-live="polite"
+            aria-busy={query.isFetchingNextPage}
+          >
             {hasMore ? (
               <button
                 type="button"

@@ -1,30 +1,24 @@
-// Shared types for the /ledger viewer.
-// These mirror LedgerEventDto / LedgerListResponseDto from
-// apps/server/src/app/api/v1/ledger/_shared.ts.
+// UI types + constants for the /ledger viewer.
+//
+// LedgerEventDto / LedgerListResponseDto are re-exported from the server
+// route's shared module so the UI tracks any DTO drift automatically. The
+// re-export is type-only (`import type` / `export type`) so no server code
+// (`logger`, `getServerDb`, etc. transitively reachable from _shared.ts)
+// ends up in the client bundle — with `isolatedModules: true` the imports
+// are erased at build time.
+import type {
+  LedgerEventDto,
+  LedgerListResponseDto,
+} from '@/app/api/v1/ledger/_shared';
 
-export interface RelatedResource {
-  kind: string;
-  id: string;
-  role: string;
-}
+export type { LedgerEventDto, LedgerListResponseDto };
 
-export interface LedgerEventDto {
-  id: string;
-  kind: string;
-  actorUserId: string | null;
-  subjectType: string;
-  subjectId: string;
-  relatedResources: RelatedResource[] | null;
-  payload: unknown;
-  provenanceClass: string | null;
-  occurredAt: string | null;
-  ingestedAt: string;
-}
-
-export interface LedgerListResponseDto {
-  items: LedgerEventDto[];
-  nextCursor: string | null;
-}
+/**
+ * Convenience alias for an entry in `LedgerEventDto.relatedResources`. Kept
+ * local so the UI has a name to reach for; derives from the canonical DTO so
+ * any shape change there flows through.
+ */
+export type RelatedResource = NonNullable<LedgerEventDto['relatedResources']>[number];
 
 /** Subject-type → friendly label + sometimes a domain page. */
 export const KNOWN_SUBJECT_TYPES = [

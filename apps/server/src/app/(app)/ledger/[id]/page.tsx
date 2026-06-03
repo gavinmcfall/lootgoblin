@@ -33,6 +33,31 @@ function formatTimestamp(iso: string | null): string {
   return d.toLocaleString();
 }
 
+/**
+ * Pull the verb-phrase portion out of a `namespace.verb-phrase` event kind
+ * for the masthead badge. Falls back to the full kind when there's no dot.
+ */
+function kindVerb(kind: string): string {
+  const i = kind.lastIndexOf('.');
+  return i < 0 ? kind : kind.slice(i + 1);
+}
+
+/**
+ * JSON.stringify replacer that emits `"[Circular]"` when a value reappears in
+ * its own ancestor chain, so we can pretty-print arbitrary payloads without
+ * the call ever throwing.
+ */
+function circularSafeReplacer() {
+  const seen = new WeakSet<object>();
+  return function replacer(_key: string, value: unknown) {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value as object)) return '[Circular]';
+      seen.add(value as object);
+    }
+    return value;
+  };
+}
+
 function SubjectValue({ subjectType, subjectId }: { subjectType: string; subjectId: string }) {
   const href = subjectHref(subjectType, subjectId);
   const inner = (
@@ -89,16 +114,14 @@ export default function LedgerDetailPage({ params }: { params: Promise<{ id: str
   }
 
   const tone = toneForKind(data.kind);
+  // Server-side _shared.ts builds `payload` via JSON.parse, so structured
+  // cloning succeeds. The replacer below guards against the one case JSON
+  // refuses to serialize on its own — circular references — without falling
+  // back to the worse-than-nothing `[object Object]` from String(obj).
   const payloadJson =
     data.payload === null
       ? '—'
-      : (() => {
-          try {
-            return JSON.stringify(data.payload, null, 2);
-          } catch {
-            return String(data.payload);
-          }
-        })();
+      : JSON.stringify(data.payload, circularSafeReplacer(), 2);
 
   return (
     <div className="flex flex-col gap-7">
@@ -124,7 +147,11 @@ export default function LedgerDetailPage({ params }: { params: Promise<{ id: str
           <h1 className="m-0 font-serif text-[36px] font-normal leading-[1.05] tracking-[-0.9px] text-fg">
             <span className="italic">{data.kind}</span>
           </h1>
-          <MetaBadge tone={tone}>{tone}</MetaBadge>
+          {/* Tone is signalled by colour alone; aria-label gives the same
+              cue to AT without leaking the internal enum into the visible UI. */}
+          <span aria-label={`event tone ${tone}`}>
+            <MetaBadge tone={tone}>{kindVerb(data.kind)}</MetaBadge>
+          </span>
         </div>
         <p className="m-0 max-w-[680px] font-serif text-[13.5px] italic text-fg-muted">
           Ingested {formatTimestamp(data.ingestedAt)}

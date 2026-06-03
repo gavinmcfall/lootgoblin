@@ -3,8 +3,10 @@
  *
  * The payload is polymorphic `unknown`. We don't pretend to understand kinds,
  * we just surface up to three short scalar key/value pairs from an object, or
- * a plain string/number. Nested objects/arrays are skipped (we show their
- * type instead). Strings longer than 40 chars are truncated.
+ * a plain string/number. Nested objects are skipped; nested arrays show their
+ * length. Truncation differs by context: a top-level string payload uses the
+ * wider 80-char budget (it's all the row has to say), while nested string
+ * values inside an object preview clamp at 40 chars so three pairs still fit.
  */
 export function payloadPreview(payload: unknown): string {
   if (payload === null || payload === undefined) return '—';

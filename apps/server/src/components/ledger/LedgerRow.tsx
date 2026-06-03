@@ -38,14 +38,19 @@ export function LedgerRow({ event }: Props) {
 
   return (
     <tr
-      className={`${LEDGER_GRID_COLS} cursor-pointer border-b border-dashed border-hairline px-2 py-2.5 transition-colors hover:bg-surface-2 focus-within:bg-surface-2`}
+      className={`${LEDGER_GRID_COLS} relative cursor-pointer border-b border-dashed border-hairline px-2 py-2.5 transition-colors hover:bg-surface-2 focus-within:bg-surface-2`}
     >
-      {/* When — owns the navigation anchor. */}
+      {/* When — owns the navigation anchor. The anchor's `::after` pseudo-
+          element stretches across the whole <tr> so clicks anywhere in the row
+          reach this link, while keyboard focus and the focus ring stay on the
+          anchor itself (single tab stop). The Subject id's `title` tooltip is
+          a sibling span on the anchor's own stacking layer, so it still works
+          where its cell sits. */}
       <td className="font-mono text-[10.5px] uppercase tracking-[1px] text-fg-faint">
         <Link
           href={href}
           title={whenTitle}
-          className="rounded-sm text-fg-faint hover:text-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+          className="rounded-sm text-fg-faint hover:text-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-accent after:absolute after:inset-0 after:content-['']"
         >
           {whenLabel}
         </Link>

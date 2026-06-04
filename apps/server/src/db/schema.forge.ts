@@ -145,6 +145,25 @@ export type AclLevel = (typeof ACL_LEVELS)[number];
 export const AGENT_KINDS = ['central_worker', 'courier'] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
+/**
+ * Reachability status for a (printer, agent) pair in printer_reachable_via.
+ *
+ *   unknown      — never probed, or probe result expired
+ *   reachable    — most recent probe succeeded (connection + auth OK)
+ *   unreachable  — network-level failure (timeout, connection refused)
+ *   auth_failed  — network reachable but credentials rejected
+ *
+ * App-layer validates against PRINTER_REACHABLE_STATUSES (no DB CHECK
+ * constraint, project pattern).
+ */
+export const PRINTER_REACHABLE_STATUSES = [
+  'unknown',
+  'reachable',
+  'unreachable',
+  'auth_failed',
+] as const;
+export type PrinterReachableStatus = (typeof PRINTER_REACHABLE_STATUSES)[number];
+
 /** Discriminator for dispatch_jobs.target_id poly-FK. */
 export const DISPATCH_TARGET_KINDS = ['printer', 'slicer'] as const;
 export type DispatchTargetKind = (typeof DISPATCH_TARGET_KINDS)[number];
@@ -226,6 +245,51 @@ export const agents = sqliteTable(
 );
 
 // ---------------------------------------------------------------------------
+// V2-006a-T1: courier_pair_nonces — single-use pairing tokens
+// ---------------------------------------------------------------------------
+
+/**
+ * Single-use nonces issued during the Courier pairing handshake. Each nonce
+ * may only be consumed once; the Courier endpoint atomically sets
+ * `consumed_at` and rejects any subsequent attempt to reuse the same token.
+ *
+ * Life-cycle:
+ *   1. Server generates a nonce and inserts a row with `consumed_at = 0`
+ *      (conceptually "unclaimed" — NOT NULL is kept for simplicity; 0 ms
+ *      epoch signals unused).
+ *   2. Courier calls /api/v1/courier/pair with the nonce.
+ *   3. Server flips `consumed_at` to now_ms in a single atomic UPDATE WHERE
+ *      consumed_at = 0; if changes === 0 the nonce was already used.
+ *   4. Old nonces are GC'd by a background sweeper (future task).
+ *
+ * FK behaviour:
+ *   - `agent_id` ON DELETE CASCADE — decommissioning an agent drops its
+ *     unused pair nonces (they can't be claimed if the agent is gone).
+ */
+export const courierPairNonces = sqliteTable(
+  'courier_pair_nonces',
+  {
+    nonce: text('nonce').primaryKey(),
+    /**
+     * Timestamp when the nonce was consumed (milliseconds since epoch).
+     * 0 = unclaimed / available. Set atomically on first use.
+     */
+    consumedAt: integer('consumed_at', { mode: 'timestamp_ms' }).notNull(),
+    /**
+     * The Courier agent this nonce was issued for. ON DELETE CASCADE —
+     * removing the agent invalidates all its outstanding nonces.
+     */
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+  },
+  (t) => [
+    /** "Find all nonces for agent X" — e.g. to invalidate on decommission. */
+    index('courier_pair_nonces_agent_idx').on(t.agentId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // printers
 // ---------------------------------------------------------------------------
 
@@ -300,6 +364,23 @@ export const printerReachableVia = sqliteTable(
     agentId: text('agent_id')
       .notNull()
       .references(() => agents.id, { onDelete: 'cascade' }),
+    /**
+     * V2-006a-T1: Reachability probe result for this (printer, agent) pair.
+     * App-layer validates against PRINTER_REACHABLE_STATUSES.
+     * Existing rows default to 'unknown' (never probed).
+     */
+    reachableStatus: text('reachable_status').notNull().default('unknown'),
+    /**
+     * V2-006a-T1: When the last probe was executed (ingest clock).
+     * NULL until the first probe for this pair.
+     */
+    lastCheckedAt: integer('last_checked_at', { mode: 'timestamp_ms' }),
+    /**
+     * V2-006a-T1: Human-readable probe detail for UI display (e.g. error
+     * message on `unreachable` / `auth_failed`, version string on
+     * `reachable`). NULL when no detail is available.
+     */
+    detail: text('detail'),
   },
   (t) => [
     /** Composite-uniqueness pair index (effective primary key). */

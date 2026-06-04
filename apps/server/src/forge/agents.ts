@@ -32,7 +32,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, gt } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 
 import { getServerDb, schema } from '../db/client';
 import { logger } from '../logger';
@@ -374,4 +374,130 @@ export async function recordHeartbeat(
     .set({ lastSeenAt: now })
     .where(eq(schema.agents.id, args.id));
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// computeAgentLiveness — V2-006a-T9
+// ---------------------------------------------------------------------------
+
+/**
+ * How long (ms) after the last heartbeat before we consider a courier offline.
+ * Default: 3 × 30-second heartbeat interval = 90_000 ms.
+ * Override via COURIER_OFFLINE_AFTER_MS environment variable.
+ */
+export const OFFLINE_AFTER_MS: number = (() => {
+  const env = process.env.COURIER_OFFLINE_AFTER_MS;
+  if (env) {
+    const parsed = parseInt(env, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return 90_000; // 3 × 30s heartbeat default
+})();
+
+/**
+ * Pure function — no DB access.
+ *
+ * An agent is `'online'` when it sent a heartbeat within `OFFLINE_AFTER_MS`
+ * of `now`. It is `'offline'` when `lastSeenAt` is null (never heartbeated)
+ * OR when the elapsed time since `lastSeenAt` exceeds `OFFLINE_AFTER_MS`.
+ */
+export function computeAgentLiveness(
+  lastSeenAt: Date | null,
+  now: Date,
+): 'online' | 'offline' {
+  if (lastSeenAt === null) return 'offline';
+  const elapsed = now.getTime() - lastSeenAt.getTime();
+  return elapsed <= OFFLINE_AFTER_MS ? 'online' : 'offline';
+}
+
+// ---------------------------------------------------------------------------
+// listJobsBlockedByOfflineCourier — V2-006a-T9
+// ---------------------------------------------------------------------------
+
+export interface BlockedJobRow {
+  jobId: string;
+  printerId: string;
+  agentId: string;
+}
+
+/**
+ * Returns `dispatch_jobs` rows that are `status='claimable'` AND whose target
+ * printer is reachable ONLY via couriers that are currently offline.
+ *
+ * A job is NOT blocked when:
+ *   - At least one `central_worker` has a `printer_reachable_via` row for the
+ *     printer (central workers are always considered reachable).
+ *   - At least one courier agent in the job's `printer_reachable_via` set is
+ *     currently online (heartbeat within OFFLINE_AFTER_MS).
+ *
+ * The function returns one row per (job, blocking offline agent) pair, so a
+ * job with two offline-courier reachability entries will appear twice — callers
+ * that want unique job IDs should deduplicate.
+ */
+export async function listJobsBlockedByOfflineCourier(
+  opts?: { now?: Date; dbUrl?: string },
+): Promise<BlockedJobRow[]> {
+  const db = getServerDb(opts?.dbUrl);
+  const now = opts?.now ?? new Date();
+
+  // 1. Fetch all claimable jobs.
+  const claimableJobs = await db
+    .select({
+      id: schema.dispatchJobs.id,
+      targetId: schema.dispatchJobs.targetId,
+      targetKind: schema.dispatchJobs.targetKind,
+    })
+    .from(schema.dispatchJobs)
+    .where(eq(schema.dispatchJobs.status, 'claimable'));
+
+  if (claimableJobs.length === 0) return [];
+
+  // Only consider printer-target jobs (slicer-target jobs don't route via couriers).
+  const printerJobs = claimableJobs.filter((j) => j.targetKind === 'printer');
+  if (printerJobs.length === 0) return [];
+
+  const printerIds = [...new Set(printerJobs.map((j) => j.targetId))];
+
+  // 2. Fetch all printer_reachable_via rows for these printers, joined with agent kind + lastSeenAt.
+  const reachRows = await db
+    .select({
+      printerId: schema.printerReachableVia.printerId,
+      agentId: schema.printerReachableVia.agentId,
+      agentKind: schema.agents.kind,
+      lastSeenAt: schema.agents.lastSeenAt,
+    })
+    .from(schema.printerReachableVia)
+    .innerJoin(schema.agents, eq(schema.printerReachableVia.agentId, schema.agents.id))
+    .where(inArray(schema.printerReachableVia.printerId, printerIds));
+
+  // 3. Group by printer: determine which printers are blocked.
+  //    A printer is blocked iff every agent that can reach it is an offline courier.
+  const printerAgentMap = new Map<string, Array<{ agentId: string; agentKind: string; lastSeenAt: Date | null }>>();
+  for (const row of reachRows) {
+    const list = printerAgentMap.get(row.printerId) ?? [];
+    list.push({ agentId: row.agentId, agentKind: row.agentKind, lastSeenAt: row.lastSeenAt });
+    printerAgentMap.set(row.printerId, list);
+  }
+
+  const result: BlockedJobRow[] = [];
+
+  for (const job of printerJobs) {
+    const agents = printerAgentMap.get(job.targetId) ?? [];
+    if (agents.length === 0) continue; // no reachability rows → not our concern
+
+    // If any agent is a central_worker or an online courier → not blocked.
+    const hasUnblockedPath = agents.some((a) => {
+      if (a.agentKind === 'central_worker') return true;
+      return computeAgentLiveness(a.lastSeenAt, now) === 'online';
+    });
+
+    if (hasUnblockedPath) continue;
+
+    // All agents are offline couriers — emit one row per offline agent.
+    for (const a of agents) {
+      result.push({ jobId: job.id, printerId: job.targetId, agentId: a.agentId });
+    }
+  }
+
+  return result;
 }

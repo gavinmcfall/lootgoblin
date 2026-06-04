@@ -145,6 +145,25 @@ export type AclLevel = (typeof ACL_LEVELS)[number];
 export const AGENT_KINDS = ['central_worker', 'courier'] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
+/**
+ * Reachability status for a (printer, agent) pair in printer_reachable_via.
+ *
+ *   unknown      — never probed, or probe result expired
+ *   reachable    — most recent probe succeeded (connection + auth OK)
+ *   unreachable  — network-level failure (timeout, connection refused)
+ *   auth_failed  — network reachable but credentials rejected
+ *
+ * App-layer validates against PRINTER_REACHABLE_STATUSES (no DB CHECK
+ * constraint, project pattern).
+ */
+export const PRINTER_REACHABLE_STATUSES = [
+  'unknown',
+  'reachable',
+  'unreachable',
+  'auth_failed',
+] as const;
+export type PrinterReachableStatus = (typeof PRINTER_REACHABLE_STATUSES)[number];
+
 /** Discriminator for dispatch_jobs.target_id poly-FK. */
 export const DISPATCH_TARGET_KINDS = ['printer', 'slicer'] as const;
 export type DispatchTargetKind = (typeof DISPATCH_TARGET_KINDS)[number];
@@ -222,6 +241,67 @@ export const agents = sqliteTable(
   (t) => [
     index('agents_kind_idx').on(t.kind),
     index('agents_last_seen_idx').on(t.lastSeenAt),
+    /**
+     * CF-T2-1: Enforce "one courier key → at most one agent" invariant.
+     *
+     * SQLite treats multiple NULLs as distinct values for unique indexes, so
+     * existing `central_worker` rows (NULL `pair_credential_ref`) are unaffected.
+     * A non-NULL `pair_credential_ref` may only appear on a single agents row —
+     * exactly what `authenticateCourier` assumes when resolving a key to an agent.
+     */
+    uniqueIndex('agents_pair_credential_ref_unique').on(t.pairCredentialRef),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// V2-006a-T1: courier_pair_nonces — single-use pairing tokens
+// ---------------------------------------------------------------------------
+
+/**
+ * Single-use nonces consumed during the Courier pairing handshake. A row in
+ * this table records that a given pair-token nonce has been spent; the PRIMARY
+ * KEY on `nonce` is itself the replay guard.
+ *
+ * Life-cycle (V2-006a-T4 `exchangeCourierPairToken`):
+ *   1. The admin mints a signed pair token carrying a random `nonce`. NO row is
+ *      written at mint time — the nonce lives only inside the signed token.
+ *   2. The Courier calls POST /api/v1/couriers/pair with the token.
+ *   3. The server verifies the token, creates the agent + API key, then INSERTs
+ *      a row here with `consumed_at = now` and `agent_id` set. A fast-path SELECT
+ *      rejects an already-present nonce up front; the PRIMARY KEY constraint is
+ *      the race-safe backstop — a concurrent second INSERT of the same nonce
+ *      throws a UNIQUE/PRIMARY KEY violation, which the endpoint translates to
+ *      409 `pair-token-already-used`.
+ *   4. Old nonces are GC'd by a background sweeper (future task).
+ *
+ * Note: `consumed_at` is always a real timestamp here (there is no "0 =
+ * unclaimed" sentinel — un-consumed nonces simply have no row).
+ *
+ * FK behaviour:
+ *   - `agent_id` ON DELETE CASCADE — decommissioning an agent drops the
+ *     consumed-nonce rows it owns.
+ */
+export const courierPairNonces = sqliteTable(
+  'courier_pair_nonces',
+  {
+    nonce: text('nonce').primaryKey(),
+    /**
+     * Timestamp when the nonce was consumed (milliseconds since epoch). A row's
+     * mere existence means the nonce is spent; this records when. Un-consumed
+     * nonces have no row at all (see table header).
+     */
+    consumedAt: integer('consumed_at', { mode: 'timestamp_ms' }).notNull(),
+    /**
+     * The Courier agent this nonce was issued for. ON DELETE CASCADE —
+     * removing the agent invalidates all its outstanding nonces.
+     */
+    agentId: text('agent_id')
+      .notNull()
+      .references(() => agents.id, { onDelete: 'cascade' }),
+  },
+  (t) => [
+    /** "Find all nonces for agent X" — e.g. to invalidate on decommission. */
+    index('courier_pair_nonces_agent_idx').on(t.agentId),
   ],
 );
 
@@ -300,6 +380,23 @@ export const printerReachableVia = sqliteTable(
     agentId: text('agent_id')
       .notNull()
       .references(() => agents.id, { onDelete: 'cascade' }),
+    /**
+     * V2-006a-T1: Reachability probe result for this (printer, agent) pair.
+     * App-layer validates against PRINTER_REACHABLE_STATUSES.
+     * Existing rows default to 'unknown' (never probed).
+     */
+    reachableStatus: text('reachable_status').notNull().default('unknown'),
+    /**
+     * V2-006a-T1: When the last probe was executed (ingest clock).
+     * NULL until the first probe for this pair.
+     */
+    lastCheckedAt: integer('last_checked_at', { mode: 'timestamp_ms' }),
+    /**
+     * V2-006a-T1: Human-readable probe detail for UI display (e.g. error
+     * message on `unreachable` / `auth_failed`, version string on
+     * `reachable`). NULL when no detail is available.
+     */
+    detail: text('detail'),
   },
   (t) => [
     /** Composite-uniqueness pair index (effective primary key). */

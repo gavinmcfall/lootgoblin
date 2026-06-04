@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `agents_pair_credential_ref_unique` ON `agents` (`pair_credential_ref`);

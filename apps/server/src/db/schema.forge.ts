@@ -241,6 +241,15 @@ export const agents = sqliteTable(
   (t) => [
     index('agents_kind_idx').on(t.kind),
     index('agents_last_seen_idx').on(t.lastSeenAt),
+    /**
+     * CF-T2-1: Enforce "one courier key → at most one agent" invariant.
+     *
+     * SQLite treats multiple NULLs as distinct values for unique indexes, so
+     * existing `central_worker` rows (NULL `pair_credential_ref`) are unaffected.
+     * A non-NULL `pair_credential_ref` may only appear on a single agents row —
+     * exactly what `authenticateCourier` assumes when resolving a key to an agent.
+     */
+    uniqueIndex('agents_pair_credential_ref_unique').on(t.pairCredentialRef),
   ],
 );
 

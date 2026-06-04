@@ -15,6 +15,13 @@
       "when": 1780559959987,
       "tag": "0001_crazy_moondragon",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1780561200699,
+      "tag": "0002_woozy_union_jack",
+      "breakpoints": true
     }
   ]
 }

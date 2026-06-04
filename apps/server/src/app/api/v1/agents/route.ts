@@ -27,7 +27,7 @@ import {
   INVALID_API_KEY,
   unauthenticatedResponse,
 } from '@/auth/request-auth';
-import { createAgent, listAgents } from '@/forge/agents';
+import { createAgent, listAgents, computeAgentLiveness } from '@/forge/agents';
 import { AGENT_KINDS } from '@/db/schema.forge';
 
 // ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ interface AgentRow {
   createdAt: Date;
 }
 
-function toAgentDto(row: AgentRow) {
+function toAgentDto(row: AgentRow, now: Date) {
   return {
     id: row.id,
     kind: row.kind,
@@ -72,6 +72,7 @@ function toAgentDto(row: AgentRow) {
     reachable_lan_hint: row.reachableLanHint,
     last_seen_at: row.lastSeenAt ? row.lastSeenAt.getTime() : null,
     created_at: row.createdAt.getTime(),
+    liveness: computeAgentLiveness(row.lastSeenAt, now),
   };
 }
 
@@ -106,8 +107,9 @@ export async function GET(req: NextRequest) {
   }
 
   const result = await listAgents(queryParsed.data);
+  const now = new Date();
   return NextResponse.json({
-    agents: result.agents.map(toAgentDto),
+    agents: result.agents.map((a) => toAgentDto(a, now)),
     ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
   });
 }

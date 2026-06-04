@@ -434,21 +434,18 @@ describe('buildExecutionBundle', () => {
     process.env.LOOTGOBLIN_SECRET = 'this-is-a-32-char-secret-for-test!';
 
     const bundle = await buildExecutionBundle(jobId, DB_URL);
-    expect(bundle.job.targetKind).toBe('slicer');
-    expect(bundle.printer).toBeNull();
-    expect(bundle.credential).toBeNull();
-    expect(bundle.artifact).toBeNull();
+    expect(bundle).not.toBeNull();
+    expect(bundle!.job.targetKind).toBe('slicer');
+    expect(bundle!.printer).toBeNull();
+    expect(bundle!.credential).toBeNull();
+    expect(bundle!.artifact).toBeNull();
   });
 
-  it('13. job not found → bundle returned with empty sentinel fields (no throw)', async () => {
+  it('13. job not found → null (no throw, distinguishable from incomplete bundle)', async () => {
     process.env.LOOTGOBLIN_SECRET = 'this-is-a-32-char-secret-for-test!';
 
     const bundle = await buildExecutionBundle('no-such-job', DB_URL);
-    expect(bundle.job.id).toBe('no-such-job');
-    expect(bundle.job.ownerId).toBe('');
-    expect(bundle.printer).toBeNull();
-    expect(bundle.credential).toBeNull();
-    expect(bundle.artifact).toBeNull();
+    expect(bundle).toBeNull();
   });
 
   it('14. connectionConfig parsed as object even if underlying driver returns JSON string', async () => {
@@ -471,10 +468,11 @@ describe('buildExecutionBundle', () => {
     process.env.LOOTGOBLIN_SECRET = 'this-is-a-32-char-secret-for-test!';
 
     const bundle = await buildExecutionBundle(jobId, DB_URL);
-    expect(bundle.printer).not.toBeNull();
+    expect(bundle).not.toBeNull();
+    expect(bundle!.printer).not.toBeNull();
     // Whether or not the driver returns string or object, connectionConfig
     // must always be a plain object after buildExecutionBundle.
-    expect(typeof bundle.printer!.connectionConfig).toBe('object');
-    expect(bundle.printer!.connectionConfig).toMatchObject({ url: 'http://10.0.0.3:7125' });
+    expect(typeof bundle!.printer!.connectionConfig).toBe('object');
+    expect(bundle!.printer!.connectionConfig).toMatchObject({ url: 'http://10.0.0.3:7125' });
   });
 });

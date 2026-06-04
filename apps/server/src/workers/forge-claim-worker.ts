@@ -252,6 +252,10 @@ function makeRegistryBackedDispatchHandler(args: {
             : (printer.connectionConfig as Record<string, unknown>),
       },
       artifact: {
+        // NOTE: loadArtifactForJob now also returns `mimeType`, but it is
+        // intentionally NOT forwarded into DispatchContext here — the in-process
+        // adapters don't consume it. Callers needing mimeType (T6 Courier
+        // execute endpoint) should use buildExecutionBundle from claim-core.
         storagePath: artifact.storagePath,
         sizeBytes: artifact.sizeBytes,
         sha256: artifact.sha256,

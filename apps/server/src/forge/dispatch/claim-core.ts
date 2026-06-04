@@ -305,6 +305,10 @@ export async function extractAndPersistSlicerEstimate(args: {
  * Pure assembly — no state transitions, no side effects. Reuses loadPrinterForJob,
  * loadArtifactForJob, and getCredential. `connectionConfig` is parsed from JSON
  * if the column returns a string (mirrors the worker's defensive handling).
+ *
+ * Returns `null` when the dispatch_jobs row is not found, so callers can
+ * cleanly distinguish "not found" from "found but incomplete" (a non-null
+ * bundle with null printer/credential/artifact is a valid found state).
  */
 export interface ExecutionBundle {
   job: {
@@ -333,7 +337,7 @@ export interface ExecutionBundle {
 export async function buildExecutionBundle(
   jobId: string,
   dbUrl?: string,
-): Promise<ExecutionBundle> {
+): Promise<ExecutionBundle | null> {
   const db = getServerDb(dbUrl);
 
   // Load the dispatch job row.
@@ -350,20 +354,7 @@ export async function buildExecutionBundle(
     .limit(1);
   const jobRow = jobRows[0];
 
-  if (!jobRow) {
-    return {
-      job: {
-        id: jobId,
-        ownerId: '',
-        lootId: '',
-        targetKind: 'printer',
-        targetId: '',
-      },
-      printer: null,
-      credential: null,
-      artifact: null,
-    };
-  }
+  if (!jobRow) return null;
 
   const job = {
     id: jobRow.id,

@@ -33,13 +33,15 @@
 
 import { randomUUID, randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { getServerDb, schema } from '@/db/client';
 import { signPairToken, verifyPairToken, getInstanceIdentityPublic } from '@/identity';
 import { API_KEY_SCOPES } from '@/auth/scopes';
 import { createAgent, updateAgent } from './agents';
+import { logger } from '@/logger';
 import type { PairTokenPayload } from '@/identity';
+import type { PrinterReachableStatus } from '@/db/schema.forge';
 
 // ---------------------------------------------------------------------------
 // SERVER_VERSION — shared with heartbeat (T5) and future endpoints
@@ -259,4 +261,62 @@ export async function exchangeCourierPairToken(
     instance_id: identity.id,
     server_version: SERVER_VERSION,
   };
+}
+
+// ---------------------------------------------------------------------------
+// recordReachability — V2-006a-T5
+// ---------------------------------------------------------------------------
+
+export interface ReachabilityEntry {
+  printer_id: string;
+  reachable_status: PrinterReachableStatus;
+  detail?: string;
+}
+
+/**
+ * Update `printer_reachable_via` rows for a given agent.
+ *
+ * For each entry, UPDATEs the row WHERE printer_id = entry.printer_id AND
+ * agent_id = agentId. If no row exists (printer not assigned to this agent),
+ * the entry is silently ignored — the agent cannot self-assign printers.
+ *
+ * @param agentId   The Courier agent performing the reachability report.
+ * @param entries   The probe results to persist.
+ * @param now       Injectable clock for deterministic tests.
+ * @param dbUrl     DB override for test isolation.
+ */
+export function recordReachability(
+  agentId: string,
+  entries: ReachabilityEntry[],
+  now: Date,
+  dbUrl?: string,
+): void {
+  if (entries.length === 0) return;
+
+  const db = getServerDb(dbUrl);
+
+  for (const entry of entries) {
+    const result = db
+      .update(schema.printerReachableVia)
+      .set({
+        reachableStatus: entry.reachable_status,
+        lastCheckedAt: now,
+        detail: entry.detail ?? null,
+      })
+      .where(
+        and(
+          eq(schema.printerReachableVia.printerId, entry.printer_id),
+          eq(schema.printerReachableVia.agentId, agentId),
+        ),
+      )
+      .run();
+
+    const changes = (result as unknown as { changes?: number }).changes ?? 0;
+    if (changes === 0) {
+      logger.info(
+        { agentId, printerId: entry.printer_id },
+        'recordReachability: printer not assigned to this agent — ignoring entry',
+      );
+    }
+  }
 }

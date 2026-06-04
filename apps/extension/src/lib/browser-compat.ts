@@ -31,6 +31,7 @@ export const bc = {
   },
   tabs: {
     query: (q: { active?: boolean; currentWindow?: boolean }) => browser.tabs?.query(q),
+    create: (props: { url: string }) => browser.tabs?.create(props),
     get onUpdated() {
       return browser.tabs?.onUpdated;
     },

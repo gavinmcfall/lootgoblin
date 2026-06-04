@@ -29,7 +29,7 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
 import { getServerDb, schema } from '@/db/client';
 import {

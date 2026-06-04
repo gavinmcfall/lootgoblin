@@ -30,7 +30,15 @@ export const bc = {
     },
   },
   tabs: {
-    query: (q: { active?: boolean; currentWindow?: boolean }) => browser.tabs?.query(q),
+    // Always resolves to an array — never `undefined`. `browser.tabs` is
+    // absent in content-script contexts; without the coalesce the `await`
+    // resolves to `undefined` and `const [tab] = await …` throws TypeError.
+    query: async (q: {
+      active?: boolean;
+      currentWindow?: boolean;
+    }): Promise<Array<{ id?: number; url?: string }>> => {
+      return (await browser.tabs?.query(q)) ?? [];
+    },
     create: (props: { url: string }) => browser.tabs?.create(props),
     get onUpdated() {
       return browser.tabs?.onUpdated;

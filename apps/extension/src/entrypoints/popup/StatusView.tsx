@@ -18,6 +18,8 @@ interface SiteConfigMatch {
   matches: string[];
 }
 
+type UploadSnapshot = Pick<UploadStatus, 'lastRunAt' | 'pendingCount' | 'lastError'>;
+
 function matchGlob(pattern: string, url: string): boolean {
   const re = new RegExp(
     '^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$',
@@ -55,31 +57,64 @@ export function StatusView({
   const [creds, setCreds] = useState<Credential[]>([]);
   const [sharing, setSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [upload, setUpload] = useState<UploadSnapshot | null>(null);
 
+  // Initial fetch — adapter match + credentials for the current site.
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const [tab] = await bc.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.url) return;
+        if (cancelled || !tab?.url) return;
         try {
-          setCurrentDomain(new URL(tab.url).hostname);
+          if (!cancelled) setCurrentDomain(new URL(tab.url).hostname);
         } catch {
           // chrome:// or about: pages have no parseable hostname
         }
         const res = await api<{ configs: SiteConfigMatch[] }>('/api/v1/site-configs');
+        if (cancelled) return;
         const m =
           res.configs.find((c) => c.matches.some((mm) => matchGlob(mm, tab.url!))) ?? null;
         if (m) {
-          setMatch(m);
+          if (!cancelled) setMatch(m);
           const cr = await api<{ credentials: Credential[] }>(
             `/api/v1/source-credentials/${m.siteId}`,
           );
-          setCreds(cr.credentials);
+          if (!cancelled) setCreds(cr.credentials);
         }
       } catch (e) {
-        setError((e as Error).message);
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : 'Failed to load site state');
+        }
       }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Single upload-status poller — shared by Today's loot AND footer so we
+  // don't double the background round-trips per popup open.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function refresh() {
+      if (cancelled) return;
+      try {
+        const res = await bc.runtime.sendMessage({ type: 'upload-status' });
+        if (res?.ok && !cancelled) {
+          setUpload(res.data as UploadSnapshot);
+        }
+      } catch {
+        // background not ready yet; retry
+      }
+      timer = setTimeout(refresh, 5000);
+    }
+    refresh();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   async function share() {
@@ -99,6 +134,8 @@ export function StatusView({
         `/api/v1/source-credentials/${match.siteId}`,
       );
       setCreds(cr.credentials);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Share failed');
     } finally {
       setSharing(false);
     }
@@ -119,7 +156,7 @@ export function StatusView({
           </div>
           <div className="lg-hero-eyebrow">
             <span className={`lg-status-dot ${status.tone}`} />
-            paired · {status.tone === 'ok' ? 'session healthy' : status.text}
+            paired · {status.text}
           </div>
           <div className="lg-hero-prefix">On the hunt at</div>
           <div className="lg-hero-site">{prettySiteName(match, currentDomain)}</div>
@@ -175,55 +212,31 @@ export function StatusView({
           <span className="lg-eyebrow">Today&apos;s loot</span>
           <span className="rule" />
         </div>
-        <TodaysLoot />
+        <TodaysLoot upload={upload} />
       </section>
 
-      <Footer serverUrl={state.serverUrl} onUnpair={onUnpair} onOpenApp={openApp} />
+      <Footer
+        serverUrl={state.serverUrl}
+        onUnpair={onUnpair}
+        onOpenApp={openApp}
+        upload={upload}
+      />
     </div>
   );
 }
 
-function TodaysLoot() {
-  const [status, setStatus] = useState<Pick<
-    UploadStatus,
-    'lastRunAt' | 'pendingCount' | 'lastError'
-  > | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function refresh() {
-      if (cancelled) return;
-      try {
-        const res = await bc.runtime.sendMessage({ type: 'upload-status' });
-        if (res?.ok && !cancelled) {
-          setStatus(
-            res.data as Pick<UploadStatus, 'lastRunAt' | 'pendingCount' | 'lastError'>,
-          );
-        }
-      } catch {
-        // background not ready yet; retry
-      }
-      timer = setTimeout(refresh, 5000);
-    }
-    refresh();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
-
-  if (!status) {
+function TodaysLoot({ upload }: { upload: UploadSnapshot | null }) {
+  if (!upload) {
     return <div className="lg-haul-empty">Checking…</div>;
   }
 
-  if (status.pendingCount === 0) {
+  if (upload.pendingCount === 0) {
     return (
       <>
         <div className="lg-haul-empty">All caught up.</div>
-        {status.lastError && (
+        {upload.lastError && (
           <div style={{ marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--danger)' }}>
-            last error · {status.lastError}
+            last error · {upload.lastError}
           </div>
         )}
       </>
@@ -232,9 +245,9 @@ function TodaysLoot() {
 
   return (
     <div className="lg-haul">
-      <span className="lg-haul-num">{status.pendingCount}</span>
+      <span className="lg-haul-num">{upload.pendingCount}</span>
       <span className="lg-haul-caption">
-        {status.pendingCount === 1 ? 'pending upload' : 'pending uploads'}
+        {upload.pendingCount === 1 ? 'pending upload' : 'pending uploads'}
       </span>
     </div>
   );
@@ -244,42 +257,19 @@ function Footer({
   serverUrl,
   onUnpair,
   onOpenApp,
+  upload,
 }: {
   serverUrl: string;
   onUnpair: () => void;
   onOpenApp: () => void;
+  upload: UploadSnapshot | null;
 }) {
-  const [pending, setPending] = useState<number | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function refresh() {
-      if (cancelled) return;
-      try {
-        const res = await bc.runtime.sendMessage({ type: 'upload-status' });
-        if (res?.ok && !cancelled) {
-          const d = res.data as Pick<UploadStatus, 'pendingCount'>;
-          setPending(d.pendingCount);
-        }
-      } catch {
-        // ignore
-      }
-      timer = setTimeout(refresh, 5000);
-    }
-    refresh();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
-
   const uploadingText =
-    pending === null
+    upload === null
       ? '⇅ —'
-      : pending === 0
+      : upload.pendingCount === 0
         ? '⇅ all caught up'
-        : `⇅ ${pending} uploading`;
+        : `⇅ ${upload.pendingCount} uploading`;
 
   return (
     <footer className="lg-footer">

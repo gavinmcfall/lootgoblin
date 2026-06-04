@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { startPair, pollStatus, completePair } from '@/lib/pairing';
 import { GoblinMark } from './GoblinMark';
 
@@ -8,24 +8,47 @@ export function PairView({ onPaired }: { onPaired: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
   const [busy, setBusy] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function stopTimer() {
+    if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  // Unmount cleanup — popup closes mid-poll, kill the timer.
+  useEffect(() => {
+    return () => {
+      stopTimer();
+    };
+  }, []);
 
   async function begin() {
     if (busy) return;
+    // If a prior pairing attempt left an interval running (user clicked
+    // "Try a different URL" then "Pair" again), kill it first so a late
+    // tick from the previous challenge can't flip the new view.
+    stopTimer();
     setError(null);
     setBusy(true);
     try {
       const r = await startPair(serverUrl);
       setCode(r.code);
       setPolling(true);
-      const timer = setInterval(async () => {
+      timerRef.current = setInterval(async () => {
+        // Bail if the timer has been cleared by reset()/unmount — guards
+        // every setState below so we never write to a stale view.
+        if (timerRef.current === null) return;
         try {
           const s = await pollStatus(serverUrl, r.challengeId);
+          if (timerRef.current === null) return;
           if (s.status === 'approved' && s.key) {
-            clearInterval(timer);
+            stopTimer();
             await completePair(serverUrl, s.key);
             onPaired();
           } else if (s.status === 'expired') {
-            clearInterval(timer);
+            stopTimer();
             setError('Code expired — try again.');
             setCode(null);
             setPolling(false);
@@ -35,13 +58,14 @@ export function PairView({ onPaired }: { onPaired: () => void }) {
         }
       }, 2000);
     } catch (e) {
-      setError((e as Error).message);
+      setError(e instanceof Error ? e.message : 'Failed to start pairing');
     } finally {
       setBusy(false);
     }
   }
 
   function reset() {
+    stopTimer();
     setCode(null);
     setPolling(false);
     setError(null);
@@ -97,6 +121,8 @@ export function PairView({ onPaired }: { onPaired: () => void }) {
             <span className="lg-field-label">Server URL</span>
             <input
               className="lg-input"
+              type="url"
+              inputMode="url"
               value={serverUrl}
               onChange={(e) => setServerUrl(e.target.value)}
               placeholder="http://lootgoblin.lan:7393"

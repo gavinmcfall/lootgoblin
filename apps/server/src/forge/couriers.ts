@@ -20,15 +20,17 @@
  *   1. Create agent row.
  *   2. Mint API key (hash + insert).
  *   3. Update agent.pairCredentialRef = keyId.
- *   4. Insert courier_pair_nonces row (consumes the nonce).
+ *   4. Resolve instance identity.
+ *   5. Insert courier_pair_nonces row (consumes the nonce) — LAST.
  *
- * Steps 3 and 4 are the "point of no return": if step 3 fails the key exists
- * but is not referenced, so the nonce is NOT consumed and the caller can retry
- * with the same token. If step 4 fails the key and agent are already linked;
- * the nonce is NOT consumed and the caller can retry (idempotent as long as the
- * same token is used — but the agent+key pair from the first attempt will become
- * orphaned; a future cleanup job can GC unreferenced agents). Step 4 success
- * gates the 200 response.
+ * The nonce is consumed LAST so any earlier failure (key-mint, agent↔key link,
+ * identity fetch) leaves the nonce un-consumed and the same token retryable.
+ * If the link step (3) fails the key exists but is not referenced, so it cannot
+ * authenticate and a future cleanup job can GC it. If two requests race the same
+ * token, both may pass the up-front SELECT existence check, but the PRIMARY KEY
+ * on `nonce` guarantees at most one INSERT wins — the loser's INSERT throws a
+ * UNIQUE/PRIMARY KEY violation which is caught and translated to 409 (rather than
+ * an uncaught 500). A successful nonce INSERT gates the 200 response.
  */
 
 import { randomUUID, randomBytes } from 'node:crypto';
@@ -53,6 +55,29 @@ import type { PrinterReachableStatus } from '@/db/schema.forge';
  * a static sentinel for non-npm contexts (Docker CMD, unit tests, etc.).
  */
 export const SERVER_VERSION: string = process.env.npm_package_version ?? '2.0.0';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * True when `err` is a SQLite UNIQUE / PRIMARY KEY constraint violation.
+ *
+ * better-sqlite3 throws `SqliteError` with `code` like
+ * `SQLITE_CONSTRAINT_PRIMARYKEY` / `SQLITE_CONSTRAINT_UNIQUE` and a message of
+ * the form "UNIQUE constraint failed: <table>.<col>". We match either signal so
+ * the nonce-consume backstop (step 8) recognises a lost race regardless of which
+ * constraint flavour SQLite reports. Mirrors the message-substring check used in
+ * /api/v1/collections/route.ts.
+ */
+function isUniqueConstraintViolation(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) {
+    return true;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes('UNIQUE constraint failed') || message.includes('PRIMARY KEY');
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -128,16 +153,19 @@ export async function mintCourierPairToken(
  * Steps (see module header for the safety-ordering rationale):
  *   1. Verify token signature + expiry.
  *   2. Enforce kind === 'courier'.
- *   3. Check nonce replay guard.
+ *   3. Check nonce replay guard (fast path).
  *   4. Create a new `courier` Agent.
  *   5. Mint a `courier_pairing` API key.
  *   6. Link agent ← key (updateAgent).
- *   7. Consume the nonce (insert courier_pair_nonces).
- *   8. Return { api_key, agent_id, instance_id, server_version }.
+ *   7. Resolve instance identity (before consuming the nonce).
+ *   8. Consume the nonce (insert courier_pair_nonces) — race-safe backstop.
+ *   9. Return { api_key, agent_id, instance_id, server_version }.
  *
- * Safety: nonce is only consumed (step 7) AFTER the agent↔key link is
- * committed (step 6). If step 6 fails the nonce is not consumed and the
- * caller can retry with the same token.
+ * Safety: the nonce is consumed LAST (step 8), AFTER the agent↔key link
+ * (step 6) and identity fetch (step 7). Any earlier failure leaves the nonce
+ * un-consumed so the same token can be retried. The step-8 INSERT is wrapped in
+ * try/catch: a UNIQUE/PRIMARY KEY violation (concurrent same-token race that
+ * slipped past step 3) returns 409 rather than a 500.
  */
 export async function exchangeCourierPairToken(
   token: string,
@@ -238,20 +266,38 @@ export async function exchangeCourierPairToken(
     };
   }
 
-  // --- Step 7: consume nonce (only reached if steps 1–6 succeeded) ---
-  await db.insert(schema.courierPairNonces).values({
-    nonce: payload.nonce,
-    consumedAt: new Date(now),
-    agentId,
-  });
-
-  // --- Step 8: resolve instance identity for response ---
+  // --- Step 7: resolve instance identity BEFORE consuming the nonce ---
+  // Fetching identity before the nonce INSERT means an identity-fetch failure
+  // returns 500 WITHOUT consuming the nonce, so the same token can be retried.
+  // (In production instrumentation.ts bootstraps identity on startup, so this
+  // is a defence-in-depth guard, not an expected path.)
   const identity = await getInstanceIdentityPublic();
   if (!identity) {
-    // Identity not bootstrapped — this is a server misconfiguration but should
-    // never happen in production (instrumentation.ts bootstraps it on startup).
-    // Nonce is already consumed; return 500 so the caller retries with a new token.
     return { ok: false, status: 500, error: 'internal', reason: 'identity-not-bootstrapped' };
+  }
+
+  // --- Step 8: consume nonce (only reached if steps 1–7 succeeded) ---
+  // The up-front SELECT (step 3) is the fast path; this INSERT is the
+  // race-safe backstop. Two concurrent exchanges with the same token can both
+  // pass the SELECT, but the PRIMARY KEY on `nonce` lets at most one INSERT
+  // win — the loser's INSERT throws a UNIQUE/PRIMARY KEY violation which we
+  // translate to 409 rather than letting it propagate as an uncaught 500.
+  try {
+    await db.insert(schema.courierPairNonces).values({
+      nonce: payload.nonce,
+      consumedAt: new Date(now),
+      agentId,
+    });
+  } catch (err) {
+    if (isUniqueConstraintViolation(err)) {
+      return { ok: false, status: 409, error: 'pair-token-already-used' };
+    }
+    return {
+      ok: false,
+      status: 500,
+      error: 'internal',
+      reason: `nonce-consume failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
   return {

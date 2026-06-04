@@ -220,7 +220,7 @@ describe('POST /api/v1/couriers/pair', () => {
     expect(result.reason).toBe('wrong-kind');
   });
 
-  it('9. reused nonce → 409 pair-token-already-used', async () => {
+  it('9. reused nonce → 409 pair-token-already-used (fast-path SELECT)', async () => {
     const mintResult = await mintCourierPairToken();
     expect(mintResult).not.toBeNull();
 
@@ -228,11 +228,63 @@ describe('POST /api/v1/couriers/pair', () => {
     const first = await exchangeCourierPairToken(mintResult!.token, { dbUrl: DB_URL });
     expect(first.ok).toBe(true);
 
-    // Second exchange with same token — nonce replay.
+    // Second exchange with same token — nonce replay caught by the up-front SELECT.
     const second = await exchangeCourierPairToken(mintResult!.token, { dbUrl: DB_URL });
     expect(second.ok).toBe(false);
     if (second.ok) throw new Error('expected failure');
     expect(second.status).toBe(409);
     expect(second.error).toBe('pair-token-already-used');
+  });
+
+  it('10. pre-consumed nonce → 409 even when the INSERT (not the SELECT) detects it', async () => {
+    // Seed an agent + a courier_pair_nonces row directly, simulating a race
+    // winner that already committed the nonce. Then mint a token carrying that
+    // SAME nonce and exchange it. The PRIMARY KEY backstop must yield a 409,
+    // never an uncaught 500 / PRIMARY-KEY throw. (Even though the up-front SELECT
+    // also catches this, the assertion proves the contract: same nonce → 409.)
+    const sharedNonce = randomBytes(16).toString('hex');
+
+    // Insert a pre-existing nonce row tied to a freshly-minted courier agent.
+    const seedAgent = await exchangeCourierPairToken(
+      (await mintCourierPairToken())!.token,
+      { dbUrl: DB_URL },
+    );
+    expect(seedAgent.ok).toBe(true);
+    if (!seedAgent.ok) throw new Error('expected ok');
+
+    await db().insert(schema.courierPairNonces).values({
+      nonce: sharedNonce,
+      consumedAt: new Date(),
+      agentId: seedAgent.agent_id,
+    });
+
+    // Mint a token with the exact same nonce and exchange it.
+    const collidingMint = await mintCourierPairToken({ nonce: sharedNonce });
+    expect(collidingMint).not.toBeNull();
+    const result = await exchangeCourierPairToken(collidingMint!.token, { dbUrl: DB_URL });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.status).toBe(409);
+    expect(result.error).toBe('pair-token-already-used');
+  });
+
+  it('11. concurrent same-token race → exactly one 200, the loser 409', async () => {
+    const mintResult = await mintCourierPairToken();
+    expect(mintResult).not.toBeNull();
+
+    // Fire two exchanges of the same token concurrently. Both may pass the
+    // up-front SELECT; the PRIMARY KEY on nonce lets at most one INSERT win.
+    // The loser's INSERT throws a UNIQUE/PRIMARY KEY violation that the
+    // step-8 try/catch translates to 409 (the race-safe backstop).
+    const [a, b] = await Promise.all([
+      exchangeCourierPairToken(mintResult!.token, { dbUrl: DB_URL }),
+      exchangeCourierPairToken(mintResult!.token, { dbUrl: DB_URL }),
+    ]);
+
+    const oks = [a, b].filter((r) => r.ok);
+    const conflicts = [a, b].filter((r) => !r.ok && r.status === 409);
+
+    expect(oks.length).toBe(1);
+    expect(conflicts.length).toBe(1);
   });
 });

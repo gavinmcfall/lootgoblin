@@ -258,30 +258,37 @@ export const agents = sqliteTable(
 // ---------------------------------------------------------------------------
 
 /**
- * Single-use nonces issued during the Courier pairing handshake. Each nonce
- * may only be consumed once; the Courier endpoint atomically sets
- * `consumed_at` and rejects any subsequent attempt to reuse the same token.
+ * Single-use nonces consumed during the Courier pairing handshake. A row in
+ * this table records that a given pair-token nonce has been spent; the PRIMARY
+ * KEY on `nonce` is itself the replay guard.
  *
- * Life-cycle:
- *   1. Server generates a nonce and inserts a row with `consumed_at = 0`
- *      (conceptually "unclaimed" — NOT NULL is kept for simplicity; 0 ms
- *      epoch signals unused).
- *   2. Courier calls /api/v1/courier/pair with the nonce.
- *   3. Server flips `consumed_at` to now_ms in a single atomic UPDATE WHERE
- *      consumed_at = 0; if changes === 0 the nonce was already used.
+ * Life-cycle (V2-006a-T4 `exchangeCourierPairToken`):
+ *   1. The admin mints a signed pair token carrying a random `nonce`. NO row is
+ *      written at mint time — the nonce lives only inside the signed token.
+ *   2. The Courier calls POST /api/v1/couriers/pair with the token.
+ *   3. The server verifies the token, creates the agent + API key, then INSERTs
+ *      a row here with `consumed_at = now` and `agent_id` set. A fast-path SELECT
+ *      rejects an already-present nonce up front; the PRIMARY KEY constraint is
+ *      the race-safe backstop — a concurrent second INSERT of the same nonce
+ *      throws a UNIQUE/PRIMARY KEY violation, which the endpoint translates to
+ *      409 `pair-token-already-used`.
  *   4. Old nonces are GC'd by a background sweeper (future task).
  *
+ * Note: `consumed_at` is always a real timestamp here (there is no "0 =
+ * unclaimed" sentinel — un-consumed nonces simply have no row).
+ *
  * FK behaviour:
- *   - `agent_id` ON DELETE CASCADE — decommissioning an agent drops its
- *     unused pair nonces (they can't be claimed if the agent is gone).
+ *   - `agent_id` ON DELETE CASCADE — decommissioning an agent drops the
+ *     consumed-nonce rows it owns.
  */
 export const courierPairNonces = sqliteTable(
   'courier_pair_nonces',
   {
     nonce: text('nonce').primaryKey(),
     /**
-     * Timestamp when the nonce was consumed (milliseconds since epoch).
-     * 0 = unclaimed / available. Set atomically on first use.
+     * Timestamp when the nonce was consumed (milliseconds since epoch). A row's
+     * mere existence means the nonce is spent; this records when. Un-consumed
+     * nonces have no row at all (see table header).
      */
     consumedAt: integer('consumed_at', { mode: 'timestamp_ms' }).notNull(),
     /**

@@ -11,17 +11,16 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/central"
+	"github.com/gavinmcfall/lootgoblin/courier/internal/printers"
 )
 
 // ---------------------------------------------------------------------------
 // Reporter interface — satisfied by *central.Client, injectable in tests.
 // ---------------------------------------------------------------------------
 
-// Reporter is the minimal interface the status subscriber needs to call back to
-// the central instance.  *central.Client satisfies this interface.
-type Reporter interface {
-	ReportStatus(ctx context.Context, payload central.StatusReport) error
-}
+// Reporter is a type alias for printers.Reporter so that all existing moonraker
+// code and tests compile unchanged.  *central.Client satisfies this interface.
+type Reporter = printers.Reporter
 
 // ---------------------------------------------------------------------------
 // wsConn — thin interface over the gorilla websocket.Conn for test injection.

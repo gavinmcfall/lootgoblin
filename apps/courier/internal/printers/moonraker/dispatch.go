@@ -15,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/gavinmcfall/lootgoblin/courier/internal/printers"
 )
 
 const (
@@ -23,13 +25,9 @@ const (
 	DefaultTimeoutSeconds = 60
 )
 
-// DispatchOutcome is the result of a Dispatch call.
-type DispatchOutcome struct {
-	OK             bool
-	RemoteFilename string // populated on success
-	Reason         string // populated on failure: unreachable|auth-failed|rejected|no-credentials|timeout|unknown
-	Details        string // optional human-readable detail
-}
+// DispatchOutcome is a type alias for printers.DispatchOutcome so that all
+// existing moonraker code and tests compile unchanged.
+type DispatchOutcome = printers.DispatchOutcome
 
 // moonrakerUploadResponse is the JSON shape returned by a successful Moonraker
 // file-upload.

@@ -5,7 +5,7 @@
 apps/courier/courier
 
 # Exclude test files and fixtures not needed in build context
-**/*.test.go
+**/*_test.go
 **/testdata/
 
 # Common noise

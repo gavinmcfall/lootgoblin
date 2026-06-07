@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -23,8 +24,25 @@ func main() {
 	os.Exit(run())
 }
 
+// printVersion writes the version string to w.  Extracted so it is unit-testable
+// without spawning a subprocess.
+func printVersion(w io.Writer) {
+	fmt.Fprintln(w, version.String())
+}
+
 // run is the real entry point; it returns an exit code so main stays trivial.
 func run() int {
+	// ------------------------------------------------------------------
+	// 0. Version subcommand / flag — must work without a valid config.
+	// ------------------------------------------------------------------
+	if len(os.Args) > 1 {
+		arg := os.Args[1]
+		if arg == "version" || arg == "--version" || arg == "-v" {
+			printVersion(os.Stdout)
+			return 0
+		}
+	}
+
 	log := logging.NewLogger()
 
 	// ------------------------------------------------------------------

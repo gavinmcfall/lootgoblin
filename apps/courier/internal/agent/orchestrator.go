@@ -30,6 +30,7 @@ import (
 	"github.com/gavinmcfall/lootgoblin/courier/internal/central"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/moonraker"
+	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/octoprint"
 )
 
 // moonrakerKind is the printer.Kind value the server stores for
@@ -55,8 +56,9 @@ func MakeJobHandler(
 	density, diameter float64,
 	log *slog.Logger,
 ) JobHandler {
-	// Wire the Moonraker adapter into the registry (idempotent).
+	// Wire adapters into the registry (idempotent).
 	moonraker.Register()
+	octoprint.Register()
 
 	return func(ctx context.Context, bundle *central.ClaimBundle, artifactPath string) error {
 		jobID := bundle.Job.ID

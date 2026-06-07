@@ -29,6 +29,7 @@ import (
 
 	"github.com/gavinmcfall/lootgoblin/courier/internal/central"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers"
+	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/chitu"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/moonraker"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/octoprint"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/sdcp"
@@ -61,6 +62,7 @@ func MakeJobHandler(
 	moonraker.Register()
 	octoprint.Register()
 	sdcp.Register()
+	chitu.Register()
 
 	return func(ctx context.Context, bundle *central.ClaimBundle, artifactPath string) error {
 		jobID := bundle.Job.ID

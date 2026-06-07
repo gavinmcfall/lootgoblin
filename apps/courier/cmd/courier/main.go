@@ -81,7 +81,12 @@ func run() int {
 	// ------------------------------------------------------------------
 	// 6. Temp dir for artifact downloads.
 	// ------------------------------------------------------------------
-	tempDir := os.TempDir()
+	tempDir, err := os.MkdirTemp("", "courier-*")
+	if err != nil {
+		log.Error("failed to create temp dir", "error", err)
+		return 1
+	}
+	defer os.RemoveAll(tempDir)
 
 	// ------------------------------------------------------------------
 	// 7. Start RunHeartbeat and RunClaimLoop concurrently.

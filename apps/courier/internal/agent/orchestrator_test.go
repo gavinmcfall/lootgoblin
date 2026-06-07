@@ -265,12 +265,11 @@ func TestMakeJobHandler_DispatchSuccessSubscribeDrop(t *testing.T) {
 	artifact := tempArtifact(t, []byte("G28\n"))
 
 	err := handler(context.Background(), bundle, artifact)
-	// Subscribe will fail (no WS endpoint) — handler returns the error but does
-	// NOT post a failed report.
+	// Subscribe will fail (no WS endpoint) — gorilla returns an error on a
+	// non-101 upgrade.  The handler must return that error AND must NOT post
+	// a failed report.
 	if err == nil {
-		// This is also acceptable if Subscribe returns nil on a 404 upgrade failure,
-		// but in practice gorilla returns an error for non-101 upgrades.
-		// Either way, no failed report should be posted.
+		t.Error("expected non-nil error from handler when Subscribe fails on non-101 upgrade")
 	}
 
 	// Upload must have been called.
@@ -300,6 +299,52 @@ func TestMakeJobHandler_DispatchSuccessSubscribeDrop(t *testing.T) {
 	// "we sent the file ≠ the print failed" — no failed report must appear.
 	if len(failedReports) > 0 {
 		t.Errorf("expected no failed reports after Subscribe drop, got: %+v", failedReports)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: nil Printer in bundle → failed{unsupported-protocol} posted AND handler
+// returns a non-nil error.  This is the ONLY path that both reports failed and
+// returns an error (unsupported-kind reports failed but returns nil; dispatch
+// failure reports failed but returns nil; Subscribe failure returns an error
+// but does NOT report failed).
+// ---------------------------------------------------------------------------
+
+func TestMakeJobHandler_NilPrinter(t *testing.T) {
+	srv, sc := newStatusServer(t, nil)
+	client := central.New(srv.URL, "test-key", "2.0.0", nil)
+
+	handler := MakeJobHandler(client, 1.24, 1.75, discardLogger())
+
+	// Build a bundle with Printer == nil.
+	bundle := &central.ClaimBundle{
+		Job: central.ClaimJob{
+			ID:         "nil-printer-job",
+			TargetKind: "printer",
+			TargetID:   "printer-001",
+		},
+		Printer: nil,
+	}
+	artifact := tempArtifact(t, []byte("G28\n"))
+
+	err := handler(context.Background(), bundle, artifact)
+	if err == nil {
+		t.Fatal("expected non-nil error from handler when Printer == nil")
+	}
+
+	// Must also have posted a failed{unsupported-protocol} report.
+	if len(sc.reports) != 1 {
+		t.Fatalf("expected 1 status report, got %d", len(sc.reports))
+	}
+	rep := sc.reports[0]
+	if rep.Phase != "failed" {
+		t.Errorf("expected phase=failed, got %q", rep.Phase)
+	}
+	if rep.Reason != "unsupported-protocol" {
+		t.Errorf("expected reason=unsupported-protocol, got %q", rep.Reason)
+	}
+	if rep.JobID != "nil-printer-job" {
+		t.Errorf("expected job_id=nil-printer-job, got %q", rep.JobID)
 	}
 }
 

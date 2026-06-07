@@ -1,0 +1,36 @@
+# Dockerfile.courier — LootGoblin Courier (Go service)
+# Build context: repo root
+#   docker build -f Dockerfile.courier -t lootgoblin-courier:latest .
+#
+# The Courier expects its config at /config/courier.yml by default.
+# Mount a volume or ConfigMap at that path, e.g.:
+#   docker run -v /host/courier.yml:/config/courier.yml lootgoblin-courier:latest
+
+# ── Stage 1: builder ─────────────────────────────────────────────────────────
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /src
+
+# Download dependencies first (cached layer if go.mod/go.sum unchanged)
+COPY apps/courier/go.mod apps/courier/go.sum ./
+RUN go mod download
+
+# Copy the rest of the courier source
+COPY apps/courier/ ./
+
+# Build a static, stripped binary
+RUN CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags="-s -w" -o /out/courier ./cmd/courier
+
+# ── Stage 2: final image ──────────────────────────────────────────────────────
+# distroless/static-debian12:nonroot gives us:
+#   • no shell, no package manager (minimal attack surface)
+#   • nonroot UID 65532 baked in
+#   • ca-certificates + tzdata only
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /out/courier /courier
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/courier"]

@@ -24,6 +24,21 @@ jobs:
           # Vitest config already injects a dummy for tests; this is for any stray env read at module load.
           LOOTGOBLIN_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
+  courier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: apps/courier/go.sum
+      - run: go vet ./...
+        working-directory: apps/courier
+      - run: go build ./...
+        working-directory: apps/courier
+      - run: go test -race ./...
+        working-directory: apps/courier
+
   docker-build:
     runs-on: ubuntu-latest
     needs: test

@@ -31,7 +31,7 @@ func newClient(t *testing.T, baseURL string) *central.Client {
 
 // serveJSON registers a fixed JSON handler on the mux at path and records the
 // last request for assertion.
-func serveOnce(t *testing.T, mux *http.ServeMux, method, path string, status int, body interface{}, verifyFn func(*http.Request)) {
+func serveOnce(t *testing.T, mux *http.ServeMux, method, path string, status int, body any, verifyFn func(*http.Request)) {
 	t.Helper()
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != method {
@@ -51,7 +51,7 @@ func serveOnce(t *testing.T, mux *http.ServeMux, method, path string, status int
 }
 
 // mustDecodeBody unmarshals the request body into dst.
-func mustDecodeBody(t *testing.T, r *http.Request, dst interface{}) {
+func mustDecodeBody(t *testing.T, r *http.Request, dst any) {
 	t.Helper()
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
 		t.Fatalf("decode request body: %v", err)
@@ -149,7 +149,7 @@ func TestPair_Success(t *testing.T) {
 			if r.Header.Get("x-api-key") != "" {
 				t.Error("Pair must not send x-api-key")
 			}
-			var body map[string]interface{}
+			var body map[string]any
 			mustDecodeBody(t, r, &body)
 			if body["token"] != "tok123" {
 				t.Errorf("token = %v, want tok123", body["token"])
@@ -256,7 +256,7 @@ func TestPair_AlreadyUsed(t *testing.T) {
 func TestHeartbeat_Success(t *testing.T) {
 	mux := http.NewServeMux()
 	serveOnce(t, mux, http.MethodPost, "/api/v1/couriers/heartbeat", http.StatusOK,
-		map[string]interface{}{
+		map[string]any{
 			"ok":                         true,
 			"server_version":             "2.0.0",
 			"heartbeat_interval_seconds": 30,
@@ -265,7 +265,7 @@ func TestHeartbeat_Success(t *testing.T) {
 			if r.Header.Get("x-api-key") != testAPIKey {
 				t.Errorf("x-api-key = %q, want %q", r.Header.Get("x-api-key"), testAPIKey)
 			}
-			var body map[string]interface{}
+			var body map[string]any
 			mustDecodeBody(t, r, &body)
 			if body["courier_version"] != testVersion {
 				t.Errorf("courier_version = %v, want %s", body["courier_version"], testVersion)
@@ -300,7 +300,7 @@ func TestHeartbeat_Success(t *testing.T) {
 func TestHeartbeat_VersionIncompatible(t *testing.T) {
 	mux := http.NewServeMux()
 	serveOnce(t, mux, http.MethodPost, "/api/v1/couriers/heartbeat", http.StatusConflict,
-		map[string]interface{}{
+		map[string]any{
 			"error":          "version-incompatible",
 			"server_version": "3.0.0",
 			"action":         "upgrade",
@@ -334,7 +334,7 @@ func TestHeartbeat_VersionIncompatible(t *testing.T) {
 func TestClaim_NullJob(t *testing.T) {
 	mux := http.NewServeMux()
 	serveOnce(t, mux, http.MethodPost, "/api/v1/dispatch/claim", http.StatusOK,
-		map[string]interface{}{"job": nil},
+		map[string]any{"job": nil},
 		func(r *http.Request) {
 			if r.Header.Get("x-api-key") != testAPIKey {
 				t.Errorf("x-api-key missing or wrong")
@@ -362,7 +362,7 @@ func TestClaim_FullBundle(t *testing.T) {
 	mux.HandleFunc("/api/v1/dispatch/claim", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		resp := map[string]interface{}{
+		resp := map[string]any{
 			"job": map[string]string{
 				"id":          "job-1",
 				"target_kind": "printer",
@@ -370,16 +370,16 @@ func TestClaim_FullBundle(t *testing.T) {
 				"loot_id":     "loot-1",
 				"owner_id":    "user-1",
 			},
-			"printer": map[string]interface{}{
+			"printer": map[string]any{
 				"id":                "prt-1",
 				"kind":              "moonraker",
 				"connection_config": connCfg,
 			},
-			"credential": map[string]interface{}{
+			"credential": map[string]any{
 				"kind":    "moonraker-basic",
 				"payload": credPayload,
 			},
-			"artifact": map[string]interface{}{
+			"artifact": map[string]any{
 				"job_id":       "job-1",
 				"size_bytes":   1234567,
 				"sha256":       "abc123",
@@ -547,12 +547,12 @@ func TestDownloadArtifact_NotFound(t *testing.T) {
 func TestReportStatus_Dispatched(t *testing.T) {
 	mux := http.NewServeMux()
 	serveOnce(t, mux, http.MethodPost, "/api/v1/dispatch/status", http.StatusOK,
-		map[string]interface{}{"ok": true},
+		map[string]any{"ok": true},
 		func(r *http.Request) {
 			if r.Header.Get("x-api-key") != testAPIKey {
 				t.Error("x-api-key missing")
 			}
-			var body map[string]interface{}
+			var body map[string]any
 			mustDecodeBody(t, r, &body)
 			if body["phase"] != "dispatched" {
 				t.Errorf("phase = %v, want dispatched", body["phase"])
@@ -578,9 +578,9 @@ func TestReportStatus_Dispatched(t *testing.T) {
 func TestReportStatus_Failed(t *testing.T) {
 	mux := http.NewServeMux()
 	serveOnce(t, mux, http.MethodPost, "/api/v1/dispatch/status", http.StatusOK,
-		map[string]interface{}{"ok": true},
+		map[string]any{"ok": true},
 		func(r *http.Request) {
-			var body map[string]interface{}
+			var body map[string]any
 			mustDecodeBody(t, r, &body)
 			if body["phase"] != "failed" {
 				t.Errorf("phase = %v, want failed", body["phase"])
@@ -610,14 +610,14 @@ func TestReportStatus_StatusEvent(t *testing.T) {
 
 	mux := http.NewServeMux()
 	serveOnce(t, mux, http.MethodPost, "/api/v1/dispatch/status", http.StatusOK,
-		map[string]interface{}{"ok": true},
+		map[string]any{"ok": true},
 		func(r *http.Request) {
-			var body map[string]interface{}
+			var body map[string]any
 			mustDecodeBody(t, r, &body)
 			if body["phase"] != "status-event" {
 				t.Errorf("phase = %v, want status-event", body["phase"])
 			}
-			event, ok := body["event"].(map[string]interface{})
+			event, ok := body["event"].(map[string]any)
 			if !ok {
 				t.Fatalf("event is not an object: %T", body["event"])
 			}
@@ -649,18 +649,18 @@ func TestReportStatus_StatusEvent(t *testing.T) {
 func TestReportStatus_Completed(t *testing.T) {
 	mux := http.NewServeMux()
 	serveOnce(t, mux, http.MethodPost, "/api/v1/dispatch/status", http.StatusOK,
-		map[string]interface{}{"ok": true},
+		map[string]any{"ok": true},
 		func(r *http.Request) {
-			var body map[string]interface{}
+			var body map[string]any
 			mustDecodeBody(t, r, &body)
 			if body["phase"] != "completed" {
 				t.Errorf("phase = %v, want completed", body["phase"])
 			}
-			mats, ok := body["materials_used"].([]interface{})
+			mats, ok := body["materials_used"].([]any)
 			if !ok || len(mats) != 1 {
 				t.Fatalf("materials_used: expected 1 entry, got %v", body["materials_used"])
 			}
-			m := mats[0].(map[string]interface{})
+			m := mats[0].(map[string]any)
 			if m["material_id"] != "mat-1" {
 				t.Errorf("material_id = %v, want mat-1", m["material_id"])
 			}
@@ -682,7 +682,7 @@ func TestReportStatus_Completed(t *testing.T) {
 func TestReportStatus_NoopSuccess(t *testing.T) {
 	mux := http.NewServeMux()
 	serveOnce(t, mux, http.MethodPost, "/api/v1/dispatch/status", http.StatusOK,
-		map[string]interface{}{"ok": true, "noop": true},
+		map[string]any{"ok": true, "noop": true},
 		nil,
 	)
 	srv := httptest.NewServer(mux)

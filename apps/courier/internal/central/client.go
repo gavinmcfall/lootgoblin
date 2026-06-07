@@ -105,7 +105,7 @@ func (c *Client) url(path string) string {
 
 // doJSON sends a request and decodes the response body into dst (if non-nil).
 // It also returns the raw *http.Response so callers can inspect headers/status.
-func (c *Client) doJSON(ctx context.Context, method, path string, withAuth bool, body interface{}, dst interface{}) (*http.Response, error) {
+func (c *Client) doJSON(ctx context.Context, method, path string, withAuth bool, body any, dst any) (*http.Response, error) {
 	var reqBody io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -320,10 +320,10 @@ func (c *Client) Heartbeat(ctx context.Context, req HeartbeatRequest) (*Heartbea
 
 // claimResponse is the raw response from the claim endpoint; job may be null.
 type claimResponse struct {
-	Job        *claimJobRaw        `json:"job"`
-	Printer    *ClaimPrinter       `json:"printer"`
-	Credential *ClaimCredential    `json:"credential"`
-	Artifact   *ClaimArtifact      `json:"artifact"`
+	Job        *claimJobRaw     `json:"job"`
+	Printer    *ClaimPrinter    `json:"printer"`
+	Credential *ClaimCredential `json:"credential"`
+	Artifact   *ClaimArtifact   `json:"artifact"`
 }
 
 // claimJobRaw mirrors ClaimJob but is used only for JSON decoding inside
@@ -334,11 +334,6 @@ type claimJobRaw struct {
 	TargetID   string `json:"target_id"`
 	LootID     string `json:"loot_id"`
 	OwnerID    string `json:"owner_id"`
-}
-
-// claimUnauthorizedBody is the 401 error shape.
-type claimUnauthorizedBody struct {
-	Error string `json:"error"`
 }
 
 // Claim calls POST /api/v1/dispatch/claim (x-api-key auth).

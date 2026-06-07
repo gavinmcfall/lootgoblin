@@ -125,14 +125,14 @@ type StatusEventPayload struct {
 	ErrorCode           string                    `json:"error_code,omitempty"`
 	ErrorMessage        string                    `json:"error_message,omitempty"`
 	Severity            string                    `json:"severity,omitempty"`
-	RawPayload          interface{}               `json:"raw_payload,omitempty"`
+	RawPayload          any                       `json:"raw_payload,omitempty"`
 	OccurredAt          string                    `json:"occurred_at,omitempty"`
 }
 
 // MaterialsUsedSlot is one entry in the completed phase materials_used list.
 type MaterialsUsedSlot struct {
-	SlotIndex    int     `json:"slot_index"`
-	MaterialID   string  `json:"material_id"`
+	SlotIndex     int     `json:"slot_index"`
+	MaterialID    string  `json:"material_id"`
 	MeasuredGrams float64 `json:"measured_grams"`
 }
 
@@ -140,13 +140,13 @@ type MaterialsUsedSlot struct {
 // Use the typed constructor functions (DispatchedReport, FailedReport,
 // StatusEventReport, CompletedReport) rather than constructing this directly.
 type StatusReport struct {
-	Phase          string                    `json:"phase"`
-	JobID          string                    `json:"job_id"`
-	RemoteFilename string                    `json:"remote_filename,omitempty"`
-	Reason         string                    `json:"reason,omitempty"`
-	Details        string                    `json:"details,omitempty"`
-	Event          *StatusEventPayload       `json:"event,omitempty"`
-	MaterialsUsed  []MaterialsUsedSlot       `json:"materials_used,omitempty"`
+	Phase          string              `json:"phase"`
+	JobID          string              `json:"job_id"`
+	RemoteFilename string              `json:"remote_filename,omitempty"`
+	Reason         string              `json:"reason,omitempty"`
+	Details        string              `json:"details,omitempty"`
+	Event          *StatusEventPayload `json:"event,omitempty"`
+	MaterialsUsed  []MaterialsUsedSlot `json:"materials_used,omitempty"`
 }
 
 // DispatchedReport builds a StatusReport for the "dispatched" phase.

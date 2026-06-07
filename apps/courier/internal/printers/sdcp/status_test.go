@@ -248,6 +248,46 @@ func TestBuildStartPrintMessage_Shape(t *testing.T) {
 	}
 }
 
+// TestStartPrintWithDialer_OnWireFilenameIsBare exercises the integration path
+// startPrint → startPrintWithDialer → the actual JSON written to the socket,
+// and asserts the on-wire Cmd 128 Data.Data.Filename is the BARE filename
+// (no "/local/" prefix), matching Node's startSdcpPrint. This guards against a
+// regression where the dispatch result's remoteFilename prefix leaks onto the
+// wire field.
+func TestStartPrintWithDialer_OnWireFilenameIsBare(t *testing.T) {
+	conn := newFakeWsConn() // no read frames; startPrint only writes then closes
+	cfg := ConnectionConfig{IP: "127.0.0.1", MainboardID: "BOARD01", Port: 3030, StartLayer: 3}
+
+	res := startPrintWithDialer(bg(), cfg, "model.ctb", "id-1", "req-1", 5000, nil,
+		func(_ string) (wsConn, error) { return conn, nil })
+	if !res.OK {
+		t.Fatalf("startPrintWithDialer: want OK, got reason=%s details=%s", res.Reason, res.Details)
+	}
+
+	written := conn.Written()
+	if len(written) != 1 {
+		t.Fatalf("want exactly 1 message written (Cmd 128), got %d", len(written))
+	}
+
+	var p startPrintPayload
+	if err := json.Unmarshal(written[0], &p); err != nil {
+		t.Fatalf("on-wire payload is not valid JSON: %v", err)
+	}
+	if p.Data.Cmd != 128 {
+		t.Errorf("Cmd: want 128, got %d", p.Data.Cmd)
+	}
+	// The critical assertion: bare filename on the wire, NOT "/local/model.ctb".
+	if p.Data.Data.Filename != "model.ctb" {
+		t.Errorf("on-wire Filename: want bare \"model.ctb\", got %q", p.Data.Data.Filename)
+	}
+	if p.Data.Data.StartLayer != 3 {
+		t.Errorf("StartLayer: want 3, got %d", p.Data.Data.StartLayer)
+	}
+	if p.Topic != "sdcp/request/BOARD01" {
+		t.Errorf("Topic: want sdcp/request/BOARD01, got %q", p.Topic)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Spy reporter (shared with status integration tests)
 // ---------------------------------------------------------------------------

@@ -168,9 +168,14 @@ func startPrintWithDialer(
 	}
 	defer conn.Close()
 
+	// SDCP Cmd 128 carries the BARE filename on the wire (matches Node's
+	// startSdcpPrint in apps/server/src/forge/dispatch/sdcp/commander.ts,
+	// which puts opts.filename directly into Data.Data.Filename). The
+	// "/local/" prefix is only used for the dispatch RESULT's remoteFilename
+	// (the local-path return value), NOT the on-wire Cmd 128 field.
 	msg, err := buildStartPrintMessage(
 		cfg.MainboardID,
-		"/local/"+filename,
+		filename,
 		cfg.StartLayer,
 		idUUID,
 		requestUUID,

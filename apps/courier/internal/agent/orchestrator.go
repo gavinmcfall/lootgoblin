@@ -29,6 +29,7 @@ import (
 
 	"github.com/gavinmcfall/lootgoblin/courier/internal/central"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers"
+	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/bambu"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/chitu"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/moonraker"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers/octoprint"
@@ -59,6 +60,7 @@ func MakeJobHandler(
 	log *slog.Logger,
 ) JobHandler {
 	// Wire adapters into the registry (idempotent).
+	bambu.Register()
 	moonraker.Register()
 	octoprint.Register()
 	sdcp.Register()

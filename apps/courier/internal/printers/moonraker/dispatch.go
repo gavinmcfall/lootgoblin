@@ -229,10 +229,7 @@ func isNetDialError(err error) bool {
 	}
 	// dns.DNSError also embeds net.OpError in some paths, but check directly too.
 	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return true
-	}
-	return false
+	return errors.As(err, &dnsErr)
 }
 
 const bodyExcerptMax = 500

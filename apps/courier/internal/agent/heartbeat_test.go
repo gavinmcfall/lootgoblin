@@ -86,23 +86,8 @@ func TestRunHeartbeat_SendsInitialAndPeriodic(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestRunHeartbeat_AdoptsServerInterval(t *testing.T) {
-	// First response asks the courier to use a 200ms interval.
-	// We collect timestamps of each call.
-	var timestamps []time.Time
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/couriers/heartbeat", func(w http.ResponseWriter, r *http.Request) {
-		timestamps = append(timestamps, time.Now())
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		// Always return 50ms — the initial call adopts it; subsequent calls see no change.
-		_, _ = w.Write(okHeartbeatResponse(0 /* use zero so only the test-interval matters */, ""))
-	})
-
-	// Override: first response returns a new interval of 50ms (expressed in
-	// server seconds; but we'll test adoption by injecting a small duration
-	// directly via the internals).
-	// Instead, use the server-returned HeartbeatIntervalSeconds mechanism:
+	// First response asks the courier to use a 200ms interval; subsequent beats
+	// should not fire within the 80ms test window.
 	callCount := 0
 	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++

@@ -94,5 +94,5 @@ func ParseCredential(raw json.RawMessage) (Credential, error) {
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return Credential{}, fmt.Errorf("moonraker: parse credential payload: %w", err)
 	}
-	return Credential{APIKey: r.APIKey}, nil
+	return Credential(r), nil
 }

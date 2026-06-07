@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -317,6 +316,13 @@ func (sm *stateMachine) handleStatusUpdate(payload moonrakerStatusPayload, rawMs
 
 	// If this is a terminal state from print_stats (complete/cancelled/error),
 	// also emit the terminal report so the orchestrator gets the completion signal.
+	//
+	// Intentional double-fire: terminal reports are emitted from BOTH
+	// notify_status_update (here) AND notify_history_changed (handleHistoryChanged)
+	// as belt-and-suspenders — history events can be missed on reconnect.  This is
+	// safe because POST /api/v1/dispatch/status is idempotent: a duplicate
+	// completed/failed for an already-terminal job returns 200 {ok:true,noop:true}
+	// (V2-006a).  Do NOT "fix" the duplicate by guarding with a seen-flag here.
 	if kind == kindCompleted {
 		var grams float64
 		if sm.latestFilamentUsedMm != nil {
@@ -541,11 +547,6 @@ func subscribeWithDialer(
 		dialer := websocket.Dialer{
 			HandshakeTimeout: 10 * time.Second,
 		}
-		wsURL, err := url.Parse(rawURL)
-		if err != nil {
-			return fmt.Errorf("moonraker status: parse URL %s: %w", rawURL, err)
-		}
-		_ = wsURL
 		wsConn, _, err := dialer.DialContext(ctx, rawURL, header)
 		if err != nil {
 			return fmt.Errorf("moonraker status: dial %s: %w", rawURL, err)

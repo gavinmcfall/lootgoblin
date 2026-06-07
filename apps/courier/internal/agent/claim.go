@@ -111,7 +111,7 @@ func processBundle(ctx context.Context, client *central.Client, bundle *central.
 	mw := io.MultiWriter(f, h)
 
 	sha256Header, err := client.DownloadArtifact(ctx, bundle.Artifact.JobID, mw)
-	_ = f.Close() // Close before further use regardless of download result.
+	closeErr := f.Close() // Close before further use regardless of download result.
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -120,6 +120,12 @@ func processBundle(ctx context.Context, client *central.Client, bundle *central.
 			"job_id", bundle.Job.ID, "error", err)
 		reportFailed(ctx, client, bundle.Job.ID, "rejected", "artifact-download-failed", log)
 		return err
+	}
+	if closeErr != nil {
+		log.Error("artifact temp file close failed",
+			"job_id", bundle.Job.ID, "error", closeErr)
+		reportFailed(ctx, client, bundle.Job.ID, "rejected", "artifact-write-failed", log)
+		return closeErr
 	}
 
 	// Verify computed digest against the bundle's expected SHA-256.

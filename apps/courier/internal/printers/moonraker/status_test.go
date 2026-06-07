@@ -61,21 +61,6 @@ func makeHistoryChangedFrame(t *testing.T, action string, job map[string]any) []
 	return b
 }
 
-// makeSubscribeReplyFrame builds a JSON-RPC reply frame for the subscribe request (id=1).
-func makeSubscribeReplyFrame(t *testing.T) []byte {
-	t.Helper()
-	frame := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"result":  map[string]any{"eventtime": 0},
-	}
-	b, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("makeSubscribeReplyFrame: %v", err)
-	}
-	return b
-}
-
 // ---------------------------------------------------------------------------
 // Spy reporter
 // ---------------------------------------------------------------------------
@@ -98,16 +83,6 @@ func (s *spyReporter) allReports() []central.StatusReport {
 	cp := make([]central.StatusReport, len(s.reports))
 	copy(cp, s.reports)
 	return cp
-}
-
-func (s *spyReporter) countByPhase(phase string) int {
-	count := 0
-	for _, r := range s.allReports() {
-		if r.Phase == phase {
-			count++
-		}
-	}
-	return count
 }
 
 func (s *spyReporter) firstByPhase(phase string) (central.StatusReport, bool) {

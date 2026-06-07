@@ -1,0 +1,22 @@
+# .dockerignore for Dockerfile.courier (courier-specific build context)
+# This file overrides .dockerignore when building with -f Dockerfile.courier
+
+# Exclude the compiled binary — built inside the container
+apps/courier/courier
+
+# Exclude test files and fixtures not needed in build context
+**/*.test.go
+**/testdata/
+
+# Common noise
+**/.git
+.git
+.github
+.vscode
+**/node_modules
+**/.next
+**/.output
+**/.wxt
+planning
+apps/extension
+apps/server

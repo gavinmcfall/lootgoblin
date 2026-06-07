@@ -17,3 +17,6 @@ mw-scrape.zip
 
 # Multi-model code review prompts (local only)
 .codereview/
+
+# Go Courier build output
+apps/courier/courier

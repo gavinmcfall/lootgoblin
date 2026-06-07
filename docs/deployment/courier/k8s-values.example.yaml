@@ -1,0 +1,87 @@
+# Values for bjw-s/helm-charts app-template v3 — LootGoblin Courier
+# https://bjw-s.github.io/helm-charts/docs/app-template/
+#
+# Install:
+#   helm repo add bjw-s https://bjw-s.github.io/helm-charts
+#   helm upgrade --install lootgoblin-courier bjw-s/app-template \
+#     --namespace lootgoblin --create-namespace \
+#     --values k8s-values.example.yaml
+#
+# Pre-requisites:
+#   kubectl create ns lootgoblin
+#   kubectl create secret generic courier-secret \
+#     --namespace lootgoblin \
+#     --from-literal=COURIER_SERVER_URL=https://lootgoblin.example.com \
+#     --from-literal=COURIER_NAME=garage-courier \
+#     --from-literal=COURIER_PAIR_TOKEN=PASTE_PAIR_TOKEN_HERE
+#   # After pairing, update the secret removing COURIER_PAIR_TOKEN (or leave it
+#   # blank) — the api_key is persisted in /config/courier-state.json.
+#
+# Note on hostNetwork:
+#   The Courier needs L2/L3 access to your printer LAN (e.g. Moonraker at
+#   192.168.x.x:7125).  In Kubernetes the simplest solution is hostNetwork:
+#   true, which shares the node's network stack.  Prefer running this pod on a
+#   node that is physically connected (or VLAN'd) to the printer subnet.
+#   Alternatively, if your CNI supports routable pod IPs (e.g. Cilium in native
+#   routing mode with a static route to the printer VLAN), you can drop
+#   hostNetwork and rely on pod-level routing.
+#
+# Note on Renovate:
+#   The tag below is pinned by digest so Renovate can track new releases
+#   automatically.  D5 (the server values) already includes a custom Renovate
+#   manager for docs/deployment/k8s/values.example.yaml.  If you adopt this
+#   file, add a matching customManager entry in renovate.json pointing to
+#   docs/deployment/courier/k8s-values.example.yaml — the regex pattern from
+#   D5 will work unchanged.
+
+controllers:
+  courier:
+    type: deployment
+    replicas: 1
+    strategy: Recreate
+    pod:
+      # hostNetwork gives the pod direct access to the node's network interfaces,
+      # which is required to reach printers on the local LAN.
+      # See the note above for alternatives.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet  # preserve cluster DNS when hostNetwork is true
+    containers:
+      app:
+        image:
+          repository: ghcr.io/gavinmcfall/lootgoblin-courier
+          # Pin by digest for reproducibility — update when a new release is cut.
+          # Example: crane digest ghcr.io/gavinmcfall/lootgoblin-courier:latest
+          tag: "latest@sha256:REPLACE_WITH_DIGEST"
+          pullPolicy: IfNotPresent
+        envFrom:
+          # Contains COURIER_SERVER_URL, COURIER_NAME, COURIER_PAIR_TOKEN.
+          # Create with: kubectl create secret generic courier-secret ...
+          - secretRef:
+              name: courier-secret
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          runAsGroup: 65534
+          readOnlyRootFilesystem: false  # /config needs writes
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 5m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+
+# No Service or Ingress needed — the Courier only makes outbound connections.
+
+persistence:
+  config:
+    enabled: true
+    # Use an existing PVC or let the chart create one.
+    # existingClaim: courier-config
+    type: persistentVolumeClaim
+    accessMode: ReadWriteOnce
+    size: 128Mi
+    globalMounts:
+      - path: /config

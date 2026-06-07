@@ -1,0 +1,42 @@
+# LootGoblin Courier — Docker Compose deployment
+#
+# Quick-start:
+#   1. Copy courier.example.yml → ./config/courier.yml and fill in your values,
+#      OR set COURIER_SERVER_URL and COURIER_NAME in a .env file / shell env.
+#   2. First run: also provide COURIER_PAIR_TOKEN (generate it in the LootGoblin
+#      admin → Courier page).  After pairing succeeds the api_key is saved to
+#      ./config/courier-state.json — you can then remove COURIER_PAIR_TOKEN.
+#   3. docker compose up -d
+
+services:
+  courier:
+    image: ghcr.io/gavinmcfall/lootgoblin-courier:latest
+    restart: unless-stopped
+
+    # ── Networking ──────────────────────────────────────────────────────────
+    # host network gives the Courier direct L2 access to your printer LAN so it
+    # can reach Moonraker / Klipper at e.g. 192.168.1.x:7125 without extra
+    # routing.  The Courier only makes OUTBOUND connections; no inbound ports
+    # are exposed to the internet.
+    #
+    # If you prefer a bridge network (for container isolation), remove
+    # `network_mode: host` below and ensure the printer subnet is routable
+    # from the Docker bridge — typically by adding a static route on the host
+    # or running the Courier on a VLAN that has direct LAN access.
+    network_mode: host
+
+    volumes:
+      # Persists courier.yml, courier-state.json, and any cached state.
+      - ./config:/config
+
+    environment:
+      # REQUIRED — URL of your central LootGoblin instance.
+      - COURIER_SERVER_URL=${COURIER_SERVER_URL}
+
+      # REQUIRED — display name shown in the LootGoblin UI for this agent.
+      - COURIER_NAME=${COURIER_NAME}
+
+      # FIRST-RUN ONLY — one-time pairing token from the LootGoblin admin page.
+      # Remove or comment out after pairing completes; the api_key is then
+      # persisted automatically in /config/courier-state.json.
+      - COURIER_PAIR_TOKEN=${COURIER_PAIR_TOKEN:-}

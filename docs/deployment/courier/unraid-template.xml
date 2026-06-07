@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>lootgoblin-courier</Name>
+  <Repository>ghcr.io/gavinmcfall/lootgoblin-courier:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>host</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/gavinmcfall/lootgoblin</Support>
+  <Project>https://github.com/gavinmcfall/lootgoblin</Project>
+  <!-- Icon: replace with a hosted URL once a courier icon is published -->
+  <Icon>https://raw.githubusercontent.com/gavinmcfall/lootgoblin/main/docs/assets/icon.png</Icon>
+  <Overview>
+    LootGoblin Courier — a lightweight agent that runs on a box with local
+    access to your 3D printers.  It connects OUTBOUND to your central
+    LootGoblin instance, pairs once with a token, and then claims and
+    dispatches print jobs to printers on your LAN (Moonraker / Klipper).
+    No inbound ports are required.
+
+    Quick-start:
+    1. Set COURIER_SERVER_URL to your LootGoblin instance URL.
+    2. Set COURIER_NAME to a label for this agent (e.g. garage-courier).
+    3. Generate a pair token in LootGoblin admin &gt; Couriers, paste it into
+       COURIER_PAIR_TOKEN, and start the container.
+    4. After pairing succeeds, clear COURIER_PAIR_TOKEN and restart.
+  </Overview>
+  <Category>MediaApp:Other</Category>
+  <WebUI/>
+  <TemplateURL>https://github.com/gavinmcfall/lootgoblin/blob/main/docs/deployment/courier/unraid-template.xml</TemplateURL>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <!-- /config path — stores courier.yml and courier-state.json -->
+  <Config
+    Name="Config directory"
+    Target="/config"
+    Default="/mnt/user/appdata/lootgoblin-courier"
+    Mode="rw"
+    Description="Persistent directory for courier.yml config and courier-state.json (api key). Permissions must allow the container to write."
+    Type="Path"
+    Display="always"
+    Required="true"
+    Mask="false"
+  >/mnt/user/appdata/lootgoblin-courier</Config>
+
+  <!-- COURIER_SERVER_URL — required -->
+  <Config
+    Name="Server URL"
+    Target="COURIER_SERVER_URL"
+    Default="https://lootgoblin.example.com"
+    Mode=""
+    Description="URL of your central LootGoblin instance. Required."
+    Type="Variable"
+    Display="always"
+    Required="true"
+    Mask="false"
+  >https://lootgoblin.example.com</Config>
+
+  <!-- COURIER_NAME — required -->
+  <Config
+    Name="Courier name"
+    Target="COURIER_NAME"
+    Default="my-courier"
+    Mode=""
+    Description="Display name for this Courier agent shown in the LootGoblin UI. Required."
+    Type="Variable"
+    Display="always"
+    Required="true"
+    Mask="false"
+  >my-courier</Config>
+
+  <!-- COURIER_PAIR_TOKEN — first-run only -->
+  <Config
+    Name="Pair token"
+    Target="COURIER_PAIR_TOKEN"
+    Default=""
+    Mode=""
+    Description="One-time pairing token generated in LootGoblin admin > Couriers. Only needed on first run. Clear this field after the container has paired successfully."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="true"
+  />
+</Container>

@@ -1,0 +1,55 @@
+# LootGoblin Courier — sample configuration
+# Copy to /config/courier.yml and fill in the REQUIRED values before starting.
+#
+# All keys can also be set via environment variables (shown alongside each key).
+# Environment variables take precedence over file values.
+#
+# After a successful pairing the Courier writes the negotiated api_key to
+# /config/courier-state.json (mode 0600).  You do NOT need to set api_key
+# here on subsequent runs.
+
+# ── REQUIRED ──────────────────────────────────────────────────────────────────
+
+# URL of your central LootGoblin instance.
+# Env: COURIER_SERVER_URL
+server_url: "https://lootgoblin.example.com"
+
+# Human-readable name shown in the LootGoblin UI for this Courier agent.
+# Env: COURIER_NAME
+name: "garage-courier"
+
+# ── FIRST-RUN ONLY ────────────────────────────────────────────────────────────
+
+# One-time pairing token generated from the LootGoblin admin → Courier page.
+# Once the Courier has paired it stores its api_key in courier-state.json and
+# this value is no longer read.  Remove or comment it out after the first run.
+# Env: COURIER_PAIR_TOKEN
+# pair_token: "PASTE_YOUR_PAIR_TOKEN_HERE"
+
+# ── ADVANCED / RARELY NEEDED ──────────────────────────────────────────────────
+
+# Permanent API key.  Normally set automatically after pairing (stored in
+# courier-state.json).  Override here only if you are migrating a Courier or
+# know exactly what you are doing.
+# Env: COURIER_API_KEY
+# api_key: ""
+
+# ── POLLING INTERVALS ─────────────────────────────────────────────────────────
+
+# How often the Courier sends a heartbeat to the server (seconds).
+# Env: COURIER_HEARTBEAT_INTERVAL_SECONDS
+# heartbeat_interval_seconds: 30
+
+# How often the Courier polls the server for new print jobs to claim (seconds).
+# Env: COURIER_CLAIM_POLL_INTERVAL_SECONDS
+# claim_poll_interval_seconds: 5
+
+# ── FILAMENT DEFAULTS ─────────────────────────────────────────────────────────
+
+# Fallback filament density used when a job does not specify one (g/cm³).
+# Env: COURIER_DEFAULT_FILAMENT_DENSITY_G_CM3
+# default_filament_density_g_cm3: 1.24
+
+# Fallback filament diameter used when a job does not specify one (mm).
+# Env: COURIER_DEFAULT_FILAMENT_DIAMETER_MM
+# default_filament_diameter_mm: 1.75

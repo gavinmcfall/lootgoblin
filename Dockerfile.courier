@@ -2,12 +2,29 @@
 # Build context: repo root
 #   docker build -f Dockerfile.courier -t lootgoblin-courier:latest .
 #
+# Cross-compile for any target platform via buildx:
+#   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
+#     -f Dockerfile.courier --build-arg COURIER_VERSION=1.2.3 .
+#
 # The Courier expects its config at /config/courier.yml by default.
 # Mount a volume or ConfigMap at that path, e.g.:
 #   docker run -v /host/courier.yml:/config/courier.yml lootgoblin-courier:latest
 
 # ── Stage 1: builder ─────────────────────────────────────────────────────────
-FROM golang:1.22-alpine AS builder
+# Run the builder on the native BUILD platform (fast, no emulation).
+# Cross-compile to the TARGET platform via GOOS/GOARCH/GOARM.
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+
+# buildx auto-populates these for each target platform.
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+# Version args — the D3 release workflow passes these at build time.
+# Defaults allow plain `docker build` to produce a working binary.
+ARG COURIER_VERSION=dev
+ARG COURIER_COMMIT=unknown
+ARG COURIER_DATE=unknown
 
 WORKDIR /src
 
@@ -18,9 +35,19 @@ RUN go mod download
 # Copy the rest of the courier source
 COPY apps/courier/ ./
 
-# Build a static, stripped binary
-RUN CGO_ENABLED=0 GOOS=linux \
-    go build -trimpath -ldflags="-s -w" -o /out/courier ./cmd/courier
+# Cross-compile a static, stripped binary for the target platform.
+# GOARM is derived from TARGETVARIANT (e.g. "v7" → "7"); harmless when empty.
+RUN CGO_ENABLED=0 \
+    GOOS=${TARGETOS} \
+    GOARCH=${TARGETARCH} \
+    GOARM=$(echo ${TARGETVARIANT} | sed 's/v//') \
+    go build -trimpath \
+      -ldflags="-s -w \
+        -X github.com/gavinmcfall/lootgoblin/courier/internal/version.Version=${COURIER_VERSION} \
+        -X github.com/gavinmcfall/lootgoblin/courier/internal/version.Commit=${COURIER_COMMIT} \
+        -X github.com/gavinmcfall/lootgoblin/courier/internal/version.Date=${COURIER_DATE}" \
+      -o /out/courier \
+      ./cmd/courier
 
 # ── Stage 2: final image ──────────────────────────────────────────────────────
 # distroless/static-debian12:nonroot gives us:

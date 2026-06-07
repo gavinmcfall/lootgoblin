@@ -1,0 +1,102 @@
+# goreleaser v2 — lootgoblin Courier binary distribution
+# Handles BINARIES ONLY. Docker images are built separately via docker/build-push-action in D3/D4.
+#
+# Tag prefix handling:
+#   The repo uses courier-vX.Y.Z tags (e.g. courier-v2.1.0).
+#   goreleaser OSS does not support stripping tag prefixes natively (that is a Pro feature).
+#   D3's release workflow supplies the resolved semver via:
+#     export GORELEASER_CURRENT_TAG=courier-vX.Y.Z
+#   goreleaser then strips the leading non-semver chars automatically and derives .Version = X.Y.Z.
+#   For local snapshot runs: goreleaser build --snapshot --clean
+#     (no tag required; version comes from snapshot.version_template below)
+
+version: 2
+
+project_name: lootgoblin-courier
+
+builds:
+  - id: courier
+    main: ./cmd/courier
+    dir: apps/courier
+    binary: courier
+
+    env:
+      - CGO_ENABLED=0
+
+    flags:
+      - -trimpath
+
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/gavinmcfall/lootgoblin/courier/internal/version.Version={{.Version}}
+        -X github.com/gavinmcfall/lootgoblin/courier/internal/version.Commit={{.ShortCommit}}
+        -X github.com/gavinmcfall/lootgoblin/courier/internal/version.Date={{.Date}}
+
+    goos:
+      - linux
+      - darwin
+      - windows
+
+    goarch:
+      - amd64
+      - arm64
+      - arm
+
+    goarm:
+      - "7"
+
+    # Drop unsupported combinations.
+    # Intended matrix (6 targets):
+    #   linux/amd64, linux/arm64, linux/arm(v7)
+    #   darwin/amd64, darwin/arm64
+    #   windows/amd64
+    ignore:
+      # arm is Linux-only
+      - goos: darwin
+        goarch: arm
+      - goos: windows
+        goarch: arm
+      # windows arm64 not supported
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: courier-archive
+    ids:
+      - courier
+
+    # Default: tar.gz; zip for Windows
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+    # Archive name: lootgoblin-courier_2.1.0_linux_amd64.tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}
+
+    # Include repo README. Sample courier.example.yml ships in D7 (docs/deployment/courier/).
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  # Used by: goreleaser build --snapshot --clean
+  version_template: "{{ incpatch .Version }}-snapshot-{{.ShortCommit}}"
+
+changelog:
+  # Changelog generation is handled by D3's GitHub release notes.
+  # Disable here to keep this config minimal.
+  disable: true
+
+release:
+  # goreleaser creates the GitHub release and attaches archives + checksums.
+  # D3 invokes: goreleaser release --clean
+  #   with GORELEASER_CURRENT_TAG=courier-vX.Y.Z set in the workflow environment.
+  # draft: false (default) — D3 controls draft/prerelease flags via --release-notes or workflow steps.
+  skip_upload: false

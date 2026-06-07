@@ -49,6 +49,13 @@
       "description": "Group OpenTelemetry packages",
       "matchPackagePatterns": ["^@opentelemetry/"],
       "groupName": "opentelemetry"
+    },
+    {
+      "description": "Group Courier Go module updates into a single PR. The gomod manager auto-discovers apps/courier/go.mod via its default managerFilePatterns (/(^|/)go\\.mod$/). No digest-pinning — that is a Docker concept only.",
+      "matchManagers": ["gomod"],
+      "matchFileNames": ["apps/courier/go.mod"],
+      "groupName": "courier go modules",
+      "semanticCommitScope": "courier"
     }
   ],
   "customManagers": [

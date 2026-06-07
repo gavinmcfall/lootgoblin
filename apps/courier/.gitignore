@@ -1,0 +1,2 @@
+# goreleaser output — local cross-compile artifacts
+dist/

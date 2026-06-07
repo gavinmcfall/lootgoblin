@@ -1,4 +1,4 @@
-package moonraker
+package octoprint
 
 import (
 	"bytes"
@@ -25,36 +25,31 @@ const (
 	DefaultTimeoutSeconds = 60
 )
 
-// DispatchOutcome is a type alias for printers.DispatchOutcome so that all
-// existing moonraker code and tests compile unchanged.
-type DispatchOutcome = printers.DispatchOutcome
-
-// moonrakerUploadResponse is the JSON shape returned by a successful Moonraker
-// file-upload.
-type moonrakerUploadResponse struct {
-	Result struct {
-		Item struct {
+// octoprintUploadResponse is the JSON shape returned by a successful OctoPrint
+// file-upload (POST /api/files/local).
+type octoprintUploadResponse struct {
+	Files struct {
+		Local struct {
 			Path string `json:"path"`
-		} `json:"item"`
-	} `json:"result"`
+		} `json:"local"`
+	} `json:"files"`
 }
 
-// Dispatch uploads the gcode file at artifactPath to the Moonraker instance
+// Dispatch uploads the gcode file at artifactPath to the OctoPrint instance
 // described by cfg, using cred for authentication (may be nil).
 //
 // hc is the http.Client to use; pass nil to use a default client with a 60-second
-// timeout.  Injecting a custom client (e.g. with a shorter timeout) is the
-// primary mechanism for controlling timeout behaviour in tests.
+// timeout.
 //
 // The function faithfully mirrors the Node adapter's wire behaviour:
-//   - POST multipart to {scheme}://{host}:{port}/server/files/upload
-//   - Multipart fields: file (gcode bytes), root="gcodes", path="", print="true"/"false"
-//   - X-Api-Key header when an API key is present
-//   - 200/201 → OK; remoteFilename from result.item.path or basename fallback
 //   - requiresAuth=true + nil/no-key cred → no-credentials, no network call
+//   - POST multipart to {scheme}://{host}:{port}{apiPath}/files/local
+//   - Multipart fields: file (gcode bytes, using basename), select, print
+//   - X-Api-Key header when an API key is present
+//   - 200/201 → OK; remoteFilename from files.local.path or basename fallback
 //   - 401/403 → auth-failed; other 4xx → rejected; 5xx → unknown
 //   - context deadline / timeout → timeout; dial/network error → unreachable
-func Dispatch(ctx context.Context, cfg ConnectionConfig, cred *Credential, artifactPath string, hc *http.Client, log *slog.Logger) DispatchOutcome {
+func Dispatch(ctx context.Context, cfg ConnectionConfig, cred *Credential, artifactPath string, hc *http.Client, log *slog.Logger) printers.DispatchOutcome {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -62,13 +57,13 @@ func Dispatch(ctx context.Context, cfg ConnectionConfig, cred *Credential, artif
 	// No-credentials guard: if auth is required but we have nothing to send,
 	// return immediately without touching the network.
 	if cfg.RequiresAuth && (cred == nil || cred.APIKey == "") {
-		return DispatchOutcome{Reason: "no-credentials"}
+		return printers.DispatchOutcome{Reason: "no-credentials"}
 	}
 
 	// Read the artifact file.
 	fileBytes, err := os.ReadFile(artifactPath)
 	if err != nil {
-		return DispatchOutcome{
+		return printers.DispatchOutcome{
 			Reason:  "unknown",
 			Details: fmt.Sprintf("failed to read artifact: %s", err.Error()),
 		}
@@ -83,21 +78,25 @@ func Dispatch(ctx context.Context, cfg ConnectionConfig, cred *Credential, artif
 	// Field: file
 	fw, err := mw.CreateFormFile("file", filename)
 	if err != nil {
-		return DispatchOutcome{
+		return printers.DispatchOutcome{
 			Reason:  "unknown",
 			Details: fmt.Sprintf("failed to create multipart file field: %s", err.Error()),
 		}
 	}
 	if _, err := io.Copy(fw, bytes.NewReader(fileBytes)); err != nil {
-		return DispatchOutcome{
+		return printers.DispatchOutcome{
 			Reason:  "unknown",
 			Details: fmt.Sprintf("failed to write file bytes to multipart: %s", err.Error()),
 		}
 	}
 
-	// Fields: root, path, print
-	_ = mw.WriteField("root", "gcodes")
-	_ = mw.WriteField("path", "")
+	// Fields: select, print
+	selectVal := "false"
+	if cfg.Select {
+		selectVal = "true"
+	}
+	_ = mw.WriteField("select", selectVal)
+
 	printVal := "false"
 	if cfg.StartPrint {
 		printVal = "true"
@@ -105,7 +104,7 @@ func Dispatch(ctx context.Context, cfg ConnectionConfig, cred *Credential, artif
 	_ = mw.WriteField("print", printVal)
 
 	if err := mw.Close(); err != nil {
-		return DispatchOutcome{
+		return printers.DispatchOutcome{
 			Reason:  "unknown",
 			Details: fmt.Sprintf("failed to finalise multipart body: %s", err.Error()),
 		}
@@ -113,13 +112,13 @@ func Dispatch(ctx context.Context, cfg ConnectionConfig, cred *Credential, artif
 
 	contentType := mw.FormDataContentType()
 
-	// Build URL.
-	uploadURL := fmt.Sprintf("%s://%s:%d/server/files/upload", cfg.Scheme, cfg.Host, cfg.Port)
+	// Build URL: {scheme}://{host}:{port}{apiPath}/files/local
+	uploadURL := fmt.Sprintf("%s://%s:%d%s/files/local", cfg.Scheme, cfg.Host, cfg.Port, cfg.APIPath)
 
 	// Build HTTP request.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &buf)
 	if err != nil {
-		return DispatchOutcome{
+		return printers.DispatchOutcome{
 			Reason:  "unknown",
 			Details: fmt.Sprintf("failed to build request: %s", err.Error()),
 		}
@@ -150,32 +149,32 @@ func Dispatch(ctx context.Context, cfg ConnectionConfig, cred *Credential, artif
 
 	if status == http.StatusOK || status == http.StatusCreated {
 		remoteFilename := filename
-		var parsed moonrakerUploadResponse
+		var parsed octoprintUploadResponse
 		if err := json.Unmarshal(bodyBytes, &parsed); err == nil {
-			if p := parsed.Result.Item.Path; p != "" {
+			if p := parsed.Files.Local.Path; p != "" {
 				remoteFilename = p
 			}
 		}
-		log.Info("moonraker: dispatch succeeded",
+		log.Info("octoprint: dispatch succeeded",
 			"remoteFilename", remoteFilename,
 			"artifactPath", artifactPath,
 		)
-		return DispatchOutcome{OK: true, RemoteFilename: remoteFilename}
+		return printers.DispatchOutcome{OK: true, RemoteFilename: remoteFilename}
 	}
 
 	details := excerpt(string(bodyBytes))
 
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		log.Warn("moonraker: auth rejected by printer", "status", status)
-		return DispatchOutcome{Reason: "auth-failed", Details: details}
+		log.Warn("octoprint: auth rejected by printer", "status", status)
+		return printers.DispatchOutcome{Reason: "auth-failed", Details: details}
 	}
 	if status >= 400 && status < 500 {
-		log.Warn("moonraker: printer rejected upload", "status", status)
-		return DispatchOutcome{Reason: "rejected", Details: details}
+		log.Warn("octoprint: printer rejected upload", "status", status)
+		return printers.DispatchOutcome{Reason: "rejected", Details: details}
 	}
 	// 5xx and anything else.
-	log.Warn("moonraker: printer returned server error", "status", status)
-	return DispatchOutcome{Reason: "unknown", Details: details}
+	log.Warn("octoprint: printer returned server error", "status", status)
+	return printers.DispatchOutcome{Reason: "unknown", Details: details}
 }
 
 // mapRequestError converts a Do-level error into a DispatchOutcome with the
@@ -183,40 +182,32 @@ func Dispatch(ctx context.Context, cfg ConnectionConfig, cred *Credential, artif
 //   - context deadline exceeded (timeout) → timeout
 //   - dial/connection errors → unreachable
 //   - anything else → unknown
-func mapRequestError(err error) DispatchOutcome {
-	// Timeout: either the context was cancelled-with-deadline by the caller, or
-	// the http.Client's own Timeout fired (which also manifests as a url.Error
-	// wrapping context.DeadlineExceeded).
+func mapRequestError(err error) printers.DispatchOutcome {
 	if errors.Is(err, context.DeadlineExceeded) {
-		return DispatchOutcome{Reason: "timeout", Details: err.Error()}
+		return printers.DispatchOutcome{Reason: "timeout", Details: err.Error()}
 	}
 
-	// Unwrap *url.Error to check the inner cause.
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		if urlErr.Timeout() {
-			return DispatchOutcome{Reason: "timeout", Details: err.Error()}
+			return printers.DispatchOutcome{Reason: "timeout", Details: err.Error()}
 		}
 		if isNetDialError(urlErr.Err) {
-			return DispatchOutcome{Reason: "unreachable", Details: err.Error()}
+			return printers.DispatchOutcome{Reason: "unreachable", Details: err.Error()}
 		}
-		// url.Error wrapping context.DeadlineExceeded (client timeout).
 		if errors.Is(urlErr.Err, context.DeadlineExceeded) {
-			return DispatchOutcome{Reason: "timeout", Details: err.Error()}
+			return printers.DispatchOutcome{Reason: "timeout", Details: err.Error()}
 		}
 	}
 
-	// Bare network errors not wrapped in url.Error.
 	if isNetDialError(err) {
-		return DispatchOutcome{Reason: "unreachable", Details: err.Error()}
+		return printers.DispatchOutcome{Reason: "unreachable", Details: err.Error()}
 	}
 
-	return DispatchOutcome{Reason: "unknown", Details: err.Error()}
+	return printers.DispatchOutcome{Reason: "unknown", Details: err.Error()}
 }
 
-// isNetDialError returns true for low-level connection/dial failures that
-// indicate the remote host is unreachable (connection refused, no such host,
-// etc.).
+// isNetDialError returns true for low-level connection/dial failures.
 func isNetDialError(err error) bool {
 	if err == nil {
 		return false
@@ -225,7 +216,6 @@ func isNetDialError(err error) bool {
 	if errors.As(err, &opErr) {
 		return true
 	}
-	// dns.DNSError also embeds net.OpError in some paths, but check directly too.
 	var dnsErr *net.DNSError
 	return errors.As(err, &dnsErr)
 }

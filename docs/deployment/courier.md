@@ -55,13 +55,18 @@ After pairing succeeds, unset `COURIER_PAIR_TOKEN` (or remove the variable from 
 
 **1. Download and verify**
 
-Download the binary for your architecture from the [GitHub Releases page](https://github.com/gavinmcfall/lootgoblin/releases) (look for a `courier-v*` release). Each release includes a `checksums.txt`:
+Download the archive for your architecture from the [GitHub Releases page](https://github.com/gavinmcfall/lootgoblin/releases) (look for a `courier-v*` release). Each release ships per-platform `.tar.gz` archives plus a `checksums.txt`:
 
 ```bash
-# Example for linux/amd64
-curl -Lo courier https://github.com/gavinmcfall/lootgoblin/releases/download/courier-v<VERSION>/courier-linux-amd64
-curl -Lo checksums.txt https://github.com/gavinmcfall/lootgoblin/releases/download/courier-v<VERSION>/checksums.txt
+# Example for linux/amd64 (set VERSION to the release, e.g. 2.0.1)
+VERSION=<VERSION>
+BASE=https://github.com/gavinmcfall/lootgoblin/releases/download/courier-v${VERSION}
+curl -Lo lootgoblin-courier.tar.gz ${BASE}/lootgoblin-courier_${VERSION}_linux_amd64.tar.gz
+curl -Lo checksums.txt ${BASE}/checksums.txt
+
+# Verify the archive against the published checksums, then extract
 sha256sum --check --ignore-missing checksums.txt
+tar -xzf lootgoblin-courier.tar.gz courier
 chmod +x courier
 sudo mv courier /usr/local/bin/courier
 
@@ -69,7 +74,7 @@ sudo mv courier /usr/local/bin/courier
 courier version
 ```
 
-Available targets: `linux-amd64`, `linux-arm64`, `linux-armv7`, `darwin-amd64`, `darwin-arm64`.
+Available archives: `lootgoblin-courier_<VERSION>_linux_amd64.tar.gz`, `_linux_arm64.tar.gz`, `_linux_armv7.tar.gz`, `_darwin_amd64.tar.gz`, `_darwin_arm64.tar.gz` (and `_windows_amd64.zip`).
 
 **2. Create the config**
 
@@ -137,7 +142,7 @@ A dedicated catalog app is planned for a future release. For now, deploy via the
 
 **1. Download**
 
-Download `courier-windows-amd64.exe` from the [GitHub Releases page](https://github.com/gavinmcfall/lootgoblin/releases) and rename it to `courier.exe`. Place it somewhere on your PATH, e.g. `C:\tools\`.
+Download `lootgoblin-courier_<VERSION>_windows_amd64.zip` from the [GitHub Releases page](https://github.com/gavinmcfall/lootgoblin/releases) and extract `courier.exe`. Place it somewhere on your PATH, e.g. `C:\tools\`. (Optionally verify against `checksums.txt` first.)
 
 **2. Create the config**
 

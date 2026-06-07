@@ -3,10 +3,11 @@
 #
 # Tag prefix handling:
 #   The repo uses courier-vX.Y.Z tags (e.g. courier-v2.1.0).
-#   goreleaser OSS does not support stripping tag prefixes natively (that is a Pro feature).
-#   D3's release workflow supplies the resolved semver via:
+#   D3's release workflow supplies the full tag via:
 #     export GORELEASER_CURRENT_TAG=courier-vX.Y.Z
-#   goreleaser then strips the leading non-semver chars automatically and derives .Version = X.Y.Z.
+#   goreleaser parses .Version with Masterminds/semver, which ignores the leading
+#   non-semver "courier-v" prefix and derives .Version = X.Y.Z. (The Pro-only tag-prefix
+#   feature concerns changelog/release-note filtering, not version extraction — not needed here.)
 #   For local snapshot runs: goreleaser build --snapshot --clean
 #     (no tag required; version comes from snapshot.version_template below)
 

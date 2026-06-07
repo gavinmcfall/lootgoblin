@@ -29,6 +29,10 @@ Full docs: **[docs/deployment/docker.md](docs/deployment/docker.md)**
 
 Reference values at **[docs/deployment/k8s/values.example.yaml](docs/deployment/k8s/values.example.yaml)**. Full install walk-through: **[docs/deployment/k8s.md](docs/deployment/k8s.md)**.
 
+### Courier (remote-LAN printers)
+
+Printers on a different LAN from your server? Run the Courier agent on a local box. Full install walk-through: **[docs/deployment/courier.md](docs/deployment/courier.md)**.
+
 ### Browser extension
 
 Install from Chrome Web Store / Firefox AMO once published, or sideload from [GitHub Releases](../../releases). Install walk-through: **[apps/extension/README.md](apps/extension/README.md)**.

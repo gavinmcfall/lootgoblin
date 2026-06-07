@@ -1,0 +1,104 @@
+name: release-courier
+
+on:
+  push:
+    tags: ['courier-v*']
+
+permissions:
+  contents: write    # create GitHub Release + attach goreleaser assets
+  packages: write    # push to GHCR
+  id-token: write    # OIDC for attest-build-provenance
+  attestations: write
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # goreleaser needs full history + tags for changelog
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: apps/courier/go.sum
+
+      - name: Run goreleaser (release binaries + create GitHub Release)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Supply the full prefixed tag; goreleaser strips the leading non-semver
+          # chars (courier-) automatically to derive .Version = X.Y.Z
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository_owner }}/lootgoblin-courier
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/lootgoblin-courier
+          tags: |
+            type=match,pattern=courier-v(.*),group=1,enable=true
+            type=match,pattern=courier-v(\d+\.\d+)\.\d+,group=1
+            type=match,pattern=courier-v(\d+)\.\d+\.\d+,group=1
+            type=raw,value=latest
+
+      - name: Build and push (multi-arch, provenance, sbom)
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.courier
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            COURIER_VERSION=${{ steps.meta.outputs.version }}
+            COURIER_COMMIT=${{ github.sha }}
+            COURIER_DATE=${{ github.event.repository.updated_at }}
+
+      - name: Attest build provenance (GHCR)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/lootgoblin-courier
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest build provenance (Docker Hub)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/lootgoblin-courier
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

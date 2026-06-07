@@ -111,10 +111,6 @@ type bambuPrintPayload struct {
 	Hms           []bambuHmsEntry `json:"hms"`
 }
 
-type bambuReportEnvelope struct {
-	Print any `json:"print"` // kept as any for raw_payload
-}
-
 // bambuReportParsed is a parallel struct used only for typed field extraction.
 type bambuReportParsed struct {
 	Print *bambuPrintPayload `json:"print"`

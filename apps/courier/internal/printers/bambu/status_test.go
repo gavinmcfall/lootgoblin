@@ -67,8 +67,8 @@ type fakeMqttStatusClient struct {
 	topic   string
 }
 
-func (f *fakeMqttStatusClient) Connect() paho.Token         { return &statusFakeToken{} }
-func (f *fakeMqttStatusClient) Disconnect(_ uint)           {}
+func (f *fakeMqttStatusClient) Connect() paho.Token { return &statusFakeToken{} }
+func (f *fakeMqttStatusClient) Disconnect(_ uint)   {}
 func (f *fakeMqttStatusClient) Publish(_ string, _ byte, _ bool, _ any) paho.Token {
 	return &statusFakeToken{}
 }
@@ -97,10 +97,10 @@ func (f *fakeMqttStatusClient) Feed(payload []byte) {
 // Named with "status" prefix to avoid collision with dispatch_test's fakeToken.
 type statusFakeToken struct{}
 
-func (t *statusFakeToken) Wait() bool                        { return true }
-func (t *statusFakeToken) WaitTimeout(_ time.Duration) bool  { return true }
-func (t *statusFakeToken) Done() <-chan struct{}              { ch := make(chan struct{}); close(ch); return ch }
-func (t *statusFakeToken) Error() error                      { return nil }
+func (t *statusFakeToken) Wait() bool                       { return true }
+func (t *statusFakeToken) WaitTimeout(_ time.Duration) bool { return true }
+func (t *statusFakeToken) Done() <-chan struct{}            { ch := make(chan struct{}); close(ch); return ch }
+func (t *statusFakeToken) Error() error                     { return nil }
 
 // statusFakeMessage satisfies paho.Message.
 // Named with "status" prefix to avoid collision with dispatch_test types.
@@ -109,13 +109,13 @@ type statusFakeMessage struct {
 	payload []byte
 }
 
-func (m *statusFakeMessage) Duplicate() bool          { return false }
-func (m *statusFakeMessage) Qos() byte                { return 0 }
-func (m *statusFakeMessage) Retained() bool           { return false }
-func (m *statusFakeMessage) Topic() string            { return m.topic }
-func (m *statusFakeMessage) MessageID() uint16        { return 0 }
-func (m *statusFakeMessage) Payload() []byte          { return m.payload }
-func (m *statusFakeMessage) Ack()                     {}
+func (m *statusFakeMessage) Duplicate() bool   { return false }
+func (m *statusFakeMessage) Qos() byte         { return 0 }
+func (m *statusFakeMessage) Retained() bool    { return false }
+func (m *statusFakeMessage) Topic() string     { return m.topic }
+func (m *statusFakeMessage) MessageID() uint16 { return 0 }
+func (m *statusFakeMessage) Payload() []byte   { return m.payload }
+func (m *statusFakeMessage) Ack()              {}
 
 // ---------------------------------------------------------------------------
 // Helpers — recorded payload builders
@@ -191,7 +191,10 @@ func TestFormatHmsCode(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHmsLevelToSeverity(t *testing.T) {
-	cases := []struct{ level float64; want string }{
+	cases := []struct {
+		level float64
+		want  string
+	}{
 		{0, "info"},
 		{0.9, "info"},
 		{1, "warning"},
@@ -462,11 +465,11 @@ func TestSubscribe_ProgressThenCompleted(t *testing.T) {
 	// Feed a progress event.
 	fc.Feed(mustMarshalBambu(t, map[string]any{
 		"print": map[string]any{
-			"gcode_state": "RUNNING",
-			"mc_percent":  pct,
-			"layer_num":   5,
+			"gcode_state":     "RUNNING",
+			"mc_percent":      pct,
+			"layer_num":       5,
 			"total_layer_num": 100,
-			"subtask_name": "testjob.3mf",
+			"subtask_name":    "testjob.3mf",
 		},
 	}))
 
@@ -713,5 +716,5 @@ func TestDecodeBambuMessage_InvalidJSON(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func strPtr(s string) *string    { return &s }
+func strPtr(s string) *string       { return &s }
 func float64Ptr(f float64) *float64 { return &f }

@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/central"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers"
+	"github.com/gorilla/websocket"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,13 +91,17 @@ func parseSockJsFrame(raw string) (sockJsFrameType, []string) {
 // ---------------------------------------------------------------------------
 
 type octoprintCurrentPayload struct {
-	State    *struct{ Text string `json:"text"` } `json:"state"`
+	State *struct {
+		Text string `json:"text"`
+	} `json:"state"`
 	Progress *struct {
-		Completion  *float64 `json:"completion"`
+		Completion    *float64 `json:"completion"`
 		PrintTimeLeft *float64 `json:"printTimeLeft"`
 	} `json:"progress"`
 	Job *struct {
-		File *struct{ Name string `json:"name"` } `json:"file"`
+		File *struct {
+			Name string `json:"name"`
+		} `json:"file"`
 	} `json:"job"`
 }
 

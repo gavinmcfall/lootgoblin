@@ -308,14 +308,20 @@ func TestHandleCurrent_Printing_Progress(t *testing.T) {
 	completion := 42.5
 	timeLeft := 3600.0
 	payload := &octoprintCurrentPayload{
-		State: &struct{ Text string `json:"text"` }{Text: "Printing"},
+		State: &struct {
+			Text string `json:"text"`
+		}{Text: "Printing"},
 		Progress: &struct {
 			Completion    *float64 `json:"completion"`
 			PrintTimeLeft *float64 `json:"printTimeLeft"`
 		}{Completion: &completion, PrintTimeLeft: &timeLeft},
 		Job: &struct {
-			File *struct{ Name string `json:"name"` } `json:"file"`
-		}{File: &struct{ Name string `json:"name"` }{Name: "benchy.gcode"}},
+			File *struct {
+				Name string `json:"name"`
+			} `json:"file"`
+		}{File: &struct {
+			Name string `json:"name"`
+		}{Name: "benchy.gcode"}},
 	}
 
 	intents := sm.handleCurrent(payload, nil, time.Now())
@@ -340,7 +346,9 @@ func TestHandleCurrent_Printing_Progress(t *testing.T) {
 func TestHandleCurrent_Operational_Ignored(t *testing.T) {
 	sm := &stateMachine{}
 	payload := &octoprintCurrentPayload{
-		State: &struct{ Text string `json:"text"` }{Text: "Operational"},
+		State: &struct {
+			Text string `json:"text"`
+		}{Text: "Operational"},
 	}
 	intents := sm.handleCurrent(payload, nil, time.Now())
 	if len(intents) != 0 {
@@ -363,7 +371,7 @@ func TestHandleCurrent_Nil_NoIntents(t *testing.T) {
 func TestHandleEvent_PrintDone_CompletedPhaseReport(t *testing.T) {
 	sm := &stateMachine{}
 	evt := &octoprintEventPayload{
-		Type:    "PrintDone",
+		Type: "PrintDone",
 		Payload: &struct {
 			Name    string `json:"name"`
 			Path    string `json:"path"`

@@ -55,13 +55,13 @@ func TestComputeOfflineInterval(t *testing.T) {
 		failures int
 		want     time.Duration
 	}{
-		{5, 60 * time.Second},              // at threshold: 2^0 * 60s
-		{6, 120 * time.Second},             // 2^1 * 60s
-		{7, 240 * time.Second},             // 2^2 * 60s
-		{8, 300 * time.Second},             // cap: 5 min
-		{100, 300 * time.Second},           // cap: 5 min
-		{0, 60 * time.Second},              // below threshold: floor
-		{4, 60 * time.Second},              // below threshold: floor
+		{5, 60 * time.Second},    // at threshold: 2^0 * 60s
+		{6, 120 * time.Second},   // 2^1 * 60s
+		{7, 240 * time.Second},   // 2^2 * 60s
+		{8, 300 * time.Second},   // cap: 5 min
+		{100, 300 * time.Second}, // cap: 5 min
+		{0, 60 * time.Second},    // below threshold: floor
+		{4, 60 * time.Second},    // below threshold: floor
 	}
 
 	for _, tc := range cases {
@@ -268,8 +268,14 @@ func TestRunLoop_IdleToPrintingToJustFinished_CompletedEmittedOnce(t *testing.T)
 
 func TestRunLoop_CompletedEmittedOnlyOnce_NotTwice(t *testing.T) {
 	// Transition to JUST_FINISHED twice from PRINTING → only 1 completed.
-	printing := struct{ reply M27Reply; ok bool }{M27Reply{IsPrinting: true, BytesPrinted: 1000, TotalBytes: 10000}, true}
-	notPrinting := struct{ reply M27Reply; ok bool }{M27Reply{IsPrinting: false}, true}
+	printing := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{IsPrinting: true, BytesPrinted: 1000, TotalBytes: 10000}, true}
+	notPrinting := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{IsPrinting: false}, true}
 
 	ps := newPollScript(printing, notPrinting, printing, notPrinting)
 	reporter := &mockReporter{}
@@ -288,8 +294,14 @@ func TestRunLoop_CompletedEmittedOnlyOnce_NotTwice(t *testing.T) {
 }
 
 func TestRunLoop_OfflineBackoff_RecoverToIdle(t *testing.T) {
-	fail := struct{ reply M27Reply; ok bool }{M27Reply{}, false}
-	success := struct{ reply M27Reply; ok bool }{M27Reply{IsPrinting: false}, true}
+	fail := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{}, false}
+	success := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{IsPrinting: false}, true}
 
 	// 5 consecutive failures → OFFLINE; then 1 success → back to IDLE.
 	ps := newPollScript(fail, fail, fail, fail, fail, success)
@@ -309,8 +321,14 @@ func TestRunLoop_OfflineBackoff_RecoverToIdle(t *testing.T) {
 
 func TestRunLoop_NearCompletion_Over90Pct(t *testing.T) {
 	// 91% progress → should enter NEAR_COMPLETION.
-	near := struct{ reply M27Reply; ok bool }{M27Reply{IsPrinting: true, BytesPrinted: 91_000, TotalBytes: 100_000}, true}
-	notPrinting := struct{ reply M27Reply; ok bool }{M27Reply{IsPrinting: false}, true}
+	near := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{IsPrinting: true, BytesPrinted: 91_000, TotalBytes: 100_000}, true}
+	notPrinting := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{IsPrinting: false}, true}
 
 	ps := newPollScript(near, notPrinting)
 	reporter := &mockReporter{}
@@ -330,7 +348,10 @@ func TestRunLoop_NearCompletion_Over90Pct(t *testing.T) {
 func TestRunLoop_NoCompletedFromIdle(t *testing.T) {
 	// IDLE → not-printing (printer was never printing from our perspective).
 	// Must NOT emit completed.
-	notPrinting := struct{ reply M27Reply; ok bool }{M27Reply{IsPrinting: false}, true}
+	notPrinting := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{IsPrinting: false}, true}
 
 	ps := newPollScript(notPrinting, notPrinting, notPrinting)
 	reporter := &mockReporter{}
@@ -351,8 +372,14 @@ func TestRunLoop_NoCompletedFromIdle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunLoopWithNotify_ForcesIdleToPrinting(t *testing.T) {
-	printing := struct{ reply M27Reply; ok bool }{M27Reply{IsPrinting: true, BytesPrinted: 5000, TotalBytes: 10000}, true}
-	notPrinting := struct{ reply M27Reply; ok bool }{M27Reply{IsPrinting: false}, true}
+	printing := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{IsPrinting: true, BytesPrinted: 5000, TotalBytes: 10000}, true}
+	notPrinting := struct {
+		reply M27Reply
+		ok    bool
+	}{M27Reply{IsPrinting: false}, true}
 
 	ps := newPollScript(printing, notPrinting)
 	reporter := &mockReporter{}

@@ -99,12 +99,12 @@ func (s *spyReporter) firstByPhase(phase string) (central.StatusReport, bool) {
 // ---------------------------------------------------------------------------
 
 type fakeConn struct {
-	mu       sync.Mutex
-	frames   [][]byte
-	pos      int
-	closed   bool
-	written  [][]byte
-	blockCh  chan struct{} // if non-nil, ReadMessage blocks until closed
+	mu      sync.Mutex
+	frames  [][]byte
+	pos     int
+	closed  bool
+	written [][]byte
+	blockCh chan struct{} // if non-nil, ReadMessage blocks until closed
 }
 
 func newFakeConn(frames ...[]byte) *fakeConn {

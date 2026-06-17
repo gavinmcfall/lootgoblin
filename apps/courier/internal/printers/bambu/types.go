@@ -214,18 +214,18 @@ func IsBambuLanKind(kind string) bool {
 // ConnectionConfig holds the per-printer connection parameters for a Bambu LAN
 // printer.  Mirrors BambuLanConnectionConfigT in types.ts.
 type ConnectionConfig struct {
-	IP                 string
-	MqttPort           int
-	FtpPort            int
-	StartPrint         bool
-	ForceAmsDisabled   bool
-	PlateIndex         int
-	BedLevelling       bool
-	FlowCalibration    bool
-	VibrationCal       bool
-	LayerInspect       bool
-	Timelapse          bool
-	BedType            string
+	IP               string
+	MqttPort         int
+	FtpPort          int
+	StartPrint       bool
+	ForceAmsDisabled bool
+	PlateIndex       int
+	BedLevelling     bool
+	FlowCalibration  bool
+	VibrationCal     bool
+	LayerInspect     bool
+	Timelapse        bool
+	BedType          string
 }
 
 // connectionConfigRaw is the JSON shape received in the claim bundle.  Pointer
@@ -248,12 +248,12 @@ type connectionConfigRaw struct {
 // validBedTypes is the set of accepted bedType values (mirrors the Zod enum in
 // types.ts).
 var validBedTypes = map[string]bool{
-	"auto":              true,
-	"cool_plate":        true,
-	"engineering_plate": true,
-	"high_temp_plate":   true,
+	"auto":               true,
+	"cool_plate":         true,
+	"engineering_plate":  true,
+	"high_temp_plate":    true,
 	"textured_pei_plate": true,
-	"pei_plate":         true,
+	"pei_plate":          true,
 }
 
 // ParseConnectionConfig unmarshals raw JSON into a ConnectionConfig, applying

@@ -329,15 +329,15 @@ func TestEnsurePaired_PairTokenUsed_ClearError_NoPersistence(t *testing.T) {
 var _ = func() {
 	// This block never runs; it only exercises the type checker.
 	var (
-		ctx      = context.Background()
-		cfg      *config.Config
-		client   *central.Client
+		ctx       = context.Background()
+		cfg       *config.Config
+		client    *central.Client
 		statePath string
 		promptIn  strings.Reader
-		log      *slog.Logger
-		_ string
-		_ error
-		_ fmt.Stringer // suppress unused import
+		log       *slog.Logger
+		_         string
+		_         error
+		_         fmt.Stringer // suppress unused import
 	)
 	_, _, _ = pairing.EnsurePaired(ctx, cfg, client, statePath, &promptIn, log)
 }

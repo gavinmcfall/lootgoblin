@@ -143,10 +143,10 @@ func TestBuildChunk_PartialLastChunk(t *testing.T) {
 // serverLines is consumed in order; each call to Write from the client
 // triggers the next serverLine to be written back.
 type pipeServer struct {
-	conn     net.Conn
-	lines    []string
-	lineIdx  int
-	t        *testing.T
+	conn    net.Conn
+	lines   []string
+	lineIdx int
+	t       *testing.T
 }
 
 func newPipeServer(t *testing.T, lines []string) (*pipeServer, net.Conn) {
@@ -245,10 +245,10 @@ func TestUploadAndPrint_ResendThenOK(t *testing.T) {
 	fileData := []byte{0x01, 0x02, 0x03, 0x04}
 
 	_, clientConn := newPipeServer(t, []string{
-		"ok\n",        // M28
-		"resend 0\n",  // chunk: resend from start
-		"ok\n",        // chunk: ok after resend
-		"ok\n",        // M29
+		"ok\n",       // M28
+		"resend 0\n", // chunk: resend from start
+		"ok\n",       // chunk: ok after resend
+		"ok\n",       // M29
 		// no M6030 (startPrint=false)
 	})
 
@@ -311,8 +311,8 @@ func TestUploadAndPrint_M29Rejected(t *testing.T) {
 
 	_, clientConn := newPipeServer(t, []string{
 		"ok\n",
-		"ok\n",    // chunk
-		"fail\n",  // M29 rejected
+		"ok\n",   // chunk
+		"fail\n", // M29 rejected
 	})
 
 	result := uploadAndPrint("ignore", 9999, "test.ctb", fileData, false, 5000,

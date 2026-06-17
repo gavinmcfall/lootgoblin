@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/central"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers"
+	"github.com/gorilla/websocket"
 )
 
 // ---------------------------------------------------------------------------
@@ -77,12 +77,12 @@ type moonrakerFrame struct {
 
 // moonrakerPrintStats mirrors the fields we care about in print_stats.
 type moonrakerPrintStats struct {
-	State          string   `json:"state"`
-	Filename       string   `json:"filename"`
-	PrintDuration  float64  `json:"print_duration"`
-	TotalDuration  float64  `json:"total_duration"`
-	FilamentUsed   *float64 `json:"filament_used"`
-	Message        string   `json:"message"`
+	State         string   `json:"state"`
+	Filename      string   `json:"filename"`
+	PrintDuration float64  `json:"print_duration"`
+	TotalDuration float64  `json:"total_duration"`
+	FilamentUsed  *float64 `json:"filament_used"`
+	Message       string   `json:"message"`
 }
 
 // moonrakerDisplayStatus mirrors display_status.
@@ -187,8 +187,9 @@ func mapHistoryStatus(status string) (historyMapping, bool) {
 
 // filamentMmToGrams converts a filament length (mm) to grams.
 // Formula: volume_mm3 = π * (diameter_mm/2)^2 * length_mm
-//          volume_cm3 = volume_mm3 / 1000
-//          grams      = volume_cm3 * density_g_cm3
+//
+//	volume_cm3 = volume_mm3 / 1000
+//	grams      = volume_cm3 * density_g_cm3
 func filamentMmToGrams(lengthMm, diameterMm, densityGCm3 float64) float64 {
 	radius := diameterMm / 2.0
 	volumeMm3 := math.Pi * radius * radius * lengthMm

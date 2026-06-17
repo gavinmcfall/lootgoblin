@@ -55,12 +55,12 @@ type startPrintPayload struct {
 }
 
 type startPrintDataOuter struct {
-	Cmd         int                `json:"Cmd"`
+	Cmd         int                 `json:"Cmd"`
 	Data        startPrintDataInner `json:"Data"`
-	RequestID   string             `json:"RequestID"`
-	MainboardID string             `json:"MainboardID"`
-	TimeStamp   int64              `json:"TimeStamp"`
-	From        int                `json:"From"`
+	RequestID   string              `json:"RequestID"`
+	MainboardID string              `json:"MainboardID"`
+	TimeStamp   int64               `json:"TimeStamp"`
+	From        int                 `json:"From"`
 }
 
 type startPrintDataInner struct {

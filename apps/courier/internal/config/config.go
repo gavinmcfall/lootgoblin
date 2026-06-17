@@ -11,11 +11,11 @@ import (
 )
 
 const (
-	defaultConfigPath              = "/config/courier.yml"
-	defaultHeartbeatIntervalSecs   = 30
-	defaultClaimPollIntervalSecs   = 5
-	defaultFilamentDensityGCm3     = 1.24
-	defaultFilamentDiameterMm      = 1.75
+	defaultConfigPath            = "/config/courier.yml"
+	defaultHeartbeatIntervalSecs = 30
+	defaultClaimPollIntervalSecs = 5
+	defaultFilamentDensityGCm3   = 1.24
+	defaultFilamentDiameterMm    = 1.75
 )
 
 // Config holds all runtime configuration for the courier agent.
@@ -143,4 +143,3 @@ func validate(cfg *Config) error {
 	}
 	return fmt.Errorf("config: missing required fields %v", missing)
 }
-

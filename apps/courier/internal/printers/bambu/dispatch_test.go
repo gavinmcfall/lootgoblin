@@ -60,7 +60,7 @@ func newFakeFtpDialer(conn *fakeFtpConn, dialErr error) FtpDialer {
 // immediate completion).  Error returns the injected err.
 type fakeToken struct{ err error }
 
-func (t *fakeToken) Wait() bool                      { return true }
+func (t *fakeToken) Wait() bool                       { return true }
 func (t *fakeToken) WaitTimeout(_ time.Duration) bool { return true }
 func (t *fakeToken) Done() <-chan struct{} {
 	ch := make(chan struct{})
@@ -443,16 +443,16 @@ func TestDispatch_ForceAmsDisabled(t *testing.T) {
 
 func TestBuildPrintCommand_Shape(t *testing.T) {
 	cfg := ConnectionConfig{
-		IP:            "1.2.3.4",
-		MqttPort:      8883,
-		FtpPort:       990,
-		PlateIndex:    2,
-		BedLevelling:  false,
+		IP:              "1.2.3.4",
+		MqttPort:        8883,
+		FtpPort:         990,
+		PlateIndex:      2,
+		BedLevelling:    false,
 		FlowCalibration: true,
-		VibrationCal:  false,
-		LayerInspect:  true,
-		Timelapse:     true,
-		BedType:       "textured_pei_plate",
+		VibrationCal:    false,
+		LayerInspect:    true,
+		Timelapse:       true,
+		BedType:         "textured_pei_plate",
 	}
 	ams := AmsConfig{SubtaskName: "mymodel", PlateIndex: 1}
 

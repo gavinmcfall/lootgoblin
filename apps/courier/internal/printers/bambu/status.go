@@ -100,15 +100,15 @@ type bambuHmsEntry struct {
 }
 
 type bambuPrintPayload struct {
-	GcodeState    *string        `json:"gcode_state"`
-	McPercent     *float64       `json:"mc_percent"`
-	McRemainingTime *float64     `json:"mc_remaining_time"` // seconds
-	LayerNum      *int           `json:"layer_num"`
-	TotalLayerNum *int           `json:"total_layer_num"`
-	SubtaskName   *string        `json:"subtask_name"`
-	Ams           *bambuAmsBlock `json:"ams"`
-	PrintError    *uint32        `json:"print_error"`
-	Hms           []bambuHmsEntry `json:"hms"`
+	GcodeState      *string         `json:"gcode_state"`
+	McPercent       *float64        `json:"mc_percent"`
+	McRemainingTime *float64        `json:"mc_remaining_time"` // seconds
+	LayerNum        *int            `json:"layer_num"`
+	TotalLayerNum   *int            `json:"total_layer_num"`
+	SubtaskName     *string         `json:"subtask_name"`
+	Ams             *bambuAmsBlock  `json:"ams"`
+	PrintError      *uint32         `json:"print_error"`
+	Hms             []bambuHmsEntry `json:"hms"`
 }
 
 // bambuReportParsed is a parallel struct used only for typed field extraction.

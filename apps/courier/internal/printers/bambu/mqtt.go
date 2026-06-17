@@ -49,9 +49,9 @@ type MqttClientFactory func(brokerURL string, opts mqttOpts) MqttClient
 
 // mqttOpts carries the parameters needed to create an MQTT client.
 type mqttOpts struct {
-	Username string
-	Password string
-	ClientID string
+	Username  string
+	Password  string
+	ClientID  string
 	TLSConfig *tls.Config
 }
 
@@ -88,23 +88,23 @@ type PrintCommand struct {
 }
 
 type printPayload struct {
-	SequenceID         string `json:"sequence_id"`
-	Command            string `json:"command"`
-	Param              string `json:"param"`
-	ProjectID          string `json:"project_id"`
-	ProfileID          string `json:"profile_id"`
-	TaskID             string `json:"task_id"`
-	SubtaskID          string `json:"subtask_id"`
-	SubtaskName        string `json:"subtask_name"`
-	URL                string `json:"url"`
-	Timelapse          bool   `json:"timelapse"`
-	BedType            string `json:"bed_type"`
-	BedLevelling       bool   `json:"bed_levelling"`
-	FlowCali           bool   `json:"flow_cali"`
-	VibrationCali      bool   `json:"vibration_cali"`
-	LayerInspect       bool   `json:"layer_inspect"`
-	UseAms             bool   `json:"use_ams"`
-	AmsMapping         []int  `json:"ams_mapping"`
+	SequenceID    string `json:"sequence_id"`
+	Command       string `json:"command"`
+	Param         string `json:"param"`
+	ProjectID     string `json:"project_id"`
+	ProfileID     string `json:"profile_id"`
+	TaskID        string `json:"task_id"`
+	SubtaskID     string `json:"subtask_id"`
+	SubtaskName   string `json:"subtask_name"`
+	URL           string `json:"url"`
+	Timelapse     bool   `json:"timelapse"`
+	BedType       string `json:"bed_type"`
+	BedLevelling  bool   `json:"bed_levelling"`
+	FlowCali      bool   `json:"flow_cali"`
+	VibrationCali bool   `json:"vibration_cali"`
+	LayerInspect  bool   `json:"layer_inspect"`
+	UseAms        bool   `json:"use_ams"`
+	AmsMapping    []int  `json:"ams_mapping"`
 }
 
 // BuildPrintCommand constructs the MQTT project_file command payload that

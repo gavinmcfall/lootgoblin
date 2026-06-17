@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/central"
 	"github.com/gavinmcfall/lootgoblin/courier/internal/printers"
+	"github.com/gorilla/websocket"
 )
 
 // ---------------------------------------------------------------------------

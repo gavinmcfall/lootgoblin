@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MaterialsTable — dense ledger table for the inventory list.
 // Canvas reference: MatInventoryLedger table section (page-materials.jsx line 186-237).

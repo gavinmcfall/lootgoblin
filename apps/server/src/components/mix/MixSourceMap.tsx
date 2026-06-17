@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MixSourceMap — step 2 of the Guided Mix wizard (NEW; the design lacks this).
 // For each recipe component the user maps one of their OWNED, ACTIVE inventory

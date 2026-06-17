@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Unit tests for the adoption proposal cache (Task 1 of the Adoption HTTP Layer plan).
  *

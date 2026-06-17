@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * POST /api/v1/forge/dispatch — create a DispatchJob
  * GET  /api/v1/forge/dispatch — list caller's dispatch jobs (admin: all)

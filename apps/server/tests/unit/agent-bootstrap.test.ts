@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Unit tests for the Forge central_worker bootstrap — V2-005a-T2.
  *

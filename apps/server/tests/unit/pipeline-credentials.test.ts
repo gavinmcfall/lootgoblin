@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Unit-ish integration tests for pipeline `onTokenRefreshed` persistence — V2-003-T9.
  *

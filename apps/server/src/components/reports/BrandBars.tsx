@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // BrandBars — horizontal bars for brand breakdown.
 // Canvas ref: BrandBars (page-consumption.jsx line 197–212).

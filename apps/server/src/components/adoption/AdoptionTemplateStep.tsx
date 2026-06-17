@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Step 3 — Template (the mock's Schema step, ONE take, not the A/B comparator).
 // Renders one card per preview option with REAL predictedLootCount /

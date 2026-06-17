@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { useEffect, useState } from 'react';
 import { Storage, type PairedState } from '@/lib/storage';
 import { PairView } from './PairView';

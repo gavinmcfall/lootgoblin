@@ -69,4 +69,8 @@ Requires Node 22+.
 
 ## License
 
-MIT.
+LootGoblin is free software, licensed under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`) — see [LICENSE](LICENSE) for the full text.
+
+In short: you may use, study, modify, and self-host it freely. But if you run a modified version as a network service, the AGPL requires you to make your modified source available to that service's users.
+
+Copyright © 2026 Gavin McFall.

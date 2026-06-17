@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
@@ -179,6 +182,20 @@ export function Sidebar() {
           <div className="h-full bg-accent" style={{ width: '68%' }} />
         </div>
       </div>
+
+      {/* Source link — AGPL-3.0 §13: source must be offered to users of the running service */}
+      <a
+        href="https://github.com/gavinmcfall/lootgoblin"
+        target="_blank"
+        rel="noreferrer"
+        title="Source code (AGPL-3.0-or-later)"
+        className={`mt-2 px-2 py-[7px] flex items-center gap-2 rounded-lg bg-transparent border border-hairline text-fg-faint hover:text-fg-muted no-underline font-mono text-[10px] tracking-[1px] uppercase ${
+          expanded ? 'justify-start' : 'justify-center'
+        }`}
+      >
+        <span className="text-[12px] leading-none">{'</>'}</span>
+        {expanded && <span>source ↗</span>}
+      </a>
 
       {/* Collapse toggle */}
       <button

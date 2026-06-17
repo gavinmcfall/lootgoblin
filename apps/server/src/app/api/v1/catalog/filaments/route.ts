@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * GET /api/v1/catalog/filaments + POST /api/v1/catalog/filaments — V2-007b T_B2.
  *

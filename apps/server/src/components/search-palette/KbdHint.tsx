@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // KbdHint — keyboard key chip shown in the palette footer.
 // Canvas reference: CKKbd (page-search-palette.jsx line 15–27).

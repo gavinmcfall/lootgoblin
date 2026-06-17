@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // SVG glyph per file kind. Carries role="img" + aria-label for a11y.
 
 import { fileKindLabel } from './inbox-labels';

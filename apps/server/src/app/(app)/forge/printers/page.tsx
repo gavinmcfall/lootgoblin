@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /forge/printers — Fleet dashboard (Casual grid + Power table toggle).
 // Canvas ref: FleetCasualGrid (line 129) + FleetPowerTable (line 246).

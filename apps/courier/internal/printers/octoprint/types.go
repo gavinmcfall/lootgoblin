@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package octoprint implements the OctoPrint HTTP-multipart upload dispatch
 // adapter and SockJS status subscriber for the lootgoblin courier.
 package octoprint

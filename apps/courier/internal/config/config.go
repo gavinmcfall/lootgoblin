@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package config handles loading and validating courier configuration from
 // a YAML file and environment variable overrides.
 package config

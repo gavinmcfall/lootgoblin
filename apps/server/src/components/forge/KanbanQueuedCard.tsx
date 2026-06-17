@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // KanbanQueuedCard — card for a job in the Queued column.
 // Shows position in queue + loot identifier + status badge.
 //

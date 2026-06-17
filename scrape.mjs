@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // One-off scrape of 10 MakerWorld model pages into ./mw-scrape/
 // and packaged at ./mw-scrape.zip. Produced for a design pass.
 //

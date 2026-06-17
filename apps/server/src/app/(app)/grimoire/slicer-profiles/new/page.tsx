@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /grimoire/slicer-profiles/new — create a slicer profile.
 // Canvas reference: GrimoireDetail form fields (page-grimoire.jsx line 188–277).

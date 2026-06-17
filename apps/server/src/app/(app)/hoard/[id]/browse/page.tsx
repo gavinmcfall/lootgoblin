@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /hoard/[id]/browse — Library detail browse view, Flat variant.
 // Canvas ref: LibraryDetailFlat (page-library-detail.jsx lines 497–616).

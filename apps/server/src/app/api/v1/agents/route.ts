@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * GET /api/v1/agents — list (admin only)
  * POST /api/v1/agents — create courier (admin only)

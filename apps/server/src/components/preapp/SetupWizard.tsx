@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // First-run setup wizard — client child of the /setup server component.
 // Visual treatment ported from page-setup.jsx (SetupCreateAdmin,

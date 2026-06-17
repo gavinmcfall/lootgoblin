@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { runMigrations, getDb, schema, resetDbCache } from '../../src/db/client';

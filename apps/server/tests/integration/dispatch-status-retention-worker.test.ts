@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Integration tests — V2-cleanup-batch-3 T2 (CF-2):
  *   dispatch-status retention worker.

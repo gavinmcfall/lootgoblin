@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Stylized SVG glyph representing printer kind (fdm / resin).
 // a11y: role="img" + aria-label since the glyph conveys the printer category.
 

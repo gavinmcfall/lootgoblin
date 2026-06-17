@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MixComplete — step 5 of the Guided Mix wizard. Ported from MixCompleteManual
 // in page-mix-manual.jsx, with the design's fictional lines degraded to real

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Unit tests for V2-005e-T_e1 schema — forge_inboxes + loot.parent_loot_id +
  * forge_pending_pairings.

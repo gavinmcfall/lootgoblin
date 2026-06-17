@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package bambu
 
 // dispatch.go — Bambu LAN dispatch orchestration.

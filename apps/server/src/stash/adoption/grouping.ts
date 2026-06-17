@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * grouping.ts — Groups walked files into AdoptionCandidate pre-classification
  * structures (without id/classification, which the orchestrator populates).

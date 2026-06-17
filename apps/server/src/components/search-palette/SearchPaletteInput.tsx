@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // SearchPaletteInput — top input row with prefix indicator, scope badge, mode badge.
 // Canvas reference: CKInput (page-search-palette.jsx line 107–136).

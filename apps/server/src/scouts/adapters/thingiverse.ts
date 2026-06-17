@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * thingiverse.ts — Thingiverse ScoutAdapter (V2-003b-T1)
  *

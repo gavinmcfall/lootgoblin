@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Ledger pillar tables — V2-007a-T3 expansion (originally V2-002-T13).
  *

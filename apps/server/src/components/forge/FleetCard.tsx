@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Human-friendly card for the Casual grid view.
 // Canvas ref: FleetCardCasual (page-fleet.jsx line 63–127).
 

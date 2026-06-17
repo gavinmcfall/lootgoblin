@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package state manages the small persisted-state file that the courier writes
 // after a successful pairing handshake.  The file stores the long-lived API
 // key, agent ID, and instance ID as JSON with 0600 permissions so other OS

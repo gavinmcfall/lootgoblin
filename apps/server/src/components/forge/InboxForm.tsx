@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // InboxForm — create + edit form for Forge inbox watch folders.
 // Mirrors DestinationForm pattern: useForm + zodResolver + full a11y triple

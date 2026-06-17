@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // search-palette-labels.ts
 // Canonical kind labels for the kind-chip shown on each result row.
 // Add new entries as future cross-kind search indexes land.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package bambu implements the Bambu Lab LAN-mode printer dispatch adapter for
 // the lootgoblin Courier.  Part 1 ships the types, AMS extractor, FTPS upload
 // and MQTT publish surface.  Part 2 (separate task) adds the status subscriber

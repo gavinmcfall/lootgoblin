@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // LibraryBreadcrumb — breadcrumb bar for the library browse view.
 // Canvas ref: LDBreadcrumb (page-library-detail.jsx lines 80–112).
 // Used by /hoard/[id]/browse (Flat variant). Overview/Drilled/Partial deferred.

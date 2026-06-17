@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // LibraryLootCard — single loot card in the flat browse grid.
 // Canvas ref: flat card grid (page-library-detail.jsx lines 585–609).
 

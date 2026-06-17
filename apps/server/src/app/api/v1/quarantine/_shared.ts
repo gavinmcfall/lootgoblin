@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Shared DTO + helpers for /api/v1/quarantine/* routes — Quarantine HTTP Layer
  *

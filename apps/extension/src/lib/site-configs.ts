@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { api } from './api-client';
 import { Storage } from './storage';
 import type { SiteConfig } from '@/types/site-config';

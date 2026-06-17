@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * V2-005f-CF-1 T_g2 — unit tests for forge/loadouts/lifecycle.ts.
  *

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MixManualEntry — step 3 of the Guided Mix wizard. Ported from
 // MixManualEntry in page-mix-manual.jsx, wired to the mapped sources.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package chitu implements the ChituBox legacy-network resin printer adapter
 // for the Courier. These devices speak an ASCII M-code protocol over a
 // persistent TCP connection on port 3000 (Phrozen Sonic 8K family,

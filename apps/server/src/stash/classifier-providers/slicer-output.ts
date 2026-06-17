@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * slicer-output.ts — Slicer-output classifier provider — V2-005e-T_e2
  *

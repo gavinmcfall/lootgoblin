@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { getSiteConfigs, findMatchingConfig } from '@/lib/site-configs';
 import { runInterpreter } from '@/interpreter';

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // NOTE: v1 schema targets SQLite. The `unixepoch()` timestamp defaults are
 // SQLite-specific; running `drizzle-kit generate` against a Postgres URL
 // will produce a migration that fails at runtime. Full Postgres parity is

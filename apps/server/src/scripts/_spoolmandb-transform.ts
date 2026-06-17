@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * SpoolmanDB → lootgoblin filament_products transform — V2-007b T_B5a.
  *

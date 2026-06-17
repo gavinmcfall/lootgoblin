@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * GET / POST /api/v1/loot/:id/grimoire-attachments — V2-007a-T14
  *

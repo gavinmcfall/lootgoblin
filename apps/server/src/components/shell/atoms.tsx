@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // apps/server/src/components/shell/atoms.tsx
 // Shared presentational primitives. Ported from
 // planning/design-system/lib/app-shell.jsx (SectionTitle, KV, MetaBadge).

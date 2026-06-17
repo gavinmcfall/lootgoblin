@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * For a given subjectType + subjectId, return a domain page URL we can link
  * to, or null when we don't have a confident match. Used by both the table

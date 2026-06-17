@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // SearchPaletteProvider — context + global ⌘K / Ctrl+K hotkey listener.
 // Wraps the app shell; mounts the SearchPalette portal when open.

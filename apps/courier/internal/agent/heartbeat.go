@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package agent contains the long-running loops that make up the courier
 // agent runtime (heartbeat, job-claim, etc.).
 package agent

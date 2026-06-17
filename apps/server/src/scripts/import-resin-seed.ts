@@ -1,4 +1,7 @@
 #!/usr/bin/env -S npx tsx
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Resin seed importer — V2-007b T_B5b.
  *

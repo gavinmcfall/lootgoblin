@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /materials/mix — Guided Mix (manual weight entry).
 // Canvas: planning/design-system/exports/jsx/page-mix-manual.jsx (4 stages).

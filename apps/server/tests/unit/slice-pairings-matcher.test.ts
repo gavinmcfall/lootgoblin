@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * V2-005e-T_e3: Matcher orchestration — DB-backed, with real sidecar +
  * heuristic modules. Covers the three terminal outcomes:

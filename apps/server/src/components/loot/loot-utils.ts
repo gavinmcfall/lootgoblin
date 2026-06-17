@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Shared utility helpers for Loot detail UI.
 // Keep this file scoped to /components/loot — if a helper graduates to
 // cross-pillar use, move it to apps/server/src/lib/.

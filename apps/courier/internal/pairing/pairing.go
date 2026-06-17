@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package pairing implements the one-time pairing flow that exchanges a
 // short-lived pair token for a long-lived API key.  On success the key, agent
 // ID, and instance ID are persisted to a 0600 JSON state file so subsequent

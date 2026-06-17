@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // SettingsJsonField — controlled textarea for JSON payloads.
 // Pretty-prints on valid parse; shows aria-invalid + error on bad JSON.

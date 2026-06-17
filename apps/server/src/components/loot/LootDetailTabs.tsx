@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // LootDetailTabs — client-state tab strip for the Loot detail page.
 // Uses useState (pure UI state, not URL-coupled) per canvas-port #9 spec.

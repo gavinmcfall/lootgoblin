@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Brand mark — placeholder italic Playfair "L" monogram.
 // The real LootGoblin logo is not yet designed; this stand-in renders across
 // every surface (sidebar, future favicon, etc). When the final mark lands,

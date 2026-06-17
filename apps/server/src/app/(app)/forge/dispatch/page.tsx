@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /forge/dispatch — Print queue Kanban + Timeline view.
 // Canvas ref: page-print-queue.jsx — PrintQueueKanban (line 63) + PrintQueueTimeline (line 288).

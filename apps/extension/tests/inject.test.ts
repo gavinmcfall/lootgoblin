@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Window } from 'happy-dom';
 import { inject } from '@/interpreter/inject';

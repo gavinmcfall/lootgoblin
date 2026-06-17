@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // WatchlistTable — grid table for the subscriptions list page.
 // Canvas variant: SubscriptionsIndex table section (page-subscriptions.jsx line 41-63).

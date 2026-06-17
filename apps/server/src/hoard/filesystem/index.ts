@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import path from 'node:path';
 import { expandTemplate, type NamingContext } from './naming';
 import { atomicMoveDir } from './atomic';

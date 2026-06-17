@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // KanbanLiveCard — card for a job in the Running column.
 // Shows progress bar, ETA, and basic metadata.
 // Progress is polled from GET /api/v1/forge/dispatch/:id/status every 5s.

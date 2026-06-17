@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // SearchResultRow — single result row: icon + kind chip + title + sub + meta + selected highlight.
 // Canvas reference: CKResultRow (page-search-palette.jsx line 29–62).

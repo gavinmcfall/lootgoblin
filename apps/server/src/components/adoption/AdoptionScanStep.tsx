@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Step 1 — Scan. Fires POST .../adoption/scan (synchronous; walks the disk).
 // Honest loading state: a spinner + "walking…" copy. NO fabricated live

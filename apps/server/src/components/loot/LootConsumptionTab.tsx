@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // LootConsumptionTab — per-Loot consumption history via ConsumptionLootEmbed.
 // Wires ConsumptionLootEmbed (canvas-port #5) into its first consumer.

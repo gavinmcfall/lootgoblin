@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Unit tests for V2-006a-T1 schema — courier_pair_nonces table +
  * printer_reachable_via reachability columns.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Step 4 — Apply (the mock's Dry-run + Apply collapsed).
 // Shows the chosen template's REAL preview summary as the final "here is what

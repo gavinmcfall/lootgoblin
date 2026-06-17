@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // ProvenanceStack — vertical stacked provenance bar + legend.
 // Canvas ref: ProvenanceStack (page-consumption.jsx line 359–380).

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * moonraker.ts — V2-005f-T_dcf4, V2-005f-CF-5b T_b1
  *

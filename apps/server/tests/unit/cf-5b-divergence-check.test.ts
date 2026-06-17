@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runDivergenceCheck, CF_5B_SINGLE_COLOR_RATIO, CF_5B_MULTI_MATERIAL_RATIO, CF_5B_MIN_GRAMS } from '../../src/forge/status/divergence/check';
 import { logger } from '../../src/logger';

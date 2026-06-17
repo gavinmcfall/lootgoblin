@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MaterialField — labelled field row used in create form and detail page.
 // Matches canvas Field component (page-materials.jsx line 417).

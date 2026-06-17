@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // KanbanFinishedRow — compact row for a job in the Done column.
 // Renders succeeded + failed terminal states.
 //

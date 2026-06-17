@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package sdcp implements the SDCP 3.0 open-protocol resin printer adapter
 // (Elegoo Saturn/Mars families and any other firmware that speaks the unified
 // SDCP 3.0 upload + WebSocket command protocol).

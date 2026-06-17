@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /materials/[id] — spool detail page with retire + load/unload dialogs.
 // Canvas: SpoolDetailPage (page-materials.jsx line 243-356) + RetireDialog.

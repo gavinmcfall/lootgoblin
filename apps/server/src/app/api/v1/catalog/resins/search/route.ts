@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * GET /api/v1/catalog/resins/search?q=...&limit=... — V2-007b T_B2.
  */

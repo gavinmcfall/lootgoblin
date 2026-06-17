@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package central provides a typed HTTP client for the lootgoblin central
 // instance API and the data types that model the JSON contract.
 package central

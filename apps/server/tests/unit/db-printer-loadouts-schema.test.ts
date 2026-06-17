@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Unit tests for V2-005f-CF-1-T_g1 schema — printer_loadouts table + drop of
  * the legacy `materials.loaded_in_printer_ref` column.

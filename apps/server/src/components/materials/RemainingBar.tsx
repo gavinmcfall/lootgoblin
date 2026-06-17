@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // RemainingBar — small progress bar showing remainingAmount / initialAmount.
 // Color semantics: > 50% → bg-success, 20-50% → bg-running, < 20% → bg-danger.

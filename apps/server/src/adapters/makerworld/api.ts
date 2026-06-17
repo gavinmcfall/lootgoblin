@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Use the global fetch (Node 22 native / msw-patchable) rather than importing
 // undici directly, so integration tests via msw can intercept calls.
 // undici is declared as a dependency so bundlers can polyfill on older runtimes.

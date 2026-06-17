@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * V2-005f-CF-1 T_g4: claim worker fills materials_used[].material_id from the
  * printer's current open loadout via getCurrentLoadout(), with a warning log

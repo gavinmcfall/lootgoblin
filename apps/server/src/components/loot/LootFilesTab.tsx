@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // LootFilesTab — list of lootFiles rows with kind icon, size, path, hash.
 // Canvas ref: BoldDetailBody "Contents" section (page-detail-bold.jsx line 169–199).

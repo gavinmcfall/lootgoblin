@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // WatchlistDetailHeader — title row with Fire-now / Pause|Resume / Unwatch actions.
 // Canvas variant: SubscriptionDetail header section (page-subscriptions.jsx line 135-145).

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package version holds the canonical version string for the courier binary.
 // Version, Commit, and Date are injectable at build time via -ldflags -X.
 package version

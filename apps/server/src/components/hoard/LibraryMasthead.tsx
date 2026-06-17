@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // LibraryMasthead — large serif library name + KV strip.
 // Canvas ref: LDMasthead header row (page-library-detail.jsx lines 182–236).
 //

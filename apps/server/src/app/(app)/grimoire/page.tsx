@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /grimoire — unified Grimoire list (slicer profiles + print settings).
 // Canvas reference: GrimoireList (page-grimoire.jsx line 38–102).

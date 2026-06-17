@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /materials/new — add material flow, manual (path A) only.
 // Canvas: MatAddFlow (page-materials.jsx line 359-415).

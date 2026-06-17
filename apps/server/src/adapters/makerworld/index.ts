@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import type { SourceAdapter, FetchedItem } from '../types';
 import { mwFetch, BotChallengeError, CredentialInvalidError, PermissionDeniedError } from './api';
 import { mwSiteConfig } from './site-config';

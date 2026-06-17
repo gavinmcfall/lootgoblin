@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { filesystemWriter } from './filesystem';
 import type { DestinationWriter } from './types';
 export const writers: Record<string, DestinationWriter> = { filesystem: filesystemWriter };

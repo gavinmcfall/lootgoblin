@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { defineBackground } from 'wxt/utils/define-background';
 import { bc } from '@/lib/browser-compat';
 import { api, apiUpload } from '@/lib/api-client';

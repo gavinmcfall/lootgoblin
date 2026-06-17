@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // v1 SSE emitter — expanded in B-13 with subscribers
 type Subscriber = (msg: string) => void;
 const subs = new Set<Subscriber>();

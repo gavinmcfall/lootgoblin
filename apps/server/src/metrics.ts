@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { Registry, Counter, Histogram, collectDefaultMetrics } from 'prom-client';
 
 export const registry = new Registry();

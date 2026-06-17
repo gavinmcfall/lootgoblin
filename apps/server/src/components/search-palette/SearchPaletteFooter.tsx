@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // SearchPaletteFooter — bottom key-hints strip.
 // Canvas reference: CKPaletteFooter (page-search-palette.jsx line 79–105).

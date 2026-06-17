@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // GrimoireAttachModal — modal for attaching a slicer profile or print setting
 // to a Loot item. Canvas-port #9 (Loot detail) wires this in.

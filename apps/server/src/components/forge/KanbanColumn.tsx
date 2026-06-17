@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // KanbanColumn — one column per status bucket (Queued / Running / Done).
 // Renders a header bar + list of child cards passed via `children`.
 

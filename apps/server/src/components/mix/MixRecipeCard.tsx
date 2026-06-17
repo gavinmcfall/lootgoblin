@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MixRecipeCard — step 1 of the Guided Mix wizard. Ported from
 // MixRecipeCardManual in page-mix-manual.jsx.

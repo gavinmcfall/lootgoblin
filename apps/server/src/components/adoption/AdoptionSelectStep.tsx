@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Step 2 — Select candidates (folds the mock's Classify step).
 // A table of real scan candidates with a checkbox per row + select-all.

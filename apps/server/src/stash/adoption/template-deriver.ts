@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * template-deriver.ts — Observes candidate folder paths and infers the
  * most likely path template for the observed library layout.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Shared types + pure helpers for the Guided Mix (manual entry) flow.
 // Wire shapes mirror the backend DTOs (see _shared.ts + mix.ts).
 

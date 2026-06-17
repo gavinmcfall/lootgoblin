@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { drizzle as drizzleSqlite } from 'drizzle-orm/better-sqlite3';
 import { drizzle as drizzlePg } from 'drizzle-orm/postgres-js';
 import { migrate as migrateSqlite } from 'drizzle-orm/better-sqlite3/migrator';

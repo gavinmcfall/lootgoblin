@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import type { ExtractRule } from '@/types/site-config';
 
 export function extract(root: Element, rules: Record<string, ExtractRule>): Record<string, string | null> {

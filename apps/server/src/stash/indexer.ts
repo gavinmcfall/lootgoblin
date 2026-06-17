@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * indexer.ts — FTS5 search index + thumbnail sidecar pipeline — V2-002-T11
  *

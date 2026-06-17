@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package agent — orchestrator.go
 //
 // MakeJobHandler returns the JobHandler closure that routes a claimed job to

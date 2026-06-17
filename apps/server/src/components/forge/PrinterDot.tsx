@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Tiny coloured status dot. Pulses when state is 'running'.
 // a11y: role="status" + aria-label so screen readers announce state changes.
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Format a Date as a compact mono-friendly relative-age string.
  * Returns "<1m" for sub-minute, "Xm" / "Xh" / "Xd" for older.

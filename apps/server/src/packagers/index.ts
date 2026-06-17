@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { manyfoldV0 } from './manyfold-v0';
 import type { Packager } from './types';
 

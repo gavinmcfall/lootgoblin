@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Animated digit grid for pairing codes.
 // Supports size variants: 'lg' (big code reveal) and 'md' (compact inline).

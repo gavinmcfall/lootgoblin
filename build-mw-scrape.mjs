@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Reads mw-scrape/designs.json (produced by the Playwright MCP browser dump),
 // fetches cover images, normalizes to models.json, packages mw-scrape.zip.
 

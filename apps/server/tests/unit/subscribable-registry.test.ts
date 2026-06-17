@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { describe, it, expect, vi } from 'vitest';
 import { createRegistry } from '../../src/scouts/registry';
 import { logger } from '../../src/logger';

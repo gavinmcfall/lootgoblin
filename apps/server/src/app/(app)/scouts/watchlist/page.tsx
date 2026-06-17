@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Watchlist list page — SubscriptionsIndex + SubscriptionEmpty variants.
 // Canvas: page-subscriptions.jsx line 22-67 (index) and 198-222 (empty).

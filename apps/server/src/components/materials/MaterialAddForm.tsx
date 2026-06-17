@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MaterialAddForm — manual create form with catalog autocomplete.
 // Canvas reference: MatAddFlow "Step 2 · fill the line" (page-materials.jsx line 391-412).

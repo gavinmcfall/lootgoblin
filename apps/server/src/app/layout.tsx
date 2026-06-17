@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { Manrope, Playfair_Display, Space_Mono } from 'next/font/google';
 import { Providers } from './providers';
 import './globals.css';

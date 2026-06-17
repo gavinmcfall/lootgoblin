@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Command courier is the lootgoblin courier agent.  It pairs with a central
 // lootgoblin instance and dispatches print jobs to LAN printers.
 package main

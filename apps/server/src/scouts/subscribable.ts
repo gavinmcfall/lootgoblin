@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * SubscribableAdapter — discovery-side contract for the Watchlist pillar (V2-004).
  *

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Shared label helpers for Materials UI. Single source of truth across
 // MaterialsTable, MaterialCard, detail page, and filter UI.
 

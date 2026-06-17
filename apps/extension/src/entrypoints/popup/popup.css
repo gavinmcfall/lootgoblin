@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: 2026 Gavin McFall */
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
 /* LootGoblin extension popup — design-system tokens (dark only).
    Cherry-picks the warm-graphite oklch palette from apps/server/globals.css
    so the popup feels of-a-piece with the web app. */

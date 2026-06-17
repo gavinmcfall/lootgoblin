@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // LootMasthead — large serif title + thumbnail + KV field-book strip.
 // Canvas ref: BoldDetailMasthead (page-detail-bold.jsx line 41–91).

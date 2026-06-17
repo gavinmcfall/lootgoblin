@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MixRecipePicker — step 0 of the Guided Mix wizard. Lists the caller's mix
 // recipes; choosing one enters the wizard at step 1. No recipe-create UI is in

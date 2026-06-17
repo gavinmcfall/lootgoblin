@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MixStepper — 5-step header for the Guided Mix wizard.
 // Ported from MixManualTopBar in page-mix-manual.jsx, extended from the

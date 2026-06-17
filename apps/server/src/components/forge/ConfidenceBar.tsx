@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Small horizontal meter showing classifier confidence (0–1).
 // Uses role="meter" (gauge of a known range) not progressbar.
 

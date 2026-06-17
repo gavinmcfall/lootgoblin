@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package bambu
 
 // ftps.go — FTPS (implicit TLS) upload to Bambu LAN printer /cache/ partition.

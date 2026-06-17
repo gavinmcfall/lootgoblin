@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Adoption wizard — shared DTO types + helpers.
 // Mirrors the backend DTOs in
 // apps/server/src/app/api/v1/stash-roots/[id]/adoption/_shared.ts.

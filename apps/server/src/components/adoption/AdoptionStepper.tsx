@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Left stepper rail for the Adoption wizard.
 // Ported from AdoptionStepper in planning/design-system/lib/page-adoption.jsx

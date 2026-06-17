@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // GrimoireConflictDialog — conflict resolution when a new attachment would
 // clash with an existing one (same name, different payload). Canvas-port #9

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // TimelineRow — a single entry in the Timeline view of the dispatch queue.
 // Presents a chronological feed of all jobs regardless of status.
 // Used inside PrintQueueTimeline's ordered list.

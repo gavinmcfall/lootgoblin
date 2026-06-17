@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { defineConfig } from 'drizzle-kit';
 const url = process.env.DATABASE_URL ?? 'file:./lootgoblin.db';
 export default defineConfig({

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { and, eq, asc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { getDb, schema } from '../db/client';

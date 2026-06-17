@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Small shared presentational bits for the Guided Mix flow.
 // Ported from planning/design-system/exports/jsx/page-mix-manual.jsx

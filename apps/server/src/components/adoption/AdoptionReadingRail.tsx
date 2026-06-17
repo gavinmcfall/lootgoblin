@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Right "reading rail" of explanatory RailBlocks for the Adoption wizard.
 // Ported from AdoptionReadingRail + RailBlock in

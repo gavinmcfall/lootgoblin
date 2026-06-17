@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { useEffect, useState } from 'react';
 import { PairedState } from '@/lib/storage';
 import { api } from '@/lib/api-client';
@@ -277,6 +280,15 @@ function Footer({
         {uploadingText}
       </span>
       <span className="lg-footer-end">
+        <a
+          href="https://github.com/gavinmcfall/lootgoblin"
+          target="_blank"
+          rel="noreferrer"
+          className="lg-link-faint"
+          title="Source code (AGPL-3.0-or-later)"
+        >
+          source ↗
+        </a>
         <button type="button" className="lg-link-faint" onClick={onUnpair}>
           unpair
         </button>

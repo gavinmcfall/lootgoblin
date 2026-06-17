@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // ProvenanceBar — horizontal stacked bar showing 6 provenance classes.
 // Canvas ref: ProvenanceBar (page-consumption.jsx line 118–144).

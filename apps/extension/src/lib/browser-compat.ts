@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // WXT injects the `browser` global via webextension-polyfill; this module
 // narrows to the specific APIs LootGoblin uses and papers over vendor edges.
 //

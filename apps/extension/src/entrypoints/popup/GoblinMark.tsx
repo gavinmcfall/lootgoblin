@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Brand mark — italic Playfair "L" monogram. Mirror of apps/server's GoblinMark.
 // Kept in-extension because apps/extension is a separate app and cannot import
 // from apps/server. If the real mark lands later, update both sites in tandem.

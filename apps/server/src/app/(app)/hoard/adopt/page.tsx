@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // /hoard/adopt — Library Adoption index.
 // Lists stash roots (GET /api/v1/stash-roots) and links each to the wizard at

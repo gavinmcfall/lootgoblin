@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MaterialCard — square spool card used in the detail header.
 // Reusable for rack view later (MatInventoryRack deferred).

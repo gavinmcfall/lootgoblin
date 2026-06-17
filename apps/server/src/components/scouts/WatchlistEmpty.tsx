@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // WatchlistEmpty — 3-suggested-seed empty state for the watchlist.
 // Canvas variant: SubscriptionEmpty (page-subscriptions.jsx line 198-222).
 

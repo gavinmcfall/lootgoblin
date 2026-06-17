@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MaterialsFilters — kind + state filter row for the inventory list.
 // Canvas reference: MatFilters (page-materials.jsx line 65-92).

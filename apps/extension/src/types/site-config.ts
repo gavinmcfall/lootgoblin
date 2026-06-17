@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 export interface ExtractRule {
   selector?: string;       // optional; defaults to root element
   attr?: string;           // extracts attribute

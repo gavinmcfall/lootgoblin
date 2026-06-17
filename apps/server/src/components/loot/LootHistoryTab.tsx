@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // LootHistoryTab — ledger events filtered to this Loot.
 // Full Ledger endpoint is canvas-port #14 territory; shows EmptyHint until then.

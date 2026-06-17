@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // WatchKindChip — small mono chip mapping subscription kind → display label.
 // Canvas variant: WatchKindChip (page-subscriptions.jsx line 17-19).
 // Maps the 5 backend kinds to short display labels (canvas knew 3; backend has 5).

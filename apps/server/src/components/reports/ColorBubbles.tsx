@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // ColorBubbles — color swatches sized by mass.
 // Canvas ref: ColorBubbles (page-consumption.jsx line 240–262).

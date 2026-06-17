@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 import { usePathname, useRouter } from 'next/navigation';
 import { createAuthClient } from 'better-auth/client';

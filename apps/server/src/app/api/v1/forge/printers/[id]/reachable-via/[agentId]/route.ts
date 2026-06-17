@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * DELETE /api/v1/forge/printers/:id/reachable-via/:agentId — admin-only
  *

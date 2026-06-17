@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Tag-button glyph — small coin with a serif-S currency mark.
 // Source: planning/design-system/lib/tokens.jsx
 

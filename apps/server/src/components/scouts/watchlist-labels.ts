@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Shared label helpers for the watchlist UI. Single source of truth for:
 //   - kind → display label (creator / tag / search / url / folder)
 //   - cadence (seconds) → compact mono label (Xm / Xh / Xd)

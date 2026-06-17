@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // ConsumptionLootEmbed — per-Loot consumption embed for Loot detail page.
 // Canvas ref: ConsumptionLootEmbed (page-consumption.jsx line 383–412).

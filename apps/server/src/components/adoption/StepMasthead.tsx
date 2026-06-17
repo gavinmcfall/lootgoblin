@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Masthead inside the wizard main pane.
 // Ported from StepMasthead in planning/design-system/lib/page-adoption.jsx.

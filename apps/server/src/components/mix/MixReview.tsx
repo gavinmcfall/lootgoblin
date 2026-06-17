@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // MixReview — step 4 of the Guided Mix wizard. Ported from MixReviewApply in
 // page-mix-manual.jsx. Shows the entered weights, the synthesized swatch, the

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Auto-paired row — high confidence (≥0.85). Compact grid row.
 
 import { InboxKindIcon } from './InboxKindIcon';

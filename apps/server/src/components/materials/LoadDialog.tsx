@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // LoadDialog — modal for loading a material into a printer.
 // A11y mirrors RetireDialog: role=dialog, aria-modal, aria-labelledby,

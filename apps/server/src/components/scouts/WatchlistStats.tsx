@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // WatchlistStats — 4-tile stat strip for the subscription detail page.
 // Canvas variant: SubscriptionDetail stat grid (page-subscriptions.jsx line 147-154).
 

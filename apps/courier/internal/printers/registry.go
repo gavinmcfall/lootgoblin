@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package printers defines the protocol registry for the courier.  Each
 // printer protocol (Moonraker, OctoPrint, SDCP, …) registers itself under one
 // or more printer.Kind strings.  The orchestrator looks up the protocol by

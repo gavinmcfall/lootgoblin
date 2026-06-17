@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 export type Message =
   | { type: 'queue-tag'; payload: { sourceId: string; sourceItemId: string; sourceUrl: string; contentType: string; snapshot: Record<string, unknown> } }
   | { type: 'share-credential'; payload: { sourceId: string; domain: string } }

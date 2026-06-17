@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * GET  /api/v1/forge/slicers — list caller's slicers (admin: all)
  * POST /api/v1/forge/slicers — create a forge_slicers row

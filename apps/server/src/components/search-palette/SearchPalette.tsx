@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // SearchPalette — global ⌘K overlay.
 // Ports three variants from page-search-palette.jsx:

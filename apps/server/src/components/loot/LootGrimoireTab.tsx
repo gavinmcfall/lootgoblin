@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // LootGrimoireTab — attached Grimoire profiles/settings for this Loot.
 // Wires GrimoireAttachModal (canvas-port #4) into its first consumer.

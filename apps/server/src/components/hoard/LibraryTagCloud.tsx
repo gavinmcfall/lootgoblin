@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // LibraryTagCloud — left rail tag cloud for the Flat library browse view.
 // Canvas ref: LDFacetRail flat subset (page-library-detail.jsx lines 115–182,
 // specifically the tag-cloud variant rendered in LibraryDetailFlat, lines 531–563).

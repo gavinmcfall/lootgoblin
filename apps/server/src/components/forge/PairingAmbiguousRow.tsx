@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // Ambiguous row — 2+ candidates in 0.5–0.85 range. Clicking opens
 // AmbiguousDetail dialog where the user picks a candidate.

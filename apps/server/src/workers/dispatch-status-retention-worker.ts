@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 /**
  * Dispatch status events retention worker — V2-cleanup-batch-3 T2 (CF-2).
  *

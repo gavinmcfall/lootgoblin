@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // GrimoireTable — dense table for the unified Grimoire list.
 // Columns: kind chip / name / meta (slicer/printer/material for profiles) / age.

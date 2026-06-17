@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { NextResponse } from 'next/server';
 import { and, desc, eq } from 'drizzle-orm';
 import { getDb, schema } from '@/db/client';

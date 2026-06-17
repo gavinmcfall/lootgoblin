@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 'use client';
 // AttachmentList — list of Loot items a grimoire profile/setting is attached to.
 // Fetches /api/v1/loot/[id]/grimoire-attachments in reverse: we can't query

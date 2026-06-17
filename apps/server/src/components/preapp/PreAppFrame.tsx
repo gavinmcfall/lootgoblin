@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Shared pre-app visual frame — used by /login and /setup.
 // Ported from planning/design-system/exports/jsx/page-login.jsx (PreAppFrame).
 // Inline-style mock translated to Tailwind token classes. Standalone pages

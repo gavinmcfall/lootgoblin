@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Gavin McFall
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package e2e contains cross-cutting end-to-end tests for the courier.
 //
 // B-1 (always runs): in-process wiring e2e using httptest stubs — no real
